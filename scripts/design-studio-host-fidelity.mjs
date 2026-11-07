@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
 export const DESIGN_STUDIO_SAMPLE_FLAG = "--design-studio-sample";
 export const DESIGN_STUDIO_PROBE_FLAG = "--design-studio-probe";
+export const DESIGN_STUDIO_FORCE_DSF_FLAG = "--design-studio-force-dsf";
 const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] | " +
   `<built-host-checkout> ${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]`;
 
@@ -49,7 +50,7 @@ export const FIDELITY_HOST_FILES = Object.freeze([...REQUIRED_HOST_FILES]);
  */
 export function parsePanelDesktopArguments(argv, _environment = {}) {
   const [hostArgument, ...rest] = argv;
-  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false, probe = false;
+  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false, probe = false, forceDeviceScaleFactor = null;
   if (!hostArgument || hostArgument.startsWith("--"))
     throw new Error(`a built Host checkout path is required; ${USAGE}`);
   for (let index = 0; index < rest.length; index++) {
@@ -60,6 +61,12 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     } else if (value === DESIGN_STUDIO_FIDELITY_FLAG) {
       if (fidelity) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} given twice`);
       fidelity = true;
+    } else if (value === DESIGN_STUDIO_FORCE_DSF_FLAG) {
+      const factor = Number(rest[index + 1]);
+      if (forceDeviceScaleFactor !== null || !rest[index + 1] || !/^\d+(\.\d+)?$/u.test(rest[index + 1]) || !(factor > 0) || factor > 4)
+        throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires one positive number (owned Electron only)`);
+      forceDeviceScaleFactor = factor;
+      index++;
     } else if (value === DESIGN_STUDIO_PROBE_FLAG) {
       if (probe) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} given twice`);
       probe = true;
@@ -74,6 +81,8 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
   }
   if (sampleSeen && !fidelity) throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   if (probe && !fidelity) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
+  // A forced device scale factor changes the owned Electron's real display mode; probes only.
+  if (forceDeviceScaleFactor !== null && !probe) throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires ${DESIGN_STUDIO_PROBE_FLAG}`);
   if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
   // Breaking for this opt-in only: outputs are created by the harness itself in the
   // root-owned system temp directory and written through held handles.
@@ -81,7 +90,7 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     "its report and artifact bundle are harness-owned files in the root-owned system temp directory, printed at start");
   if (selectedApp && selectedApp !== "design-studio")
     throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} only runs --app design-studio, not ${selectedApp}`);
-  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath, probe } };
+  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath, probe, forceDeviceScaleFactor } };
 }
 
 /**
@@ -527,10 +536,10 @@ export const zoomMatches = (actual, target) => finite(actual) && finite(target) 
  */
 export const VISUAL_SAMPLES = Object.freeze([
   { id: "chevron", frameId: "chevron-group", region: [42, 42, 28, 28], anchor: [56, 56], nodes: ["chevron-upper", "chevron-lower"] },
-  { id: "prompt-strokes", frameId: "prompt-glyph-group", region: [99, 44, 18, 24], anchor: [120, 56], nodes: ["prompt-glyph-stroke-a", "prompt-glyph-stroke-b"] },
-  { id: "prompt-text", frameId: "prompt-glyph-group", region: [117, 44, 26, 24], anchor: [120, 56], nodes: ["prompt-glyph"] },
+  { id: "prompt-strokes", frameId: "prompt-glyph-group", region: [99, 44, 18, 24], anchor: [108, 56], nodes: ["prompt-glyph-stroke-a", "prompt-glyph-stroke-b"] },
+  { id: "prompt-text", frameId: "prompt-glyph-group", region: [117, 44, 26, 24], anchor: [130, 56], nodes: ["prompt-glyph"] },
   { id: "button-text", frameId: "button-frame", region: [172, 44, 112, 24], anchor: [228, 56], nodes: ["button-label"] },
-  { id: "finite-text", frameId: "finite-sample", region: [318, 44, 190, 24], anchor: [412, 56], nodes: ["finite-sample-text"] },
+  { id: "finite-text", frameId: "finite-sample", region: [318, 44, 190, 24], anchor: [413, 56], nodes: ["finite-sample-text"] },
 ].map(sample => Object.freeze(sample)));
 const FRAME_LABEL_MIN_ZOOM = 0.65;
 /** Conservative world-space bands of the app's canvas-drawn frame labels (not DOM). */
@@ -595,7 +604,8 @@ export function judgeVisualCaptureGroup(group) {
     const value = capture.pageCrop;
     if (!value || ![value.x, value.y, value.width, value.height].every(finite)) reasons.push(`${capture.route}: no page crop`);
     else {
-      if (value.comparisonEligible !== true) reasons.push(`${capture.route}: page crop overlaps app overlays ${JSON.stringify(value.overlays ?? [])}`);
+      if (value.clipped) reasons.push(`${capture.route}: page crop clipped by the capture`);
+      else if (value.comparisonEligible !== true) reasons.push(`${capture.route}: page crop overlaps app overlays ${JSON.stringify(value.overlays ?? [])}`);
       if (crop && ["x", "y", "width", "height"].some(key => value[key] !== crop[key])) reasons.push(`${capture.route}: page crop differs from the other routes`);
     }
   }

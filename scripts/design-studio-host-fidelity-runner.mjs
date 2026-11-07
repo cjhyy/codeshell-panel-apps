@@ -13,6 +13,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
+import { SNAP_CAMERAS, SNAP_PROBE_SIZE, analyzeSnapCapture, inferLayoutQuantum, snapProbeCollectSource, snapProbeDocument,
+  snapProbeMountSource, snapProbeUnmountSource } from "./design-studio-snap-probe.mjs";
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
   readFixtureDocument, zoomMatches, VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop,
@@ -274,6 +276,39 @@ export function summarizeFrames(times, { start, end } = {}) {
     if (Number.isFinite(start) && Number.isFinite(end) && times[index] >= start && times[index] <= end) window.push(interval);
   }
   return { all: stats(all), window: stats(window), gesture: { start, end } };
+}
+
+/**
+ * Closed-loop plain-wheel pan (app.js wheel: pan -= DOM delta) that moves a client point to a
+ * target, using the delivered DOM deltaX/deltaY measured by the same passive listener.
+ */
+export async function closedLoopPan({ target, readPoint, sendWheel, readDomDeltas, wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  maxSteps = 6, settleMs = 200, tolerance = 0.01 }) {
+  const trace = [], scale = { x: null, y: null };
+  const fail = reasons => ({ reached: false, target, reasons, trace, scale });
+  await readDomDeltas();
+  for (let step = 0; step < maxSteps; step++) {
+    const point = await readPoint();
+    if (!point || ![point.x, point.y].every(Number.isFinite)) return fail(["point not observable"]);
+    const dx = target.x - point.x, dy = target.y - point.y;
+    if (Math.abs(dx) <= tolerance && Math.abs(dy) <= tolerance) return { reached: true, target, point, reasons: [], trace, scale };
+    // Moving the point by d needs a DOM delta of -d.
+    const sent = axis => { const need = axis === "x" ? -dx : -dy;
+      if (Math.abs(need) <= tolerance) return 0;
+      return scale[axis] === null ? Math.sign(need) * Math.min(Math.abs(need), 40) : need / scale[axis]; };
+    const sentX = sent("x"), sentY = sent("y"), kind = scale.x === null && scale.y === null ? "calibration" : "correction";
+    await sendWheel(sentX, sentY);
+    await wait(settleMs);
+    const events = (await readDomDeltas() ?? []).filter(event => !event.ctrlKey && !event.metaKey);
+    const totalX = events.reduce((sum, event) => sum + event.deltaX, 0), totalY = events.reduce((sum, event) => sum + event.deltaY, 0);
+    trace.push({ kind, point, sentDeltaX: sentX, sentDeltaY: sentY, domDeltaX: events.map(e => e.deltaX), domDeltaY: events.map(e => e.deltaY), after: await readPoint() });
+    if (!events.length) return fail([`no wheel event reached the stage for sent (${sentX}, ${sentY})`]);
+    if (sentX !== 0 && totalX !== 0) scale.x = totalX / sentX;
+    if (sentY !== 0 && totalY !== 0) scale.y = totalY / sentY;
+  }
+  const point = await readPoint();
+  if (point && Math.abs(target.x - point.x) <= tolerance && Math.abs(target.y - point.y) <= tolerance) return { reached: true, target, point, reasons: [], trace, scale };
+  return fail([`target point not reached after ${maxSteps} steps (last ${JSON.stringify(point)})`]);
 }
 
 /**
@@ -591,6 +626,30 @@ export async function runDesignStudioHostFidelity(options) {
     const state = await dom(DESIGN_STUDIO_PROBES.openState());
     return { status: openedTextLayerCount >= 1000 ? FIDELITY_STATUS.EVIDENCE_ONLY : FIDELITY_STATUS.UNVERIFIED, open, elapsedMs, openedTextLayerCount, state };
   });
+  // Probe 3 (run4 review): which pixel grid does this real Electron/display use? P1 layout, P2 font
+  // metrics, P3 six cases at z1/z2/fit (+.3 pan); markup is mounted in a probe-owned open shadow root.
+  await probeStep("probe-snap-grid", async () => {
+    const logicalSource = codec.serializeDesignDocument(codec.normalizeDesignDocument(snapProbeDocument()));
+    const collect = await dom(snapProbeCollectSource({ logicalSource, moduleBase: "./" }));
+    if (!collect?.markup) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["snap probe collection unavailable"] };
+    const captures = [];
+    try {
+      for (const value of SNAP_CAMERAS) {
+        const mount = await dom(snapProbeMountSource({ markup: collect.markup, camera: value, size: SNAP_PROBE_SIZE }));
+        const shot = await evaluateMain(async ({ webContents }, { id, rect }) => {
+          const image = await webContents.fromId(id).capturePage(rect);
+          return { pngBase64: image.toPNG().toString("base64"), size: image.getSize() };
+        }, { id: guestWebContentsId, rect: { x: Math.round(mount.host.x), y: Math.round(mount.host.y), width: Math.round(mount.host.width), height: Math.round(mount.host.height) } });
+        await dom(snapProbeUnmountSource());
+        const evidence = await saveArtifact(`snap-${value.label}`, Buffer.from(shot.pngBase64, "base64"));
+        const dpr = evidence.image.width / mount.host.width;
+        captures.push({ camera: value, dpr, png: evidence.summary, mount, rows: analyzeSnapCapture({ image: evidence.image, camera: value, dpr, collect, mount }) });
+      }
+    } finally { await dom(snapProbeUnmountSource()).catch(() => {}); }
+    return { status: FIDELITY_STATUS.EVIDENCE_ONLY, environment: collect.env, inter: collect.inter, fonts: collect.fonts, gpu: collect.gpu,
+      layout: { plain: inferLayoutQuantum(collect.layout.plain.map(v => ({ requested: v.requested, measured: v.left }))),
+        scaled: inferLayoutQuantum(collect.layout.scaled.map(v => ({ requested: v.requested * 2, measured: v.left }))), raw: collect.layout }, captures };
+  });
   // Probe 2: what DOM wheel event does an Electron Ctrl+wheel input produce, and does the closed loop reach 1 and 2?
   await probeStep("probe-zoom-input", async () => {
     await openFile(FIDELITY_FIXTURE_PATHS.rotationStrips);
@@ -826,20 +885,29 @@ export async function runDesignStudioHostFidelity(options) {
     const shapeIds = ["chevron-upper", "chevron-lower", "prompt-glyph-stroke-a", "prompt-glyph-stroke-b"];
     const groups = [];
     // One capture set (gpu, browser, html) per anchored frame and zoom; fit captures every frame at once.
+    // run4 review: centre each sample region on the stage with a real wheel pan, then zoom at the stage centre.
     const plans = [
-      ...[1, 2].flatMap(targetZoom => [...new Set(VISUAL_SAMPLES.map(sample => sample.frameId))].map(frameId =>
-        ({ label: `${frameId}@${targetZoom * 100}`, targetZoom, frameId, samples: VISUAL_SAMPLES.filter(sample => sample.frameId === frameId) }))),
-      { label: "all@fit", targetZoom: null, frameId: null, samples: VISUAL_SAMPLES },
+      ...[1, 2].flatMap(targetZoom => VISUAL_SAMPLES.map(sample => ({ label: `${sample.id}@${targetZoom * 100}`, targetZoom, samples: [sample] }))),
+      { label: "all@fit", targetZoom: null, samples: VISUAL_SAMPLES },
     ];
     for (const plan of plans) {
       await chooseRenderer("gpu");
       await dom(`document.querySelector("#zoom-value")?.click(), true`);
       await wait(400);
       let zoom = null;
+      let pan = null;
       if (plan.targetZoom) {
         const fitCamera = await camera();
         const anchor = plan.samples[0].anchor;
-        zoom = await zoomTo(plan.targetZoom, fitCamera && toClient(fitCamera, anchor[0], anchor[1]));
+        const stageCentre = fitCamera && { x: fitCamera.rect.x + fitCamera.rect.width / 2, y: fitCamera.rect.y + fitCamera.rect.height / 2 };
+        if (stageCentre) {
+          await dom(DESIGN_STUDIO_PROBES.wheelInstall());
+          pan = await closedLoopPan({ target: stageCentre, wait, readPoint: async () => { const value = await camera(); return value && toClient(value, anchor[0], anchor[1]); },
+            readDomDeltas: async () => (await dom(DESIGN_STUDIO_PROBES.wheelRead())) ?? [],
+            sendWheel: (deltaX, deltaY) => sendInput([{ type: "mouseWheel", x: Math.round(stageCentre.x), y: Math.round(stageCentre.y), deltaX, deltaY,
+              hasPreciseScrollingDeltas: true, canScroll: true }]) });
+        }
+        zoom = pan?.reached ? await zoomTo(plan.targetZoom, stageCentre) : { reached: false, target: plan.targetZoom, reasons: [`sample not centred: ${JSON.stringify(pan?.reasons ?? null)}`], trace: [] };
         if (!zoom.reached) {
           for (const sample of plan.samples) groups.push({ label: `${sample.id}@${plan.targetZoom * 100}`, targetZoom: plan.targetZoom, zoom, reference: referenceMeta,
             captures: [], status: FIDELITY_STATUS.UNVERIFIED, reasons: [`target zoom ${plan.targetZoom} not reached; no capture labelled with it`] });
@@ -872,7 +940,7 @@ export async function runDesignStudioHostFidelity(options) {
             capture: { width: shot.evidence.summary.width, height: shot.evidence.summary.height }, overlays: shot.overlays ?? [],
             labelBands: shot.route === "html" ? [] : bands }) }));
         const group = { label: `${sample.id}@${plan.targetZoom ? plan.targetZoom * 100 : "fit"}`, sampleId: sample.id, region: sample.region,
-          targetZoom: plan.targetZoom, zoom, reference: referenceMeta, stageRect: rect,
+          targetZoom: plan.targetZoom, zoom, pan, reference: referenceMeta, stageRect: rect,
           captureRectOffset: { x: Math.round(rect.x) - rect.x, y: Math.round(rect.y) - rect.y }, captures };
         groups.push({ ...group, ...judgeVisualCaptureGroup(group) });
       }

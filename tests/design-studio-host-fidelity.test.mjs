@@ -55,7 +55,7 @@ test("fidelity opt-in requires a built Host and refuses any user-chosen report p
   assert.equal(parsePanelDesktopArguments(["/host", "/tmp/new-report.json"]).reportArgument, "/tmp/new-report.json", "the existing desktop gate keeps its report path");
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG]);
   assert.equal(parsed.selectedApp, "design-studio", "fidelity runs only the Design Studio package case");
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null, probe: false });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null, probe: false, forceDeviceScaleFactor: null });
 });
 
 test("fidelity opt-in rejects other Panels and stray sample flags", () => {
@@ -65,7 +65,7 @@ test("fidelity opt-in rejects other Panels and stray sample flags", () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", "/tmp/r.json", "--unknown"]), /unexpected argument/);
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--app", "design-studio",
     "--design-studio-sample", "/tmp/sample.codesign.json"]);
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json", probe: false });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json", probe: false, forceDeviceScaleFactor: null });
 });
 
 async function fakeHost(host, paths, { electron = true } = {}) {
@@ -1274,7 +1274,7 @@ test("low-zoom performance requires the 1000+ text layers to be open in the real
 
 test("--design-studio-probe runs only the two diagnostic probes and never the six scenarios", async () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", "--design-studio-probe"]), /requires --design-studio-fidelity/);
-  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe"]).designStudioFidelity, { samplePath: null, probe: true });
+  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe"]).designStudioFidelity, { samplePath: null, probe: true, forceDeviceScaleFactor: null });
   const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
   const directory = await scratch("ds-fidelity-probe-");
   try {
@@ -1287,7 +1287,7 @@ test("--design-studio-probe runs only the two diagnostic probes and never the si
     const report = await runDesignStudioHostFidelity({ enabled: true, probe: true, guest, guestWebContentsId: 7, app: fakeElectron().app,
       projectDirectory: directory, packageDirectory: join(repository, "apps/design-studio"), fixtures, wait: async () => {}, timeoutMs: 20, settleTimeoutMs: 20 });
     assert.deepEqual(report.results, [], "no fidelity scenario runs in probe mode");
-    assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-zoom-input"]);
+    assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-snap-grid", "probe-zoom-input"]);
     assert.ok(report.probes.every(value => value.status === "UNVERIFIED"));
     assert.equal(report.summary.notRun.length, 6);
     assert.ok("environment" in report, "DPR/viewport/user agent are recorded");
@@ -1378,4 +1378,37 @@ test("CPU metrics use one owned debugger session and gesture frames are summaris
   assert.equal((after.ScriptDuration - before.ScriptDuration) * 1000, 250, "deltas come from one session, not reset counters");
   const frames = summarizeFrames([0, 8, 16, 24, 40, 48, 300, 308], { start: 10, end: 50 });
   assert.deepEqual([frames.window.count, frames.window.maxMs, frames.all.count], [4, 16, 7]);
+});
+
+/* ---- run4 review: centred sample pans, prompt-strokes anchor, clipped wording, force-DSF probe flag ---- */
+test("closed-loop pan moves a sample centre to the stage centre using the measured DOM wheel deltas", async () => {
+  const { closedLoopPan } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  let pan = { x: 62, y: 300.1 };
+  const delivered = [];
+  const sim = { readPoint: async () => ({ x: 263 + 0.615 * 412 + pan.x, y: 91 + 0.615 * 56 + pan.y }),
+    sendWheel: async (dx, dy) => { const event = { deltaX: -dx, deltaY: -dy, ctrlKey: false, metaKey: false, deltaMode: 0 }; delivered.push(event); pan.x -= event.deltaX; pan.y -= event.deltaY; },
+    readDomDeltas: async () => delivered.splice(0) };
+  const result = await closedLoopPan({ target: { x: 263 + 493 / 2, y: 91 + 629 / 2 }, ...sim, wait: async () => {} });
+  assert.equal(result.reached, true, JSON.stringify(result.reasons));
+  assert.ok(Math.abs((await sim.readPoint()).x - (263 + 493 / 2)) <= 0.01);
+  assert.ok(result.trace.length >= 2 && result.trace[0].kind === "calibration");
+  const silent = await closedLoopPan({ target: { x: 0, y: 0 }, readPoint: async () => ({ x: 5, y: 5 }), sendWheel: async () => {}, readDomDeltas: async () => [], wait: async () => {} });
+  assert.equal(silent.reached, false);
+});
+
+test("prompt strokes are anchored at their own centre and a clipped crop says so", async () => {
+  const { VISUAL_SAMPLES, judgeVisualCaptureGroup } = await import("../scripts/design-studio-host-fidelity.mjs");
+  assert.deepEqual(VISUAL_SAMPLES.find(sample => sample.id === "prompt-strokes").anchor, [108, 56]);
+  const crop = { x: 256, y: 576, width: 761, height: 97, clipped: true, comparisonEligible: false, overlays: [] };
+  const verdict = judgeVisualCaptureGroup({ label: "finite-text@200", targetZoom: 2, zoom: { reached: true }, reference: { source: "guest" },
+    captures: ["gpu", "browser", "html"].map(route => ({ route, camera: { zoom: 2, panX: 1, panY: 1, dpr: 2 }, pageCrop: crop, png: { sha256: hex("a"), width: 986, height: 1258, distinctColors: 9 } })) });
+  assert.match(verdict.reasons.join(), /clipped by the capture/);
+  assert.doesNotMatch(verdict.reasons.join(), /overlaps app overlays \[\]/);
+});
+
+test("--design-studio-force-dsf is a probe-only owned-Electron switch", () => {
+  assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-force-dsf", "1"]), /requires --design-studio-probe/);
+  assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1.5x"]), /positive number/);
+  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1"]).designStudioFidelity,
+    { samplePath: null, probe: true, forceDeviceScaleFactor: 1 });
 });

@@ -121,7 +121,10 @@ try {
   const captureSpawn = "const spawn = children.spawn;";
   assert.equal(bootstrap.split(captureSpawn).length, 2, "Host fixture spawn seam changed");
   bootstrap = bootstrap.replace(captureSpawn, nativeParentFixture.bootstrap + managedFixture.bootstrap + captureSpawn);
-  bootstrap = bootstrap.replace(mainImport, `for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
+  // Probe-only: force the owned Electron's device scale factor (never the operator's app).
+  const forceDsf = designStudioFidelity?.forceDeviceScaleFactor
+    ? `app.commandLine.appendSwitch("force-device-scale-factor", ${JSON.stringify(String(designStudioFidelity.forceDeviceScaleFactor))});\n` : "";
+  bootstrap = bootstrap.replace(mainImport, `${forceDsf}for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
 app.on("session-created", session => {
   session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (_details, done) => done({ cancel: true }));
 });\n${mainImport}`);

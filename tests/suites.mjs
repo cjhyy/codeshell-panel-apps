@@ -75,7 +75,7 @@ export const suites = [
   {
     id: "desktop-harness",
     label: "Desktop acceptance process custody and cleanup failures",
-    commands: [["--test", "tests/panel-desktop-cleanup.test.mjs", "tests/panel-desktop-native-fixture.test.mjs", "tests/design-studio-host-fidelity.test.mjs"]],
+    commands: [["--test", "tests/panel-desktop-cleanup.test.mjs", "tests/panel-desktop-native-fixture.test.mjs", "tests/design-studio-host-fidelity.test.mjs", "tests/design-studio-snap-probe.test.mjs"]],
   },
   {
     id: "packages",
