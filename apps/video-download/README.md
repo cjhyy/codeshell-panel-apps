@@ -258,3 +258,12 @@ records remain visible; queued downloads are not resumed. Use **手动重试** i
 the Tasks page (or the environment refresh button) to request confirmation again.
 Reopening the panel starts a new observation attempt. Network and ordinary helper
 errors are not treated as a refusal of execution permission.
+
+A spawn request that is still pending after a short grace period shows an inline
+notice above the environment details asking the user to complete any Host
+confirmation. A refusal is identified only by the structured
+`EXECUTION_NOT_CONFIRMED` code: yt-dlp and ffmpeg are then shown as **未获允许运行**
+(unverified, not missing), install/repair is not offered, and **允许并重新检测**
+requests confirmation again. AI search reports the same cause once instead of a
+per-platform tool failure. Host `REVOKED` bridge errors keep their code but are
+shown in Chinese as a project-trust or Panel-binding problem.

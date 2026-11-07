@@ -81,6 +81,42 @@ input:focus-visible + i {
   padding: 18px 20px 28px;
 }
 
+.execution-consent-notice {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 11px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--accent-soft);
+  overflow-wrap: anywhere;
+}
+
+.execution-consent-notice[hidden] {
+  display: none;
+}
+
+.execution-consent-notice[data-state="declined"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.execution-consent-notice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.execution-consent-notice .setup-button {
+  justify-self: start;
+  padding: 0 14px;
+}
+
+.execution-consent-notice .setup-button[hidden] {
+  display: none;
+}
+
 .project-binding-notice {
   margin: 0;
   padding: 10px 12px;

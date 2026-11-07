@@ -587,18 +587,32 @@ test("pending native startup names the request and rejection requires a visible 
     assert.equal(await page.locator("#environment-status").textContent(), "正在请求运行…");
     assert.match(await page.locator("#download-readiness").textContent(), /如有确认，请在宿主界面完成/);
     assert.equal(await page.locator("#refresh-versions").isDisabled(), true);
+    // A spawn still pending after the short grace period is waiting on the Host prompt.
+    const notice = page.locator("#execution-consent-notice");
+    await notice.waitFor({ state: "visible" });
+    assert.equal(await notice.getAttribute("data-state"), "waiting");
+    assert.match(await notice.textContent(), /等待确认.*如果 CodeShell 显示了确认框.*确认执行/s);
+    assert.equal(await page.locator("#execution-consent-retry").isHidden(), true);
     const before = (await hostCalls(page, "process.spawn")).length;
     await page.evaluate(() => window.__tools.refresh_video_download_dependencies({}));
     assert.equal((await hostCalls(page, "process.spawn")).length, before);
     await page.evaluate(() => window.__releaseStartup({ code: "OPERATION_FAILED", message: "User denied running node" }));
     await page.waitForFunction(() => !document.querySelector("#refresh-versions").disabled);
-    assert.equal(await page.locator("#refresh-versions").textContent(), "重试检查");
+    // Refused consent is reported as missing permission, never as missing tools.
+    assert.equal(await page.locator("#refresh-versions").textContent(), "允许并重新检测");
+    assert.equal(await notice.getAttribute("data-state"), "declined");
+    assert.equal(await notice.isVisible(), true);
+    assert.match(await notice.textContent(), /需要先允许 Mimi Download 在电脑上运行 node/);
+    for (const id of ["#ytdlp-status", "#ffmpeg-status"])
+      assert.equal(await page.locator(id).textContent(), "未获允许运行");
+    assert.equal(await page.locator("#runtime-badge span").textContent(), "需要允许运行");
+    assert.equal(await page.locator("#setup-card").isHidden(), true);
+    assert.doesNotMatch(await page.locator("body").innerText(), /Unavailable|安装 yt-dlp/);
     await page.waitForTimeout(700);
     assert.equal((await hostCalls(page, "process.spawn")).length, before);
-    if (!(await page.locator("#environment-details").evaluate((node) => node.open)))
-      await page.locator("#environment-details > summary").click();
-    await page.locator("#refresh-versions").click();
+    await page.locator("#execution-consent-retry").click();
     await ready(page);
+    assert.equal(await notice.isHidden(), true);
     await page.close();
   }
 });
