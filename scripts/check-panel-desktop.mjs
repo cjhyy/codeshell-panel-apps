@@ -14,7 +14,7 @@ import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-des
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
-import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
+import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
 import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
   describeOwnedCleanup, writeFidelityPartialOnce,
   parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
@@ -358,7 +358,10 @@ app.on("session-created", session => {
         const fidelityGuest = await attach(fidelityProject, id, "fidelity");
         // Shared, idempotent and bounded: the runner's timeout path and this finally.
         const guestCleanup = createOwnedGuestCleanup(fidelityGuest);
-        try {
+        // Unsettled guest/reference work or a failed/pending remove is handed to the existing
+        // owned Electron cleanup (captured ChildProcess only); any original failure is kept.
+        // The single partial (with the real owned-cleanup outcome) is written after it.
+        await withOwnedFidelityGuest(guestCleanup, async () => {
           // Bounded readiness and webContents id; a hung guest goes to the shared cleanup.
           const { guestWebContentsId } = await prepareFidelityGuest({ guest: fidelityGuest, guestCleanup,
             readySource: 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"' });
@@ -372,16 +375,8 @@ app.on("session-created", session => {
             artifactSink: fidelityOutputs, log: message => console.log(message) });
           fidelityReport.installedPackageDigest = selected.packageDigest;
           console.log(`Design Studio fidelity summary: ${JSON.stringify(fidelityReport.summary)}`);
-        } finally {
-          const removal = await guestCleanup.remove();
-          // Unsettled guest/reference work or a failed/pending remove is handed to the
-          // existing owned Electron cleanup (captured ChildProcess only) by failing here.
-          // The single partial (with the real owned-cleanup outcome) is written after it.
-          if (fidelityReport?.cleanup?.requiresOwnedHostCleanup || removal.requiresOwnedHostCleanup) {
-            if (fidelityReport) fidelityReport.guestCleanup = removal;
-            throw new Error(`Design Studio fidelity left unsettled owned work: ${JSON.stringify({ guest: removal, unsettled: fidelityReport?.cleanup?.unsettled })}`);
-          }
-        }
+        }, { requiresOwnedHostCleanup: () => Boolean(fidelityReport?.cleanup?.requiresOwnedHostCleanup) });
+        if (fidelityReport) fidelityReport.guestCleanup = guestCleanup.state();
       }
     }
     const interaction = {

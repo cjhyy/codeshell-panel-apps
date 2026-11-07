@@ -669,13 +669,33 @@ export async function claimFidelityOutputs({ root = SYSTEM_OUTPUT_ROOTS[process.
  */
 export function describeOwnedCleanup({ receipt = null, error = null, primaryFailure = null } = {}) {
   if (!error) return { completed: true, receipt, homeRetained: false, errors: [] };
+  // cleanupPanelDesktopFixture always rethrows the primary failure (as AggregateError)
+  // and adds an error for every close/exit/HOME problem, so only the other errors
+  // describe the cleanup itself. With a primary failure it returns no receipt; none
+  // is fabricated here.
   const errors = (error instanceof AggregateError ? error.errors : [error]).filter(value => value !== primaryFailure)
     .map(value => String(value?.message ?? value));
-  return { completed: false, receipt: null, homeRetained: errors.some(message => /HOME retained/u.test(message)), errors };
+  const completed = errors.length === 0;
+  return { completed, receipt: null,
+    receiptUnavailableReason: completed
+      ? "cleanup helper rethrows the primary failure instead of returning a receipt; success is inferred from it reporting no other error"
+      : "owned cleanup reported errors besides the primary failure",
+    ...(completed ? { inferredFromHelperSemantics: { ownedElectronClosedOrNotLaunched: true, homeRemoved: true } } : {}),
+    homeRetained: errors.some(message => /HOME retained/u.test(message)), errors };
+}
+/** Serialize a failure with its AggregateError members and cause chain (bounded depth). */
+function serializeFailure(failure, depth = 0) {
+  if (!failure) return null;
+  const value = { name: failure.name ?? "Error", message: String(failure.message ?? failure) };
+  if (depth >= 4) return value;
+  if (failure instanceof AggregateError) value.errors = failure.errors.map(member => serializeFailure(member, depth + 1));
+  if (failure.cause) value.cause = serializeFailure(failure.cause, depth + 1);
+  for (const key of ["timedOut", "unsettled", "cleanup"]) if (failure[key] !== undefined) value[key] = failure[key];
+  return value;
 }
 export function buildFidelityFailurePartial({ stage, failure, fidelityReport, artifacts = [], cleanup }) {
   return { schemaVersion: 1, partial: true, complete: false, goalComplete: false, overall: "NOT_COMPLETE", stage: stage ?? null,
-    failure: failure ? { name: failure.name ?? "Error", message: String(failure.message ?? failure) } : null,
+    failure: serializeFailure(failure),
     designStudioFidelity: fidelityReport ?? { status: "NOT_RUN" }, artifacts, cleanup,
     note: "Partial evidence from a failed run: completed scenario results and artifacts only; not acceptance and not a PASS." };
 }

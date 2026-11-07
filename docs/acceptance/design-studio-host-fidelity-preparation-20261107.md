@@ -252,3 +252,32 @@ npm run validate                                                              # 
 
 - partial 只能记录已完成的事实。如果 runner 本身在中途抛错（而不是返回报告），已经写入的截图仍会出现在 bundle 索引里，但 `designStudioFidelity` 会是 `NOT_RUN`，不会补出场景级结果。
 - 真实 Host 场景仍然 0 个运行过：主 Host checkout 缺 managed runtime，也没有获得窗口许可。性能判 UNVERIFIED，视觉最多 EVIDENCE_ONLY，`goalComplete` 恒为 false。
+
+## 第五轮：两处报告问题（92e3387e；独立 CC review 结论为 BLOCKED，只因 cleanup 报告这一项）
+
+返修前核对：HEAD 为 `92e3387e`，工作区干净。本轮**没有**启动 Electron、GUI 或浏览器，没有构建 Host、安装 Panel，没有执行任何入口。改动只限下面两处。
+
+红：`node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs` → 47 tests / 43 pass / 4 fail（`.tmp/host-harness/review5-red.log`）。
+
+1. **Important：只含 primary 的 cleanup 结果被误判为失败。** 只要存在原始 failure，`cleanupPanelDesktopFixture` 一定会抛出 `AggregateError([primary, ...])`，即使 Electron 已退出、HOME 已删除也一样。旧版 `describeOwnedCleanup` 一见到错误就记为 `completed:false`。现在的做法：
+   - 先过滤掉 primary，`completed = 其余 cleanup 错误为 0`；
+   - helper 在抛错时不会返回 receipt，所以 `receipt` 仍为 null，不伪造；同时用 `receiptUnavailableReason` 说明原因；
+   - completed 时附 `inferredFromHelperSemantics: { ownedElectronClosedOrNotLaunched: true, homeRemoved: true }`。这是根据 helper 的错误语义推出的：关闭失败、退出未确认、HOME 保留、rm 失败，各自都会追加一个错误。
+   
+   partial 整体仍是 `NOT_COMPLETE`，原 failure 仍导致非零退出，cleanup 成功不会被当成 goal pass。回归测试：`AggregateError([primary])` → completed true；`[primary, HOME retained]` 或 `[primary, close timeout]` → false；没有 primary 的单个错误 → false；无错误时的 receipt 路径不变。
+2. **Minor：unsettled 错误覆盖了原始的启动超时。** 原先内层 finally 中 unsettled 时的 `throw` 会替换掉原始错误。现在抽成 `withOwnedFidelityGuest`：先在 catch 中保存原始错误，finally 执行一次有界的共享 remove；如果需要 owned cleanup，就抛出 `AggregateError([original, unsettled])`（没有原始错误时只抛 unsettled），没有 unsettled 时原样抛出原始错误。partial 的 `failure` 会序列化 AggregateError 的成员和 cause 链（深度有界），并保留 `timedOut`、`unsettled`、`cleanup` 字段。负控：readiness probe 和 remove 同时挂起时，<1 s 内返回 AggregateError，`errors[0]` 是 “fidelity guest readiness probe timed out after 20ms”（`unsettled:true`），`errors[1]` 是 unsettled owned work，partial 中两个都在。顺带把 probe 的剩余预算向上取整，日志里不再出现小数 ms 的标签。
+
+### 第五轮实际运行（TMPDIR=/tmp/ds-host-harness-tmp）
+
+```sh
+node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs   # 47/47 pass, exit 0 (.tmp/host-harness/review5-green.log)
+npm test -- --suite desktop-harness                                           # 60/60 pass, exit 0；只含 cleanup/native-fixture/本文件，无 Electron
+npm run validate                                                              # exit 0
+```
+
+### 状态
+
+- 真实 Host 场景仍然 **0 个运行过**。
+- 主代理告知：另一个 cwd 中有一个独立构建的 Host（`19fbe3828`），构建和 preflight 都已 PASS，但尚未启动；本 cwd 没有对它做任何核验或操作。
+- 窗口许可仍然缺失。
+- 性能 UNVERIFIED；视觉最多 EVIDENCE_ONLY；`goalComplete` 恒为 false。

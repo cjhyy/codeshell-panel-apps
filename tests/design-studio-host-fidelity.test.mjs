@@ -918,8 +918,8 @@ test("failure partial keeps completed fidelity evidence and the actual cleanup o
   const primary = new Error("generic restore assertion failed");
   const cleanupError = new AggregateError([primary, new Error("Fixture HOME retained for an unverified live Electron: /x")], "cleanup failed");
   const cleanup = describeOwnedCleanup({ error: cleanupError, primaryFailure: primary });
-  assert.deepEqual(cleanup, { completed: false, receipt: null, homeRetained: true,
-    errors: ["Fixture HOME retained for an unverified live Electron: /x"] });
+  assert.deepEqual(cleanup, { completed: false, receipt: null, receiptUnavailableReason: "owned cleanup reported errors besides the primary failure",
+    homeRetained: true, errors: ["Fixture HOME retained for an unverified live Electron: /x"] });
   const partial = buildFidelityFailurePartial({ stage: "design-studio: project update and exact-package restore", failure: primary, fidelityReport, artifacts, cleanup });
   assert.equal(partial.partial, true);
   assert.equal(partial.complete, false);
@@ -967,10 +967,72 @@ test("check-panel-desktop bounds fidelity setup and writes one partial after the
   const cleanupCreated = source.indexOf("createOwnedGuestCleanup(fidelityGuest)");
   const prepare = source.indexOf("prepareFidelityGuest(");
   assert.ok(cleanupCreated > 0 && prepare > cleanupCreated, "setup runs after the shared cleanup exists");
-  assert.ok(source.lastIndexOf("try {", prepare) > cleanupCreated, "setup runs inside the try whose finally removes the guest");
+  const guarded = source.indexOf("withOwnedFidelityGuest(guestCleanup");
+  assert.ok(guarded > cleanupCreated && prepare > guarded, "setup runs inside the guarded body whose finally removes the guest");
   const ownedCleanup = source.indexOf("cleanupPanelDesktopFixture({ app, ownedChildProcess");
   const partial = source.indexOf("writeFidelityPartialOnce(");
   assert.ok(partial > ownedCleanup, "the partial is written after the owned cleanup so it records its actual outcome");
   assert.equal(source.match(/fidelityOutputs\.writeReport\(/g)?.length, 1, "only the success path writes the full report directly");
   assert.match(source.slice(partial - 600, partial + 400), /describeOwnedCleanup/);
+});
+
+
+/* ---- Fifth review: cleanup outcome with a primary failure; original startup error preserved ---- */
+test("primary-only AggregateError from the owned cleanup helper means cleanup succeeded (no receipt is fabricated)", async () => {
+  const { describeOwnedCleanup, buildFidelityFailurePartial } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const primary = new Error("generic restore assertion failed");
+  // cleanupPanelDesktopFixture always rethrows the primary failure, even after Electron exited and HOME was removed.
+  const cleanup = describeOwnedCleanup({ error: new AggregateError([primary], "Panel Desktop acceptance or cleanup failed"), primaryFailure: primary });
+  assert.equal(cleanup.completed, true);
+  assert.equal(cleanup.receipt, null, "the helper returns no receipt when it throws");
+  assert.match(cleanup.receiptUnavailableReason, /primary failure/);
+  assert.deepEqual(cleanup.inferredFromHelperSemantics, { ownedElectronClosedOrNotLaunched: true, homeRemoved: true });
+  assert.equal(cleanup.homeRetained, false);
+  assert.deepEqual(cleanup.errors, []);
+  const partial = buildFidelityFailurePartial({ stage: "restore", failure: primary, fidelityReport: null, artifacts: [], cleanup });
+  assert.equal(partial.overall, "NOT_COMPLETE", "successful cleanup never turns a failed run into a pass");
+  assert.equal(partial.complete, false);
+  const home = describeOwnedCleanup({ error: new AggregateError([primary, new Error("Fixture HOME retained for an unverified live Electron: /h")]), primaryFailure: primary });
+  assert.equal(home.completed, false);
+  assert.equal(home.homeRetained, true);
+  assert.equal(home.inferredFromHelperSemantics, undefined);
+  const close = describeOwnedCleanup({ error: new AggregateError([primary, new Error("Owned Electron close timed out")]), primaryFailure: primary });
+  assert.equal(close.completed, false);
+  assert.deepEqual(close.errors, ["Owned Electron close timed out"]);
+  const noPrimary = describeOwnedCleanup({ error: new Error("remove failure") });
+  assert.equal(noPrimary.completed, false);
+  assert.deepEqual(describeOwnedCleanup({ receipt: { exited: true, homeRemoved: true } }),
+    { completed: true, receipt: { exited: true, homeRemoved: true }, homeRetained: false, errors: [] });
+});
+
+test("a startup timeout plus unsettled guest cleanup keeps the original timeout in the thrown failure and the partial", async () => {
+  const { prepareFidelityGuest, createOwnedGuestCleanup, withOwnedFidelityGuest } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const { buildFidelityFailurePartial } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const stuck = { execute: () => new Promise(() => {}), remove: () => new Promise(() => {}), view: { evaluate: async () => 9 } };
+  const guestCleanup = createOwnedGuestCleanup(stuck, { timeoutMs: 20 });
+  const started = Date.now();
+  let thrown;
+  try {
+    await withOwnedFidelityGuest(guestCleanup, () => prepareFidelityGuest({ guest: stuck, guestCleanup, readySource: "true",
+      timeoutMs: 20, settleTimeoutMs: 20, wait: async () => {} }));
+  } catch (error) { thrown = error; }
+  assert.ok(Date.now() - started < 1000, "every step stays bounded");
+  assert.ok(thrown instanceof AggregateError, "the unsettled cleanup error does not replace the original failure");
+  assert.match(thrown.errors[0].message, /fidelity guest readiness probe timed out/);
+  assert.equal(thrown.errors[0].unsettled, true);
+  assert.match(thrown.errors[1].message, /unsettled owned work/);
+  assert.match(thrown.message, /readiness probe timed out/);
+  const partial = buildFidelityFailurePartial({ stage: "design-studio fidelity: real Host scenarios", failure: thrown, fidelityReport: null, artifacts: [],
+    cleanup: { completed: true } });
+  assert.match(partial.failure.message, /readiness probe timed out/);
+  assert.deepEqual(partial.failure.errors.map(value => value.message.split(";")[0]),
+    ["fidelity guest readiness probe timed out after 20ms", "Design Studio fidelity left unsettled owned work: {\"guest\":{\"removeCalls\":1,\"removeState\":\"pending\",\"requiresOwnedHostCleanup\":true}}"]);
+  // Without unsettled work the original error is rethrown unchanged; with no error the body result is returned.
+  const fine = { execute: async () => true, remove: async () => {}, view: { evaluate: async () => 5 } };
+  const original = new Error("plain failure");
+  await assert.rejects(withOwnedFidelityGuest(createOwnedGuestCleanup(fine), async () => { throw original; }), error => error === original);
+  assert.equal(await withOwnedFidelityGuest(createOwnedGuestCleanup(fine), async () => 7), 7);
+  // Unsettled work without an original error is reported on its own.
+  await assert.rejects(withOwnedFidelityGuest(createOwnedGuestCleanup(fine), async () => 1, { requiresOwnedHostCleanup: () => true }),
+    error => !(error instanceof AggregateError) && /unsettled owned work/.test(error.message));
 });

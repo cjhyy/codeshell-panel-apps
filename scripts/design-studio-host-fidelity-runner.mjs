@@ -99,7 +99,7 @@ export async function prepareFidelityGuest({ guest, guestCleanup, readySource, t
   const deadline = now() + timeoutMs;
   for (;;) {
     const ready = await boundedOwnedOperation(() => guest.execute(readySource),
-      { label: "fidelity guest readiness probe", timeoutMs: Math.max(1, deadline - now()), settleTimeoutMs, cancel });
+      { label: "fidelity guest readiness probe", timeoutMs: Math.max(1, Math.ceil(deadline - now())), settleTimeoutMs, cancel });
     if (ready === true) break;
     if (now() >= deadline) throw new Error(`fidelity guest not ready within ${timeoutMs}ms`);
     await wait(100);
@@ -108,6 +108,27 @@ export async function prepareFidelityGuest({ guest, guestCleanup, readySource, t
     { label: "fidelity guest webContents id", timeoutMs, settleTimeoutMs, cancel });
   if (!Number.isInteger(guestWebContentsId) || guestWebContentsId <= 0) throw new Error(`invalid fidelity guest webContents id: ${guestWebContentsId}`);
   return { guestWebContentsId };
+}
+
+/**
+ * Run the fidelity guest phase with the shared owned cleanup in finally. If the
+ * cleanup (or the runner) reports unsettled owned work, that error is thrown
+ * together with any original failure (AggregateError), never instead of it, so the
+ * partial keeps e.g. the original startup timeout label.
+ */
+export async function withOwnedFidelityGuest(guestCleanup, body, { requiresOwnedHostCleanup = () => false } = {}) {
+  let original = null;
+  try { return await body(); }
+  catch (error) { original = error; throw error; }
+  finally {
+    const removal = await guestCleanup.remove();
+    if (requiresOwnedHostCleanup() || removal.requiresOwnedHostCleanup) {
+      const unsettled = new Error(`Design Studio fidelity left unsettled owned work: ${JSON.stringify({ guest: removal })}`);
+      unsettled.removal = removal;
+      // eslint-disable-next-line no-unsafe-finally
+      throw original ? new AggregateError([original, unsettled], `${original.message}; ${unsettled.message}`) : unsettled;
+    }
+  }
 }
 
 /**
