@@ -1,5 +1,5 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textFiniteBaselineY } from "../text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textLineBoxBaselineAt, textFiniteBaselineY } from "../text-line-box.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics, textDisplayLineMetrics } from "../text-metrics.mjs";
@@ -43,6 +43,34 @@ export function canvasKitResourceTextRasterEligible(node) {
     (!node.textDecoration || node.textDecoration === "none");
 }
 
+/**
+ * Fill/link and typography (family, size, weight, italic) ranges can share the
+ * browser same-family raster that plain text already uses: one Canvas2D shaping
+ * per same-font run group, each fill clipped to its prefix-measured interval.
+ * Paint stacks, strokes and range decorations keep the native paragraph path;
+ * finite origins keep it when ranges change typography.
+ */
+const RANGE_CUSTOM_DECORATION_KEYS = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
+// Strong right-to-left characters: prefix-measured logical intervals would not be visual intervals.
+const STRONG_RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u200f\u202b\u202e\u2067]/u;
+/** Why a ranged text node stays on the native paragraph path (null: it uses the range raster). */
+export function canvasKitRangeTextRasterFallbackReason(node) {
+  if (node?.type !== "text" || node.textRanges === undefined) return "no-ranges";
+  if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) return "paint-stack-or-stroke";
+  let payload;
+  try { payload = validateTextRanges(node); } catch { return "invalid-ranges"; }
+  if (!payload) return "no-ranges";
+  if (STRONG_RTL.test(String(node.text))) return "bidi";
+  if (payload.ranges.some(range => RANGE_CUSTOM_DECORATION_KEYS.some(key => Object.hasOwn(range, key)))) return "decoration-custom";
+  // Auto underline is modelled from measured HTML (see rangeUnderline); line-through had no fit.
+  if (node.textDecoration === "line-through" || payload.ranges.some(range => range.textDecoration === "line-through")) return "line-through-unfitted";
+  return textHasLineBoxOrigin(node) || !textRangeTypography(node, false).length ? null : "finite-typography";
+}
+export function canvasKitRangeTextRasterEligible(node) {
+  return canvasKitRangeTextRasterFallbackReason(node) === null;
+}
+const rangeUnsupported = (error) => error?.code === "TEXT_RANGES_UNSUPPORTED" || /^TEXT_RANGES_UNSUPPORTED:/u.test(String(error?.message ?? ""));
+
 const rgba = (hex, alpha = 1) =>
   ["transparent", "none"].includes(hex)
     ? "rgba(0,0,0,0)"
@@ -85,6 +113,7 @@ export async function createCanvasKitText({
   let counters = initialCounters,
     unsupportedNode = initialUnsupportedNode;
   let currentNodes = new Map(design.nodes.map((node) => [node.id, node]));
+  const rangeNativeFallbacks = new Map();
   // Document layout zoom (blinkLayoutScale), set per scene by the renderer.
   let layoutScale = 1;
   const rasterImages = new Map(),
@@ -244,14 +273,19 @@ export async function createCanvasKitText({
       fontVariations: canvasKitTextFontVariations(node, style, entry.capabilities), letterSpacing: node.letterSpacing || 0,
       decoration: style.textDecoration === "underline" ? CK.UnderlineDecoration :
         style.textDecoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
+      // HTML draws each run's decoration in that run's colour (measured, also under a node-level underline).
+      decorationColor: CK.parseColorString(style.fill ?? node.fill ?? "#000000"),
     });
   }
 
   function finitePaint(node) { return !textHasLineBoxOrigin(node) && node.textRanges === undefined; }
-  function configure(node, alias, fontSize = node.fontSize) {
-    const family = alias === undefined ? designFontFamilyCss(node.fontFamily) :
-      aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
+  function familyCss(family, alias) {
+    return alias === undefined ? designFontFamilyCss(family) :
+      aliasFamilies.has(alias) ? designResourceFontFamilyCss(family, aliasFamilies.get(alias), alias) :
         designNamedFontFamilyCss(alias);
+  }
+  function configure(node, alias, fontSize = node.fontSize) {
+    const family = familyCss(node.fontFamily, alias);
     measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${fontSize}px ${family}`;
     measure.textBaseline = textHasLineBoxOrigin(node) || finitePaint(node) ? "alphabetic" : "hanging";
     measure.textAlign = "left";
@@ -270,17 +304,26 @@ export async function createCanvasKitText({
   }
   const browserFontMetrics = new Map(), nativeFontMetrics = new Map(), finiteFontMetrics = new Map();
   function paintBaseline(node, index, offset, alias) {
-    if (finitePaint(node)) {
+    if (finitePaint(node)) return finiteBaseline(node, index, alias);
+    if (textRangeTypography(node, false).length)
+      return node.y + textDisplayLineMetrics(node).offsets[index] + offset;
+    return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale });
+  }
+  // Imported finite origin (also for finite text carrying fill/link ranges on the range raster).
+  function finiteBaseline(node, index, alias) {
+    {
       configure(node, alias);
       const key = measure.font;
       let metrics = finiteFontMetrics.get(key);
       if (!metrics) {
+        measure.textBaseline = "alphabetic"; // already so for plain finite text; ranged finite configures "hanging"
         const measured = measure.measureText("Hg");
         metrics = { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent,
           hangingToAlphabetic: hangingOffset(node, alias) };
         if (layoutScale !== 1) {
           // Line-box metrics at the layout font size (fontSize x scale), as Blink rounds them there.
           configure(node, alias, node.fontSize * layoutScale);
+          measure.textBaseline = "alphabetic";
           const scaled = measure.measureText("Hg");
           metrics.layoutMetrics = { ascent: scaled.fontBoundingBoxAscent, descent: scaled.fontBoundingBoxDescent };
         }
@@ -290,9 +333,6 @@ export async function createCanvasKitText({
       return textFiniteBaselineY(node, index, metrics, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale,
         layoutMetrics: metrics.layoutMetrics ?? null });
     }
-    if (textRangeTypography(node, false).length)
-      return node.y + textDisplayLineMetrics(node).offsets[index] + offset;
-    return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale });
   }
   function rasterBaseline(node, alias) {
     if (!textHasLineBoxOrigin(node)) return 0;
@@ -394,6 +434,9 @@ export async function createCanvasKitText({
     return { ...geometry, x, offsetX, offsetY, w, h };
   }
   function estimatePixels(node, scale, alias, origin) {
+    if (canvasKitRangeTextRasterEligible(node))
+      return String(node.text).split("\n").reduce((sum, line, i) =>
+        sum + (line ? (({ w, h }) => w * h)(rangeLineGeometry(node, i, rangeBaseline(node, i, alias), scale, alias, origin)) : 0), 0);
     return String(node.text)
       .split("\n")
       .reduce((sum, line, i) => {
@@ -432,6 +475,8 @@ export async function createCanvasKitText({
       node.textAlign,
       node.textDecoration,
       ...(layoutScale !== 1 ? [layoutScale] : []),
+      // Validated range semantics (fill, link, typography): any edit re-rasters.
+      ...(node.textRanges !== undefined ? [node.textRanges] : []),
       node.width,
       node.height,
       node.fill,
@@ -624,6 +669,8 @@ export async function createCanvasKitText({
       if (currentNodes.get(id)?.type !== "text") missingByNode.delete(id);
     for (const [id] of unrenderedByNode)
       if (currentNodes.get(id)?.type !== "text") unrenderedByNode.delete(id);
+    for (const [id] of rangeNativeFallbacks)
+      if (currentNodes.get(id)?.type !== "text") rangeNativeFallbacks.delete(id);
     for (const [id] of resourceRasterFallbacks)
       if (currentNodes.get(id)?.type !== "text") resourceRasterFallbacks.delete(id);
     // A layout-scale change re-snaps every box: retained node pictures are stale too.
@@ -633,7 +680,30 @@ export async function createCanvasKitText({
     const signature = JSON.stringify(node),
       cached = contentBoundsCache.get(node.id);
     if (cached?.signature === signature) return cached.bounds;
+    if (canvasKitRangeTextRasterEligible(node)) {
+      let left = node.x, top = node.y, right = node.x + node.width, bottom = node.y + node.height;
+      try {
+        for (const [index, line] of String(node.text).split("\n").entries()) {
+          if (!line) continue;
+          const g = rangeLineGeometry(node, index, rangeBaseline(node, index, rangeAlias(node)), 1, rangeAlias(node));
+          left = Math.min(left, g.x + g.left); right = Math.max(right, g.x + g.right);
+          top = Math.min(top, g.y + g.top); bottom = Math.max(bottom, g.y + g.bottom);
+        }
+      } catch (error) {
+        if (!rangeUnsupported(error)) throw error; // the node is refused at draw time; its box stays a valid bound
+      }
+      const pad = Math.max(node.fontSize, ...textRangeTypography(node, false).map(range => range.fontSize ?? 0));
+      const bounds = { x: left - pad, y: top - pad, width: right - left + pad * 2, height: bottom - top + pad * 2 };
+      contentBoundsCache.set(node.id, { signature, bounds }); return bounds;
+    }
     if (node.textRanges !== undefined) {
+      try { canvasKitTextRangePlan(node); }
+      catch (error) {
+        if (!rangeUnsupported(error)) throw error;
+        // An unsupported range node is reported and left unrendered; its box stays a valid picture bound.
+        const bounds = { x: node.x - node.fontSize, y: node.y - node.fontSize, width: node.width + node.fontSize * 2, height: node.height + node.fontSize * 2 };
+        contentBoundsCache.set(node.id, { signature, bounds }); return bounds;
+      }
       const runs = canvasKitTextRangePlan(node), lineLayout = textDisplayLineMetrics(node);
       let left = node.x, top = node.y, right = node.x + node.width, bottom = node.y + node.height;
       for (const [index] of String(node.text).split("\n").entries()) {
@@ -773,6 +843,195 @@ export async function createCanvasKitText({
     paint.delete();
   }
 
+  // ---- Range text on the browser same-family raster (canvasKitRangeTextRasterEligible) ----
+  function rangeAlias(node) { return resolvedFont(node, node)?.alias; }
+  /** Supplied face for a run, or the browser family; never a silent substitute (as the browser route). */
+  function rangeRunFace(node, style) {
+    const refuse = detail => { const error = new Error(`TEXT_RANGES_UNSUPPORTED: ${String(node.id).slice(0, 100)} · ${detail}`); error.code = "TEXT_RANGES_UNSUPPORTED"; throw error; };
+    const selected = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    const same = style.fontFamily === (node.fontFamily ?? "Inter");
+    const family = same && selected ? selected.family : parseDesignFontFamily(style.fontFamily)?.[0]?.name;
+    const entry = resolvedFont(node, style);
+    if (!entry && fontFamilies.get(String(family).toLowerCase())?.entries.length)
+      refuse(`已提供的字体不覆盖 ${family} ${style.fontWeight} ${style.fontStyle ?? "normal"}；未合成或替代字重`);
+    if (!entry && !browserFamilyAvailable({ ...node, fontFamily: style.fontFamily }))
+      refuse(`浏览器没有可用的 ${style.fontFamily}；文字不会被静默替换`);
+    return entry;
+  }
+  function rangeStyleFont(node, style, alias, size = style.fontSize) {
+    const same = style.fontFamily === (node.fontFamily ?? "Inter"), entry = rangeRunFace(node, style);
+    // Same CSS family list as HTML: the node's (resource-aliased) family, or the run's own family with its
+    // supplied face if one exists. Glyphs absent from a supplied face fall back through the same browser stack.
+    const family = same ? familyCss(node.fontFamily, alias) : entry ? designResourceFontFamilyCss(style.fontFamily, entry.family, entry.alias)
+      : designFontFamilyCss(style.fontFamily);
+    return `${style.fontStyle || "normal"} ${style.fontWeight} ${size}px ${family}`;
+  }
+  function rangeLineLayout(node, index, alias) {
+    const runs = projectTextRanges(node).filter(run => run.kind === "source" && run.lineIndex === index && run.text !== "\n");
+    if (runs.map(run => run.text).join("") !== String(node.text).split("\n")[index]) {
+      const error = new Error("TEXT_RANGES_UNSUPPORTED: 范围显示映射不属于当前完整文字行"); error.code = "TEXT_RANGES_UNSUPPORTED"; throw error;
+    }
+    configure(node, alias);
+    measure.textBaseline = "alphabetic"; // range rasters draw on the alphabetic baseline (finite included)
+    const groups = [];
+    for (const run of runs) {
+      const font = rangeStyleFont(node, run.style, alias), last = groups.at(-1);
+      const part = { text: run.text, fill: run.style.fill, underline: run.style.textDecoration === "underline", fontSize: run.style.fontSize, style: run.style };
+      if (last && last.font === font) { last.text += run.text; last.parts.push(part); }
+      else groups.push({ font, style: run.style, text: run.text, parts: [part] });
+    }
+    let x = 0;
+    for (const group of groups) {
+      measure.font = group.font;
+      group.metrics = measure.measureText(group.text);
+      group.x = x;
+      let prefix = "";
+      for (const part of group.parts) {
+        part.x0 = x + measure.measureText(prefix).width; prefix += part.text; part.x1 = x + measure.measureText(prefix).width;
+      }
+      x += group.metrics.width;
+    }
+    configure(node, alias);
+    return { groups, width: x };
+  }
+  /** Measured line box: the baseline sits below the line top by the largest inline box's half-leading ascent, at fontSize x layout scale. */
+  function rangeBaseline(node, index, alias) {
+    if (!textHasLineBoxOrigin(node)) return finiteBaseline(node, index, alias);
+    const originY = currentNodes.get(node.id)?.y ?? node.y, strut = rasterBaseline(node, alias);
+    if (!textRangeTypography(node, false).length) return textLineBoxBaselineY(node, index, strut, { originY, layoutScale });
+    let alpha = strut;
+    for (const group of rangeLineLayout(node, index, alias).groups) {
+      measure.font = rangeStyleFont(node, group.style, alias, group.style.fontSize * layoutScale);
+      const measured = measure.measureText("Hg");
+      alpha = Math.max(alpha, textLineBoxAlphabeticOffset({ ...node, fontSize: group.style.fontSize },
+        { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent }, layoutScale));
+    }
+    configure(node, alias);
+    return textLineBoxBaselineAt(node, textDisplayLineMetrics(node).offsets[index], alpha, { originY, layoutScale });
+  }
+  /**
+   * Auto underline as measured in HTML (Chromium 148 forced/emulated DSF2, sizes 13/14/18/24, all exact):
+   * th = fontSize x layout scale / 10; top = paint baseline + max(1, ceil(th/2)); thickness = max(1, floor(th)),
+   * in layout pixels; x = the run's advance interval; colour = the run's fill.
+   */
+  function rangeUnderline(part) {
+    const th = part.fontSize * layoutScale / 10;
+    return { offset: Math.max(1, Math.ceil(th / 2)) / layoutScale, thickness: Math.max(1, Math.floor(th)) / layoutScale };
+  }
+  /** Runtime reasons an eligible node still cannot use the raster (decorations): null when it can. */
+  function rangeDecorationFallbackReason(node, alias) {
+    for (const [index, line] of String(node.text).split("\n").entries()) {
+      if (!line) continue;
+      for (const group of rangeLineLayout(node, index, alias).groups) for (const part of group.parts) {
+        if (!part.underline) continue;
+        if (!resolvedFont(node, part.style)) return "underline-system-font";
+        // Skip-ink (HTML auto) is not modelled: any glyph ink reaching the underline band keeps the native path.
+        measure.font = group.font; measure.textBaseline = "alphabetic";
+        if (measure.measureText(part.text).actualBoundingBoxDescent > rangeUnderline(part).offset - 1e-6) return "underline-skip-ink";
+      }
+    }
+    configure(node, alias);
+    return null;
+  }
+  function rangeLineGeometry(node, index, y, scale, alias, origin) {
+    const layout = rangeLineLayout(node, index, alias);
+    let left = Math.min(0, -(layout.groups[0]?.metrics.actualBoundingBoxLeft ?? 0)), right = layout.width, top = 0, bottom = 0;
+    for (const group of layout.groups) {
+      right = Math.max(right, group.x + group.metrics.actualBoundingBoxRight);
+      top = Math.min(top, -group.metrics.actualBoundingBoxAscent);
+      bottom = Math.max(bottom, group.metrics.actualBoundingBoxDescent);
+      for (const part of group.parts) if (part.underline) { const u = rangeUnderline(part); bottom = Math.max(bottom, u.offset + u.thickness); }
+    }
+    const padding = 3, x = rasterAlignedX(node, layout.width);
+    let offsetX = left - padding, offsetY = top - padding;
+    if (origin) {
+      offsetX = Math.floor((x + left - padding + origin.x) * scale) / scale - origin.x - x;
+      offsetY = Math.floor((y + top - padding + origin.y) * scale) / scale - origin.y - y;
+    }
+    const w = Math.max(1, Math.ceil((right + padding - offsetX) * scale)), h = Math.max(1, Math.ceil((bottom + padding - offsetY) * scale));
+    if (w > 8192 || h > 8192 || w * h > 4 * 1024 * 1024)
+      throw new Error(`System-font text exceeds the bounded per-line raster budget at ${scale}x (${node.id})`);
+    return { layout, left, right, top, bottom, padding, x, y, offsetX, offsetY, w, h };
+  }
+  function rasterRangeLine(canvas, node, index, y, alias) {
+    const plan = prepareRasterPlan(node, alias),
+      origin = rasterSamplingForNode(node),
+      scale = origin ? devicePlans.get(node.id).scale : plan.scale;
+    const { layout, top, bottom, padding, w, h, x, offsetX, offsetY } = rangeLineGeometry(node, index, y, scale, alias, origin);
+    const cacheKey = JSON.stringify([node.id, plan.signature, index, y, scale, origin]);
+    let image = rasterImages.get(cacheKey)?.image;
+    if (!image) {
+      if (rasterPixels + w * h > rasterCapacity())
+        throw new Error("System-font text exceeds the bounded scene raster budget");
+      const raster = document.createElement("canvas");
+      raster.width = w;
+      raster.height = h;
+      const ctx = raster.getContext("2d", { willReadFrequently: true });
+      ctx.scale(scale, scale);
+      ctx.translate(-offsetX, -offsetY);
+      ctx.textBaseline = "alphabetic";
+      if ("fontKerning" in ctx) ctx.fontKerning = "normal";
+      if ("letterSpacing" in ctx) ctx.letterSpacing = `${node.letterSpacing || 0}px`;
+      // Interior colour boundaries snap to raster pixels so every pixel is drawn by exactly one fill:
+      // coverage (alpha) is then identical to drawing the shaped group once.
+      const snap = value => offsetX + Math.round((value - offsetX) * scale) / scale;
+      for (const group of layout.groups) {
+        ctx.font = group.font;
+        group.parts.forEach((part, partIndex) => {
+          // The whole same-font group is shaped once (kerning across colour boundaries stays);
+          // each fill shows only its own advance interval. Outer edges keep overhanging ink.
+          const x0 = partIndex === 0 ? offsetX : snap(part.x0), x1 = partIndex === group.parts.length - 1 ? offsetX + w / scale : snap(part.x1);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x0, top - padding, x1 - x0, bottom - top + padding * 2);
+          ctx.clip();
+          ctx.fillStyle = rgba(part.fill);
+          ctx.fillText(group.text, group.x, 0);
+          ctx.restore();
+        });
+        for (const part of group.parts) {
+          if (!part.underline) continue;
+          const underline = rangeUnderline(part);
+          ctx.fillStyle = rgba(part.fill);
+          ctx.fillRect(part.x0, underline.offset, part.x1 - part.x0, underline.thickness);
+        }
+      }
+      image = CK.MakeImage({ width: w, height: h, colorType: CK.ColorType.RGBA_8888, alphaType: CK.AlphaType.Unpremul, colorSpace: CK.ColorSpace.SRGB },
+        ctx.getImageData(0, 0, w, h).data, w * 4);
+      if (!image) throw new Error("Cannot create GPU-renderable system-text image");
+      rasterImages.set(cacheKey, { image, nodeId: node.id, kind: origin ? "device" : "master", pixels: w * h });
+      rasterPixels += w * h;
+      rasterMisses++;
+    } else rasterHits++;
+    plan.used = ++rasterUse;
+    const paint = new CK.Paint();
+    canvas.drawImageRectOptions(image, CK.XYWHRect(0, 0, w, h), CK.XYWHRect(x + offsetX, y + offsetY, w / scale, h / scale),
+      CK.FilterMode.Linear, CK.MipmapMode.None, paint);
+    paint.delete();
+  }
+  function drawRangeRaster(canvas, node, lines) {
+    const alias = rangeAlias(node);
+    // Every line's layout and faces are validated (and may refuse the node) before any line is drawn.
+    const baselines = lines.map((line, index) => line ? rangeBaseline(node, index, alias) : null);
+    for (const [index, line] of lines.entries()) if (line) rangeLineLayout(node, index, alias);
+    const decorationReason = rangeDecorationFallbackReason(node, alias);
+    if (decorationReason) { rangeNativeFallbacks.set(node.id, { nodeId: node.id, reason: decorationReason }); return false; }
+    try {
+      const plan = prepareRasterPlan(node, alias);
+      const masterPixels = [...rasterPlans.values()].reduce((sum, item) => sum + item.pixels, 0);
+      if (masterPixels > rasterCapacity() || plan.pixels > rasterCapacity()) throw Error("resource-scene-raster-budget");
+      trimDevicePlans(masterPixels);
+    } catch (error) {
+      if (!/bounded .*raster budget|resource-scene-raster-budget/u.test(error.message)) throw error;
+      resourceRasterFallbacks.set(node.id, { nodeId: node.id, reason: "range-raster-budget", detail: String(error.message).slice(0, 180) });
+      return false;
+    }
+    counters.rasterTextNodes++;
+    counters.rangeRasterNodes = (counters.rangeRasterNodes ?? 0) + 1;
+    lines.forEach((line, index) => { if (line) rasterRangeLine(canvas, node, index, baselines[index], alias); });
+    return true;
+  }
+
   function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
     const baseStyle = { fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight,
       fontStyle: node.fontStyle ?? "normal", textDecoration: node.textDecoration ?? "none" };
@@ -819,6 +1078,22 @@ export async function createCanvasKitText({
     missingByNode.delete(node.id);
     unrenderedByNode.delete(node.id);
     resourceRasterFallbacks.delete(node.id);
+    rangeNativeFallbacks.delete(node.id);
+    try {
+      if (node.textRanges !== undefined) {
+        const reason = canvasKitRangeTextRasterFallbackReason(node);
+        if (reason === null && drawRangeRaster(canvas, node, String(node.text).split("\n"))) return;
+        if (!rangeNativeFallbacks.has(node.id)) rangeNativeFallbacks.set(node.id, { nodeId: node.id, reason: reason ?? "range-raster-budget" });
+      }
+      drawText(canvas, node);
+    } catch (error) {
+      // Only the explicit range refusal is per node; every other failure still fails the scene.
+      if (!rangeUnsupported(error)) throw error;
+      unsupportedNode(node, "text-ranges-unsupported", String(error.message).slice(0, 300));
+      unrenderedByNode.set(node.id, String(node.text).split("\n").length);
+    }
+  }
+  function drawText(canvas, node) {
     const entry = resolvedFont(node, node);
     const rangePayload = node.textRanges === undefined ? undefined : validateTextRanges(node);
     const lines = String(node.text).split("\n"),
@@ -1005,6 +1280,8 @@ export async function createCanvasKitText({
       fontLoadRequests,
       fontEpoch,
       resourceTextRasterFallbacks: [...resourceRasterFallbacks.values()].slice(0, 256),
+      rangeTextNativeFallbacks: [...rangeNativeFallbacks.values()].slice(0, 256),
+      rangeTextNativeFallbackCount: rangeNativeFallbacks.size,
       resourceTextRasterFallbackCount: resourceRasterFallbacks.size,
       nativeMissingGlyphs: [...missingByNode.values()].reduce((sum, value) => sum + value, 0),
       unrenderedTextLines: [...unrenderedByNode.values()].reduce((sum, value) => sum + value, 0),

@@ -19,7 +19,7 @@ import { GPU_DIAGNOSTIC_VARIANT, RASTER_BACKEND_CASES, SNAP_CAMERAS, SNAP_INTER,
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
   readFixtureDocument, zoomMatches, VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop,
-  COVERAGE_CASES, compareCoverageRegion, regionInk,
+  COVERAGE_CASES, compareCoverageRegion, regionInk, glyphEdges, lineHeightProbeSource, lineHeightEvidenceTable,
   judgeImmediateClick, judgeLowZoomPerformance, judgeOpenWithoutEdit, judgeSaveReopen, judgeSvgCornerProbe,
   judgeVisualCaptureGroup, planDesignStudioFidelityScenarios, summarizeFidelityReport, svgReferenceGeometry,
 } from "./design-studio-host-fidelity.mjs";
@@ -1096,16 +1096,17 @@ export async function runDesignStudioHostFidelity(options) {
       return { faces, metrics: ["Inter, ui-sans-serif, system-ui, sans-serif", "ui-sans-serif", "system-ui", "sans-serif", ...loaded].map(measure),
         devicePixelRatio: window.devicePixelRatio, resolution: [1, 1.5, 2, 3].filter(v => matchMedia("(resolution: " + v + "dppx)").matches) }; })()`);
     const design = await documentAt(relativePath);
-    const centre = { x: 235, y: 160 };
-    const fractional = async () => {
-      // Plain wheel pans by the delivered DOM delta (pan -= delta); aim both axes at a .3 phase.
+    const centre = { x: 235, y: 310 }; // keeps every coverage row (y 36..572) on a ~630 CSS px stage at 100%
+    const fractional = async (targetX = 0.3, targetY = 0.3) => {
+      // Plain wheel pans by the delivered DOM delta (pan -= delta); aim both axes at the target phases.
       await dom(DESIGN_STUDIO_PROBES.wheelInstall());
       for (let attempt = 0; attempt < 3; attempt++) {
         const cam = await camera(); if (!cam) return null;
-        const phase = value => ((value % 1) + 1) % 1, need = value => phase(value) - 0.3;
-        if (Math.abs(need(cam.panX)) < 0.02 && Math.abs(need(cam.panY)) < 0.02) return cam;
+        const phase = value => ((value % 1) + 1) % 1, wrap = value => value > 0.5 ? value - 1 : value < -0.5 ? value + 1 : value;
+        const dx = wrap(phase(cam.panX) - targetX), dy = wrap(phase(cam.panY) - targetY);
+        if (Math.abs(dx) < 0.02 && Math.abs(dy) < 0.02) return cam;
         const point = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
-        await sendInput([{ type: "mouseWheel", x: point.x, y: point.y, deltaX: -need(cam.panX), deltaY: -need(cam.panY), hasPreciseScrollingDeltas: true, canScroll: true }]);
+        await sendInput([{ type: "mouseWheel", x: point.x, y: point.y, deltaX: -dx, deltaY: -dy, hasPreciseScrollingDeltas: true, canScroll: true }]);
         await wait(300);
       }
       return camera();
@@ -1133,7 +1134,7 @@ export async function runDesignStudioHostFidelity(options) {
         png: { gpu: shots.gpu.evidence.summary, browser: shots.browser.evidence.summary }, rows, gpuShot: shots.gpu };
     };
     const groups = [];
-    let overlay = null;
+    let overlay = null, editorPhases = null;
     for (const plan of [{ label: "100", targetZoom: 1 }, { label: "fit", targetZoom: null }]) {
       await chooseRenderer("gpu");
       await dom(`document.querySelector("#zoom-value")?.click(), true`);
@@ -1187,7 +1188,11 @@ export async function runDesignStudioHostFidelity(options) {
         const record = { id: item.id, editor, camera: { zoom: gpuCam.zoom, panX: gpuCam.panX, panY: gpuCam.panY, dpr: gpuCam.canvasRatio }, crop,
           png: { canvas: canvasShot.summary, editor: editorShot.summary },
           ink: { canvas: { mass: canvasInk.mass, centroid: canvasInk.centroid, bbox: canvasInk.bbox }, editor: { mass: editorInk.mass, centroid: editorInk.centroid, bbox: editorInk.bbox } },
-          ...compareCoverageRegion(canvasInk, editorInk) };
+          ...(node.textRanges !== undefined
+            ? { status: FIDELITY_STATUS.UNVERIFIED, applicability: "not-applicable",
+                reasons: ["the inline editor is a plain textarea: while editing, ranged text shows unstyled (no range colours/weights); glyph-geometry comparison does not apply"],
+                measured: compareCoverageRegion(canvasInk, editorInk) }
+            : compareCoverageRegion(canvasInk, editorInk)) };
         if (item.id === "cjk-center") {
           // Real edit through the UI, commit, then save and reopen.
           const text = "居中 Edited 文字 Hg";
@@ -1196,11 +1201,61 @@ export async function runDesignStudioHostFidelity(options) {
           await keys("Enter", [process.platform === "darwin" ? "meta" : "control"]);
           await wait(400);
           record.edit = { text, committedEditorHidden: await dom(`document.querySelector("#inline-text-editor")?.hidden === true`) };
+        } else if (item.id === "range-cjk-missing") {
+          // Real edit of a ranged node: append at the caret (end), commit; ranges must survive save/reopen.
+          await evaluateMain(({ webContents }, { id, value }) => { webContents.fromId(id).insertText(value); return true; }, { id: guestWebContentsId, value: " ok" });
+          await keys("Enter", [process.platform === "darwin" ? "meta" : "control"]);
+          await wait(400);
+          record.edit = { appended: " ok", committedEditorHidden: await dom(`document.querySelector("#inline-text-editor")?.hidden === true`) };
         } else {
           await keys("Escape"); await wait(300);
           record.cancelled = await dom(`document.querySelector("#inline-text-editor")?.hidden === true`);
         }
         overlay.push(record);
+      }
+      // Editor x-phase diagnostic (no editor change in this batch): canvas vs editor glyph edges at pan x phases.
+      editorPhases = [];
+      const phaseNode = design.pages[0].nodes.find(value => value.id === "inter-bytes");
+      for (const phaseX of [0, 0.25, 0.5, 0.75]) {
+        for (let attempt = 0; attempt < 3 && (await selectedIds())?.length; attempt++) { await keys("Escape"); await wait(200); }
+        const phaseCam = await fractional(phaseX, 0.3);
+        if (!phaseCam) { editorPhases.push({ phaseX, unavailable: "camera" }); continue; }
+        const point = toClient(phaseCam, phaseNode.x + phaseNode.width / 2, phaseNode.y + phaseNode.height / 2);
+        await click(point.x, point.y); await wait(200);
+        const crop = sampleRegionCrop({ camera: { zoom: phaseCam.zoom, panX: phaseCam.panX, panY: phaseCam.panY, dpr: phaseCam.canvasRatio },
+          region: COVERAGE_CASES.find(value => value.id === "inter-bytes").region,
+          capture: { width: Math.round(phaseCam.rect.width * phaseCam.canvasRatio), height: Math.round(phaseCam.rect.height * phaseCam.canvasRatio) }, overlays: [], labelBands: [] });
+        const canvasShot = await capture(phaseCam, `coverage-phase-p${Math.round(phaseX * 100)}-canvas`);
+        await keys("Enter");
+        await until(`(() => { const e = document.querySelector("#inline-text-editor"); return Boolean(e && !e.hidden && document.activeElement === e); })()`, "inline text editor");
+        await dom(`(() => { const e = document.querySelector("#inline-text-editor"); e.setSelectionRange(e.value.length, e.value.length);
+          Object.assign(e.style, { caretColor: "transparent", outline: "none", background: "transparent", color: ${JSON.stringify(phaseNode.fill)} }); return true; })()`);
+        await wait(150);
+        const editor = await dom(`(() => { const e = document.querySelector("#inline-text-editor"), r = e.getBoundingClientRect(), c = getComputedStyle(e);
+          return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, left: c.left, top: c.top, transform: c.transform }; })()`);
+        // The textarea's user-agent inner editor box through CDP (pierce); unavailable is recorded, not guessed.
+        const innerBox = await evaluateMain(async ({ webContents }, { id }) => {
+          const target = webContents.fromId(id), debuggerApi = target.debugger, attachedHere = !debuggerApi.isAttached();
+          try {
+            if (attachedHere) debuggerApi.attach("1.3");
+            const { root } = await debuggerApi.sendCommand("DOM.getDocument", { depth: -1, pierce: true });
+            const find = node => { if (node.nodeName === "TEXTAREA" && (node.attributes ?? []).includes("inline-text-editor")) return node;
+              for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? []), ...(node.contentDocument ? [node.contentDocument] : [])]) { const hit = find(child); if (hit) return hit; } return null; };
+            const textarea = find(root), inner = textarea?.shadowRoots?.[0]?.children?.[0];
+            if (!inner) return { unavailable: "inner editor node not exposed" };
+            const { model } = await debuggerApi.sendCommand("DOM.getBoxModel", { nodeId: inner.nodeId });
+            return { nodeName: inner.nodeName, content: model.content, border: model.border };
+          } catch (error) { return { unavailable: String(error?.message ?? error).slice(0, 200) }; }
+          finally { if (attachedHere && debuggerApi.isAttached()) try { debuggerApi.detach(); } catch { /* best effort */ } }
+        }, { id: guestWebContentsId }).catch(error => ({ unavailable: String(error?.message ?? error).slice(0, 200) }));
+        const editorShot = await capture(phaseCam, `coverage-phase-p${Math.round(phaseX * 100)}-editor`);
+        await dom(`(() => { const e = document.querySelector("#inline-text-editor"); for (const key of ["caret-color", "outline", "background", "color"]) e.style.removeProperty(key); return true; })()`);
+        await keys("Escape"); await wait(300);
+        const canvasEdges = glyphEdges(canvasShot.image, crop), editorEdges = glyphEdges(editorShot.image, crop);
+        editorPhases.push({ phaseX, camera: { panX: phaseCam.panX, panY: phaseCam.panY, zoom: phaseCam.zoom, dpr: phaseCam.dpr, canvasRatio: phaseCam.canvasRatio },
+          nodeScreenX: phaseCam.rect.x + phaseCam.zoom * phaseNode.x + phaseCam.panX, editor, innerBox, canvasEdges, editorEdges,
+          dxLeft: canvasEdges.left !== null && editorEdges.left !== null ? editorEdges.left - canvasEdges.left : null,
+          png: { canvas: canvasShot.summary.sha256, editor: editorShot.summary.sha256 } });
       }
     }
     // Save -> disk (installed codec) -> reopen -> the edited node and every other node.
@@ -1216,7 +1271,7 @@ export async function runDesignStudioHostFidelity(options) {
     saveResult.disk = disk.error ? { error: disk.error } : {
       editedText: edited?.text ?? null,
       editedGeometrySame: Boolean(edited) && ["x", "y", "width", "height", "textAlign", "fontFamily"].every(key => edited[key] === original.find(node => node.id === "cjk-center")[key]),
-      othersUnchanged: original.filter(node => node.id !== "cjk-center").every(node => JSON.stringify(disk.pages[0].nodes.find(value => value.id === node.id)) === JSON.stringify(node)),
+      othersUnchanged: original.filter(node => !["cjk-center", "range-cjk-missing"].includes(node.id)).every(node => JSON.stringify(disk.pages[0].nodes.find(value => value.id === node.id)) === JSON.stringify(node)),
       resources: (disk.resources ?? []).map(value => value.id) };
     saveResult.resourcePartsUnchanged = await Promise.all(fixtureById.get(relativePath).files.filter(file => file.relativePath !== relativePath)
       .map(async file => (await fileState(file.relativePath)).sha256 === file.sha256)).then(values => values.every(Boolean));
@@ -1226,10 +1281,18 @@ export async function runDesignStudioHostFidelity(options) {
     const editedNode = original.find(node => node.id === "cjk-center");
     if (reopenCam) { const point = toClient(reopenCam, editedNode.x + editedNode.width / 2, editedNode.y + editedNode.height / 2); await click(point.x, point.y); await wait(200); }
     saveResult.reopenedText = await dom(`document.querySelector("#prop-text")?.value ?? null`);
+    const rangedOriginal = original.find(node => node.id === "range-cjk-missing"), rangedDisk = disk.pages?.[0]?.nodes?.find(node => node.id === "range-cjk-missing");
+    saveResult.rangeEdit = rangedDisk ? { text: rangedDisk.text, expectedText: rangedOriginal.text + " ok", ranges: rangedDisk.textRanges?.ranges ?? null,
+      originalRanges: rangedOriginal.textRanges.ranges,
+      firstRangeKept: JSON.stringify(rangedDisk.textRanges?.ranges?.[0]) === JSON.stringify(rangedOriginal.textRanges.ranges[0]) } : null;
+    const rangeEditOk = saveResult.rangeEdit?.text === saveResult.rangeEdit?.expectedText && saveResult.rangeEdit?.firstRangeKept && (saveResult.rangeEdit?.ranges?.length ?? 0) >= 2;
     const saveStatus = saveResult.saveState?.kind === "saved" && saveResult.disk.editedText === "居中 Edited 文字 Hg" && saveResult.disk.editedGeometrySame &&
-      saveResult.disk.othersUnchanged && saveResult.resourcePartsUnchanged && saveResult.reopenedText === "居中 Edited 文字 Hg" ? FIDELITY_STATUS.PASS : FIDELITY_STATUS.FAIL;
+      saveResult.disk.othersUnchanged && saveResult.resourcePartsUnchanged && saveResult.reopenedText === "居中 Edited 文字 Hg" && rangeEditOk ? FIDELITY_STATUS.PASS : FIDELITY_STATUS.FAIL;
     const statuses = [...groups.map(group => group.status), ...(overlay ?? []).map(value => value.status), saveStatus];
-    return { status: worst(statuses), fonts, groups, overlay, save: { status: saveStatus, ...saveResult } };
+    // Line-height LayoutUnit evidence in this real Host (DOM only; no app state touched).
+    const lineHeightProbe = await dom(lineHeightProbeSource()).catch(error => ({ error: String(error?.message ?? error) }));
+    const lineHeightEvidence = lineHeightProbe?.cases ? { scale: lineHeightProbe.scale, quantum: lineHeightProbe.quantum, rows: lineHeightEvidenceTable(lineHeightProbe) } : lineHeightProbe;
+    return { status: worst(statuses), fonts, groups, overlay, editorPhases, lineHeightEvidence, save: { status: saveStatus, ...saveResult } };
   });
 
   return { plan, packageModules, sampleReceipt, environment, probes, results, summary: summarizeFidelityReport(results, plan),

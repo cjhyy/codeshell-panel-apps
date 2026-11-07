@@ -163,6 +163,8 @@ export const suites = [
         "tests/apps/design-studio/text-line-box.test.mjs",
         "tests/apps/design-studio/real-dsf-layout-scale.test.mjs",
         "tests/apps/design-studio/inline-editor-placement.test.mjs",
+        "tests/apps/design-studio/range-text-raster.test.mjs",
+        "tests/apps/design-studio/range-text-decoration.test.mjs",
         "tests/apps/design-studio/svg-preview-font-context.test.mjs",
         "tests/apps/design-studio/builtin-fonts.test.mjs",
         "tests/apps/design-studio/font-family.test.mjs",

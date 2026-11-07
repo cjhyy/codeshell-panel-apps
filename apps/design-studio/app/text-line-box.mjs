@@ -41,6 +41,16 @@ export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = 
   return Math.round(layoutTop + index * layoutHeight + alphabeticOffset * layoutScale) / layoutScale + (node.y - originY);
 }
 
+/**
+ * Same paint-origin rounding as textLineBoxBaselineY for a line whose top is
+ * `lineOffset` below the node (mixed-size range lines, where earlier lines may
+ * be taller than one line height).
+ */
+export function textLineBoxBaselineAt(node, lineOffset, alphabeticOffset, { originY = node.y, layoutScale = 1 } = {}) {
+  const layoutTop = Math.trunc(originY * 64 * layoutScale) / 64;
+  return Math.round(layoutTop + Math.round(lineOffset * layoutScale * 64) / 64 + alphabeticOffset * layoutScale) / layoutScale + (node.y - originY);
+}
+
 /** Transport the historical hanging origin through the same CSS line box as
  * HTML. The logical hanging position stays exact; only the paint baseline is
  * quantized. Leading accumulates in LayoutUnits before CSS-pixel rounding. */

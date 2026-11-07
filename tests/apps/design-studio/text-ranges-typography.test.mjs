@@ -145,7 +145,9 @@ test("13.3333px title and 10.6667px domain use exact browser widths and editable
   }
 });
 
-test("CanvasKit uses one shaped paragraph with supplied range size/weight/style/family and refuses missing range faces", async t => {
+test("CanvasKit range raster uses supplied range size/weight/style/family faces and refuses missing range faces per node", async t => {
+  // Range-render batch: typography ranges draw through the browser same-family raster (HTML parity), not the
+  // native paragraph. Supplied faces must still be the ones used, and a missing face is refused, never substituted.
   const page = await browserFixture(t); await page.addScriptTag({ url: "/canvas/vendor/canvaskit.js" });
   const result = await page.evaluate(async node => {
     const CK = await CanvasKitInit({ locateFile: file => "/canvas/vendor/" + file });
@@ -160,30 +162,44 @@ test("CanvasKit uses one shaped paragraph with supplied range size/weight/style/
       mimeType: "font/woff2", descriptor: { id, kind: "font", family, weight, style } });
     node.fontRef = definitions[0][0];
     const design = { nodes: [node], resources: [...resources.values()].map(resource => resource.descriptor) }, before = JSON.stringify(node);
-    const counters = { textLines: 0, rasterTextNodes: 0, nativeTextNodes: 0, gradientPaints: 0 }, warnings = [], shapes = [];
+    const counters = { textLines: 0, rasterTextNodes: 0, nativeTextNodes: 0, gradientPaints: 0 }, warnings = [], inks = [];
     const renderer = await createCanvasKitText({ CK, design, resources, document, fallbackFontUrls: new Map(), counters,
       unsupportedNode: (_node, code) => warnings.push(code), makePaint: (_node, fill) => { const paint = new CK.Paint(); paint.setColor(CK.Color(...[1,3,5].map(i => parseInt(fill.color.slice(i,i+2),16)), 1)); return paint; } });
+    const domainInk = (surface, x0, x1) => {
+      const image = surface.makeImageSnapshot();
+      try {
+        const px = image.readPixels(0, 0, { width: 600, height: 180, colorType: CK.ColorType.RGBA_8888, alphaType: CK.AlphaType.Unpremul, colorSpace: CK.ColorSpace.SRGB });
+        let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, mass = 0;
+        for (let y = 0; y < 180; y++) for (let x = x0; x < x1; x++) { const o = (y * 600 + x) * 4, d = 765 - px[o] - px[o + 1] - px[o + 2];
+          if (d > 60) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); } mass += d; }
+        return { minX, maxX, minY, maxY, mass };
+      } finally { image.delete(); }
+    };
     try {
       for (const fields of [{}, { fontWeight: 700, fontStyle: "italic" }, { fontFamily: "Roboto" }]) {
         const copy = structuredClone(node); Object.assign(copy.textRanges.ranges[0], fields);
-        renderer.draw({ drawParagraph(paragraph) {
-          const title = paragraph.getGlyphInfoAt(0), domain = paragraph.getGlyphInfoAt(copy.textRanges.ranges[0].start);
-          shapes.push({ width: paragraph.getLongestLine(), title: Array.from(title.graphemeLayoutBounds), domain: Array.from(domain.graphemeLayoutBounds) });
-        } }, copy);
+        renderer.beginScene({ nodes: [copy] });
+        const surface = CK.MakeSurface(600, 180), canvas = surface.getCanvas();
+        try { canvas.clear(CK.WHITE); renderer.draw(canvas, copy); surface.flush(); inks.push({ whole: domainInk(surface, 0, 600) }); } finally { surface.delete(); }
       }
       const missing = structuredClone(node); missing.textRanges.ranges[0].fontFamily = "Unprovided Face";
-      let missingCode; try { renderer.draw({ drawParagraph() { throw Error("missing font must refuse before paint"); } }, missing); } catch (error) { missingCode = error.code; }
-      return { shapes, stats: renderer.stats(), counters, warnings, missingCode, unchanged: before === JSON.stringify(node) };
+      renderer.beginScene({ nodes: [missing] });
+      let missingThrew = null;
+      const surface = CK.MakeSurface(600, 180);
+      try { surface.getCanvas().clear(CK.WHITE); renderer.draw(surface.getCanvas(), missing); surface.flush(); } catch (error) { missingThrew = error.code ?? error.message; }
+      const missingInk = domainInk(surface, 0, 600); surface.delete();
+      return { inks, missingInk, missingThrew, stats: renderer.stats(), counters, warnings, unchanged: before === JSON.stringify(node) };
     } finally { renderer.dispose(); }
   }, base());
-  assert.equal(result.shapes.length, 3);
-  assert.equal(result.counters.nativeTextNodes, 3);
-  assert.equal(result.counters.rasterTextNodes, 0);
-  assert.equal(result.stats.rasterTextImages, 0);
-  assert.equal(result.missingCode, "TEXT_RANGES_UNSUPPORTED");
+  assert.equal(result.inks.length, 3);
+  assert.equal(result.counters.rangeRasterNodes, 3, "all three typography variants use the range raster");
+  assert.equal(result.counters.nativeTextNodes, 0);
+  assert.equal(result.missingThrew, null, "a missing range face is refused per node, never thrown into the scene");
+  assert.deepEqual(result.warnings, ["text-ranges-unsupported"], "only the missing-face node is refused");
+  assert.equal(result.missingInk.mass, 0, "the refused node is not drawn with a substitute face");
   assert.equal(result.unchanged, true);
-  assert.deepEqual(result.warnings, []);
-  assert(new Set(result.shapes.map(shape => shape.width)).size === 3, "weight/style/family change the actual paragraph advances");
-  const original = result.shapes[0];
-  assert(original.domain[3] - original.domain[1] < original.title[3] - original.title[1], "the smaller domain keeps smaller actual glyph bounds");
+  // Supplied weight/italic and family faces actually change the drawn text.
+  assert.equal(new Set(result.inks.map(value => value.whole.mass.toFixed(0))).size, 3, "weight/style/family change the actual drawn glyphs");
+  assert.equal(new Set(result.inks.map(value => value.whole.maxX)).size >= 2, true, "advances differ across faces");
 });
+

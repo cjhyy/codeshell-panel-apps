@@ -209,7 +209,21 @@ export const COVERAGE_CASES = Object.freeze([
   { id: "finite-multiline", region: [246, 140, 208, 60], note: "imported finite baseline offset, two lines" },
   { id: "image-cover", region: [16, 216, 104, 64], note: "PNG resource, objectFit cover" },
   { id: "image-contain", region: [136, 216, 104, 64], note: "PNG resource, objectFit contain" },
+  { id: "image-cover-rounded", region: [256, 216, 104, 64], note: "PNG resource, objectFit cover, cornerRadius 8 (overflow clip x rounded AA)" },
+  // Range text (range-render batch): each case is one text node on the bundled Inter bytes.
+  { id: "range-cjk-missing", region: [16, 296, 208, 36], note: "range on Inter whose CJK glyphs are absent from the supplied font", range: true, editable: true },
+  { id: "range-typography", region: [246, 296, 208, 40], note: "ranges: weight 700, size 18 on 14, italic (supplied italic bytes)", range: true },
+  { id: "range-underline", region: [16, 344, 208, 36], note: "range textDecoration underline", range: true },
+  { id: "range-multiline", region: [246, 344, 208, 56], note: "two lines lh 1.3, one fill range spans the newline", range: true },
+  { id: "range-finite", region: [16, 392, 208, 36], note: "imported finite origin + fill range", range: true },
+  // Range-decoration batch: underline/line-through cases, plus two minimal native-remainder probes.
+  { id: "node-underline-color", region: [246, 412, 208, 36], note: "node-level underline with a coloured inner run", range: true, decoration: true },
+  { id: "underline-descender-2line", region: [16, 444, 208, 56], note: "underline range across a newline over descenders (skip-ink)", range: true, decoration: true },
+  { id: "range-line-through", region: [246, 460, 208, 36], note: "line-through range", range: true, decoration: true },
+  { id: "range-mixed-multiline", region: [16, 512, 208, 60], note: "two lines, 18px run on 14px (typography + multiline)", range: true },
+  { id: "range-finite-typo", region: [246, 512, 208, 40], note: "finite origin + weight range (native finite-typography)", range: true },
 ].map(value => Object.freeze(value)));
+export const COVERAGE_BUILTIN_INTER_ITALIC = Object.freeze({ id: "builtin-inter-400-italic", family: "Inter", file: "fonts/InterVariable-Italic.woff2" });
 /** Deterministic 64x32 PNG: two colour fields and a dark diagonal, so cover/contain crops differ visibly. */
 export function coveragePngBytes() {
   const require = createRequire(import.meta.url), { PNG } = require("pngjs");
@@ -350,6 +364,11 @@ async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes
   const font = await plan(COVERAGE_BUILTIN_INTER.id, "font", "font/woff2", await readAppBytes(COVERAGE_BUILTIN_INTER.file),
     { family: COVERAGE_BUILTIN_INTER.family, weight: 400, style: "normal" });
   const image = await plan(COVERAGE_IMAGE_ID, "image", "image/png", coveragePngBytes());
+  const italic = await plan(COVERAGE_BUILTIN_INTER_ITALIC.id, "font", "font/woff2", await readAppBytes(COVERAGE_BUILTIN_INTER_ITALIC.file),
+    { family: COVERAGE_BUILTIN_INTER_ITALIC.family, weight: 400, style: "italic" });
+  const ranged = (id, x, y, width, height, value, ranges, extra = {}) => fixtureText(id, x, y, width, height, value, { ...bound, lineHeight: 1.3, ...extra,
+    textRanges: { version: 1, sourceSignature: textRangesSignature(value), ranges } });
+  const cjk = "Inter 中文 mixed 字形", typo = "Bold Big italic run", under = "Under line here", multi = "Line one fill\nLine two link";
   const bound = { fontFamily: "Inter", fontRef: COVERAGE_BUILTIN_INTER.id };
   // Latin only: bundled Inter has every glyph. A CJK run here makes the GPU renderer refuse the whole
   // scene (TEXT_RANGES_UNSUPPORTED, cov-dpr2-b), recorded separately as a finding.
@@ -365,12 +384,24 @@ async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes
     fixtureText("finite-multiline", 250.3, 146.3, 200, 48, "Finite 第一行 Hg\nSecond 第二行 42", { layoutBaselineOffset: 3.5, lineHeight: 1.3 }),
     fixtureNode("image-cover", "image", 20.3, 220.3, 96, 56, { imageRef: COVERAGE_IMAGE_ID, objectFit: "cover", fill: "#ffffff" }),
     fixtureNode("image-contain", "image", 140.3, 220.3, 96, 56, { imageRef: COVERAGE_IMAGE_ID, objectFit: "contain", fill: "#ffffff" }),
+    fixtureNode("image-cover-rounded", "image", 260.3, 220.3, 96, 56, { imageRef: COVERAGE_IMAGE_ID, objectFit: "cover", fill: "#ffffff", cornerRadius: 8 }),
+    ranged("range-cjk-missing", 20.3, 302.3, 200, 24, cjk, [{ start: 6, end: 8, fill: "#b42318" }, { start: 15, end: cjk.length, fill: "#175cd3" }]),
+    ranged("range-typography", 250.3, 302.3, 200, 28, typo, [{ start: 0, end: 4, fontWeight: 700 }, { start: 5, end: 8, fontSize: 18, fill: "#175cd3" },
+      { start: 9, end: 15, fontStyle: "italic" }]),
+    ranged("range-underline", 20.3, 350.3, 200, 24, under, [{ start: 6, end: 10, textDecoration: "underline", fill: "#175cd3" }]),
+    ranged("range-multiline", 250.3, 350.3, 200, 44, multi, [{ start: 9, end: 17, fill: "#b42318" }, { start: 23, end: multi.length, fill: "#175cd3", href: "https://example.invalid/m" }]),
+    ranged("range-finite", 20.3, 398.3, 200, 24, "Finite range 范围", [{ start: 7, end: 12, fill: "#b42318" }], { layoutBaselineOffset: 3.5, fontRef: undefined, fontFamily: "Arial" }),
+    ranged("node-underline-color", 250.3, 418.3, 200, 24, "Node red word", [{ start: 5, end: 8, fill: "#b42318" }], { textDecoration: "underline" }),
+    ranged("underline-descender-2line", 20.3, 450.3, 200, 44, "Typing gap\nspans query", [{ start: 3, end: 17, textDecoration: "underline", fill: "#175cd3" }]),
+    ranged("range-line-through", 250.3, 466.3, 200, 24, "Strike this out", [{ start: 7, end: 11, textDecoration: "line-through", fill: "#175cd3" }]),
+    ranged("range-mixed-multiline", 20.3, 518.3, 200, 48, "Big first\nsmall second", [{ start: 0, end: 3, fontSize: 18, fill: "#175cd3" }]),
+    ranged("range-finite-typo", 250.3, 518.3, 200, 28, "Finite bold run", [{ start: 7, end: 11, fontWeight: 700 }], { layoutBaselineOffset: 3.5 }),
   ];
-  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 300, background: "#ffffff" });
-  raw.resources = [font.descriptor, image.descriptor];
+  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 600, background: "#ffffff" });
+  raw.resources = [font.descriptor, image.descriptor, italic.descriptor];
   const entry = canonical(FIDELITY_FIXTURE_PATHS.coverage, "high-risk coverage: default vs bundled Inter, CJK center/right, ranges, finite multiline, PNG cover/contain, editor overlay", raw);
-  entry.files.push(...[...font.parts, ...image.parts].map(part => fixtureFile(part.path, part.content)));
-  entry.resources = [font.descriptor, image.descriptor];
+  entry.files.push(...[...font.parts, ...image.parts, ...italic.parts].map(part => fixtureFile(part.path, part.content)));
+  entry.resources = [font.descriptor, image.descriptor, italic.descriptor];
   return entry;
 }
 // Mirrors text-ranges.mjs textRangeSourceSignature; the codec's normalisation rejects any mismatch.
@@ -779,7 +810,7 @@ export async function verifyRootOwnedOutputRoot(root) {
 }
 
 const OUTPUT_FLAGS = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_CLOEXEC ?? 0);
-const ARTIFACT_LABEL = /^[a-z0-9][a-z0-9-]{0,80}$/u;
+export const ARTIFACT_LABEL = /^[a-z0-9][a-z0-9-]{0,80}$/u;
 export async function claimFidelityOutputs({ root = SYSTEM_OUTPUT_ROOTS[process.platform], name } = {}) {
   if (!root) throw new Error(`no root-owned output root is defined for ${process.platform}; Design Studio fidelity outputs are refused`);
   const chain = await verifyRootOwnedOutputRoot(root);
@@ -975,4 +1006,64 @@ export function compareCoverageRegion(reference, candidate) {
   if (!(centroid <= COVERAGE_THRESHOLDS.centroidDevicePx)) reasons.push(`centroid ${centroid.toFixed(3)} device px`);
   if (!(Math.abs(ink) <= COVERAGE_THRESHOLDS.inkBias)) reasons.push(`ink ${(ink * 100).toFixed(2)}%`);
   return { status: reasons.length ? FIDELITY_STATUS.FAIL : FIDELITY_STATUS.PASS, reasons, centroid, centroidDelta: delta, ink, bboxDelta };
+}
+
+/** 50% crossings of the neutral (glyph) column/row coverage profile inside a crop, in crop device px. */
+export function glyphEdges(image, crop) {
+  const columns = new Float64Array(crop.width), rows = new Float64Array(crop.height);
+  for (let y = 0; y < crop.height; y++) for (let x = 0; x < crop.width; x++) {
+    const o = ((crop.y + y) * image.width + crop.x + x) * 4, r = image.data[o], g = image.data[o + 1], b = image.data[o + 2];
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 24) continue;
+    const a = (255 - (r + g + b) / 3) / 255; columns[x] = Math.max(columns[x], a); rows[y] = Math.max(rows[y], a);
+  }
+  const crossing = (profile, forward) => { let previous = 0;
+    for (let step = 0; step < profile.length; step++) { const index = forward ? step : profile.length - 1 - step, value = profile[index];
+      if (value >= 0.5) return forward ? index + 0.5 - (value - 0.5) / Math.max(1e-9, value - previous) : index + 0.5 + (value - 0.5) / Math.max(1e-9, value - previous);
+      previous = value; }
+    return null; };
+  return { left: crossing(columns, true), right: crossing(columns, false), top: crossing(rows, true), bottom: crossing(rows, false) };
+}
+
+/**
+ * Line-height evidence (no app change): plain multi-line divs at a .3 top phase; per line the measured layout baseline
+ * (inline-block marker) and the layout scale, plus Canvas font metrics at fontSize x scale for the line-box offset.
+ */
+export const LINE_HEIGHT_PROBE_CASES = Object.freeze([{ size: 14, lineHeight: 1.3 }, { size: 16, lineHeight: 1.35 }].map(value => Object.freeze(value)));
+export function lineHeightProbeSource() {
+  return `(() => {
+    const host = document.createElement("div"); host.style.cssText = "position:fixed;left:-4000px;top:0;width:600px;height:600px;visibility:hidden;contain:layout";
+    document.body.append(host);
+    const quantumProbe = document.createElement("div"), child = document.createElement("div");
+    quantumProbe.style.cssText = "position:absolute;left:0;top:0"; child.style.cssText = "position:absolute;top:0;width:1px;height:1px;left:" + (1.001 / (64 * devicePixelRatio)) + "px";
+    quantumProbe.append(child); host.append(quantumProbe);
+    const quantum = child.getBoundingClientRect().left - quantumProbe.getBoundingClientRect().left, scale = quantum > 0 ? Math.round(1 / (64 * quantum) * 1000) / 1000 : 1;
+    const ctx = document.createElement("canvas").getContext("2d"), cases = ${JSON.stringify(LINE_HEIGHT_PROBE_CASES)};
+    const out = cases.map(({ size, lineHeight }) => {
+      const div = document.createElement("div"); div.style.cssText = "position:absolute;left:10px;top:20.3px;white-space:pre;font:" + size + "px/" + lineHeight + " Arial";
+      const lines = ["Hg one", "Hg two", "Hg three", "Hg four", "Hg five", "Hg six"];
+      div.innerHTML = lines.map(text => '<span class="m" style="display:inline-block;width:0;height:0;vertical-align:baseline"></span>' + text).join("\\n");
+      host.append(div);
+      const origin = host.getBoundingClientRect().top, baselines = [...div.querySelectorAll(".m")].map(marker => marker.getBoundingClientRect().top - origin);
+      div.remove();
+      ctx.font = size * scale + "px Arial"; const metrics = ctx.measureText("Hg");
+      return { size, lineHeight, top: 20.3, baselines, layoutMetrics: { ascent: metrics.fontBoundingBoxAscent, descent: metrics.fontBoundingBoxDescent } };
+    });
+    host.remove();
+    return { devicePixelRatio, quantum, scale, cases: out };
+  })()`;
+}
+/** Per line: measured layout baseline vs the current (round) and Blink (trunc) LayoutUnit line-height predictions. */
+export function lineHeightEvidenceTable(probe) {
+  const rows = [];
+  for (const item of probe.cases) {
+    const s = probe.scale, h = item.size * item.lineHeight, top = Math.trunc(item.top * 64 * s) / 64;
+    const alpha = Math.floor((h * s + Math.round(item.layoutMetrics.ascent) - Math.round(item.layoutMetrics.descent)) / 2);
+    item.baselines.forEach((measured, index) => {
+      const round = top + index * (Math.round(h * s * 64) / 64) + alpha, trunc = top + index * (Math.trunc(h * s * 64) / 64) + alpha;
+      rows.push({ size: item.size, lineHeight: item.lineHeight, scale: s, line: index, measuredLayout: measured,
+        roundLayout: round / s, truncLayout: trunc / s, roundPaint: Math.round(round) / s, truncPaint: Math.round(trunc) / s,
+        paintDiffers: Math.round(round) !== Math.round(trunc), measuredMatches: Math.abs(measured - trunc / s) < 1e-3 ? "trunc" : Math.abs(measured - round / s) < 1e-3 ? "round" : "neither" });
+    });
+  }
+  return rows;
 }

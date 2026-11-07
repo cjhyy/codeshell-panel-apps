@@ -1441,7 +1441,7 @@ test("--design-studio-disable-gpu-raster is a probe-only switch appended before 
   assert.throws(() => insertProbeSwitches('await import("x");\nimport { syncBuiltinESMExports } from "node:module";\n', [["disable-gpu-rasterization"]]), /await precedes/);
 });
 
-test("coverage fixture: 8 cases, bundled-Inter and PNG codec resources whose parts decode to the real bytes", async () => {
+test("coverage fixture: 19 cases, bundled-Inter (normal + italic) and PNG codec resources whose parts decode to the real bytes", async () => {
   const { COVERAGE_CASES, COVERAGE_BUILTIN_INTER, FIDELITY_FIXTURE_PATHS, coveragePngBytes } = await import("../scripts/design-studio-host-fidelity.mjs");
   const codec = await import("../apps/design-studio/app/document.mjs");
   const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.coverage);
@@ -1457,7 +1457,15 @@ test("coverage fixture: 8 cases, bundled-Inter and PNG codec resources whose par
   assert.equal(nodes.find(node => node.id === "inter-default").fontRef, undefined, "the app's default Inter stack is not bound to bytes");
   assert.equal(nodes.find(node => node.id === "inter-bytes").fontRef, COVERAGE_BUILTIN_INTER.id);
   assert.equal(nodes.find(node => node.id === "ranges-fill-link").textRanges.ranges.some(range => range.href), true);
-  assert.deepEqual(nodes.filter(node => node.type === "image").map(node => node.objectFit), ["cover", "contain"]);
+  assert.deepEqual(nodes.filter(node => node.type === "image").map(node => [node.objectFit, node.cornerRadius]), [["cover", 0], ["contain", 0], ["cover", 8]]);
+  // Range cases: every ranged node validates; CJK sits inside an Inter range; one node carries the supplied italic face.
+  assert.deepEqual(COVERAGE_CASES.filter(item => item.range).map(item => item.id), ["range-cjk-missing", "range-typography", "range-underline", "range-multiline", "range-finite",
+    "node-underline-color", "underline-descender-2line", "range-line-through", "range-mixed-multiline", "range-finite-typo"]);
+  assert.equal(nodes.find(node => node.id === "node-underline-color").textDecoration, "underline");
+  assert.match(nodes.find(node => node.id === "underline-descender-2line").text, /\n/u);
+  assert.match(nodes.find(node => node.id === "range-cjk-missing").text, /中文/u);
+  assert.ok(nodes.find(node => node.id === "range-typography").textRanges.ranges.some(range => range.fontStyle === "italic"));
+  assert.ok(design.resources.some(resource => resource.family === "Inter" && resource.style === "italic"));
   const decode = descriptor => Buffer.concat(fixture.files.filter(file => file.relativePath.includes(descriptor.sha256))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath)).map(file => Buffer.from(file.bytes, "base64")));
   const [font, image] = design.resources;
@@ -1484,4 +1492,20 @@ test("coverage regions use one strict contract: centroid <= 0.15 device px and i
   const glyphs = regionInk(framed, crop, { neutralOnly: true }), plain = regionInk(draw(0, 1), crop);
   assert.ok(Math.abs(glyphs.mass - plain.mass) < 1e-9 && glyphs.centroid.every((v, i) => Math.abs(v - plain.centroid[i]) < 1e-9));
   assert.notEqual(regionInk(framed, crop).mass, plain.mass);
+});
+
+test("every coverage-matrix artifact label is accepted by the held-output sink (range-r1 aborted on '0.25')", async () => {
+  const { ARTIFACT_LABEL, COVERAGE_CASES } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const runner = await readFile(join(repository, "scripts/design-studio-host-fidelity-runner.mjs"), "utf8");
+  const templates = [...runner.matchAll(/`(coverage-[^`]*)`/gu)].map(match => match[1]);
+  assert.ok(templates.length >= 5);
+  const values = { label: ["100", "fit"], route: ["gpu", "browser"], "item.id": COVERAGE_CASES.filter(item => item.editable).map(item => item.id),
+    "Math.round(phaseX * 100)": [0, 25, 50, 75].map(String) };
+  for (const template of templates) {
+    const slots = [...template.matchAll(/\$\{([^}]+)\}/gu)].map(match => match[1]);
+    assert.ok(slots.every(slot => values[slot]), `known slots in ${template}`);
+    const expand = (text, remaining) => remaining.length ? values[remaining[0]].flatMap(value => expand(text.replace("${" + remaining[0] + "}", value), remaining.slice(1))) : [text];
+    for (const label of expand(template, slots)) assert.match(label, ARTIFACT_LABEL, label);
+  }
+  assert.doesNotMatch("coverage-phase-0.25-canvas", ARTIFACT_LABEL);
 });
