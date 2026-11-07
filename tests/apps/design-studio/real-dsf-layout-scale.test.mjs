@@ -106,3 +106,19 @@ test("one offscreen DOM probe detects the layout scale; cached per DPR, re-probe
   assert.deepEqual(odd, { scale: 1, dpr: 2, quantum: 0.003, reason: "unrecognized-layout-quantum" });
   assert.deepEqual(blinkLayoutScale(null), { scale: 1, dpr: 1, quantum: null, reason: "no-document" });
 });
+
+test("real-DSF finite text: CSS-authored element top, physical line box (recorded forced-DSF2 DOM 156.195 -> paint 156; emulated 157)", () => {
+  // Coverage fixture node; Arial 14 metrics as measured in both modes (Canvas fontBoundingBox, hanging offset 10.4).
+  const finite = text("finite-multiline", 250.3, 146.3, { width: 200, height: 48, lineHeight: 1.3, layoutBaselineOffset: 3.5, text: "Finite\nSecond" });
+  const metrics = { ascent: 13, descent: 3, hangingToAlphabetic: 10.399999618530273 }, layoutMetrics = { ascent: 25, descent: 6 };
+  // Element top 142.7 (frontend export: hanging origin minus the CSS alphabetic offset 14); Blink then lays the
+  // line out at fontSize x 2: floor((36.4 + 25 - 6) / 2) = 27 physical -> DOM baseline 18265/128 + 13.5 = 156.195.
+  assert.equal(textFiniteBaselineY(finite, 0, metrics, { layoutScale: 2, layoutMetrics }), 156);
+  assert.equal(textFiniteBaselineY(finite, 1, metrics, { layoutScale: 2, layoutMetrics }), 174.5);
+  // Emulated (scale 1) is the historical CSS replay, unchanged: 9132/64 + 14 -> 157; next line +1165/64 -> 175.
+  assert.equal(textFiniteBaselineY(finite, 0, metrics), 157);
+  assert.equal(textFiniteBaselineY(finite, 1, metrics, { layoutScale: 1, layoutMetrics: metrics }), 175);
+  // A single-line case where CSS and physical leading agree (lh 1.2) moves only by the physical paint rounding.
+  const single = text("finite", 20.25, 70.5, { width: 184, layoutBaselineOffset: 3.5 });
+  assert.equal(textFiniteBaselineY(single, 0, metrics, { layoutScale: 2, layoutMetrics }) % 0.5, 0);
+});

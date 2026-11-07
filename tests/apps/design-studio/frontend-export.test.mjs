@@ -171,3 +171,35 @@ test("canonical Text shadows use glyph CSS and retain the unresolved zero-blur e
     }
   }
 });
+
+test("object-fit cover images stay inside their node box (Chromium paints replaced-element overflow when overflow is visible)", async (t) => {
+  const { PNG } = await import("pngjs");
+  const { createDesignResourcePersistencePlan } = await import("../../../apps/design-studio/app/resource-store.mjs");
+  const { createHash } = await import("node:crypto");
+  // 64x32 solid image into a 96x56 cover box: the scaled image is 112 wide, 8 px per side must be clipped.
+  const source = new PNG({ width: 64, height: 32 });
+  for (let i = 0; i < source.data.length; i += 4) source.data.set([37, 99, 235, 255], i);
+  const bytes = PNG.sync.write(source), base64 = bytes.toString("base64");
+  const plan = await createDesignResourcePersistencePlan({ id: "cover-png", kind: "image", mime: "image/png", base64,
+    sha256Bytes: async value => createHash("sha256").update(value).digest("hex") });
+  const image = (id, x, objectFit) => ({ id, name: id, type: "image", x, y: 20, width: 96, height: 56, imageRef: "cover-png", objectFit,
+    fill: "#ffffff", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, visible: true, locked: false });
+  const design = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Cover", canvas: { width: 360, height: 100, background: "#ffffff" },
+    tokens: { colors: [] }, resources: [plan.descriptor], activePageId: "main",
+    pages: [{ id: "main", name: "Main", children: [image("cover", 40, "cover"), image("contain", 200, "contain")] }] });
+  const html = exportDesignFrontend(design, { resourceDataUrls: new Map([["cover-png", `data:image/png;base64,${base64}`]]) });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 360, height: 100 }, deviceScaleFactor: 1 });
+  await page.route("**/*", route => route.request().url().startsWith("data:") ? route.continue() : route.abort());
+  await page.setContent(html);
+  await page.evaluate(() => Promise.all([...document.images].map(image => image.decode())));
+  const box = await page.evaluate(() => { const r = document.querySelector('[data-codeshell-id="cover"]').getBoundingClientRect(); return { left: r.left, right: r.right, y: r.top + r.height / 2 }; });
+  const shot = PNG.sync.read(await page.screenshot());
+  const blueColumns = [];
+  for (let x = 0; x < shot.width; x++) { const o = (Math.round(box.y) * shot.width + x) * 4; if (shot.data[o + 2] > 200 && shot.data[o] < 80) blueColumns.push(x); }
+  const coverColumns = blueColumns.filter(x => x < (box.left + box.right) / 2 + 80);
+  assert.ok(coverColumns.length > 0, "the cover image is painted");
+  assert.ok(Math.min(...coverColumns) >= Math.floor(box.left) && Math.max(...coverColumns) < Math.ceil(box.right),
+    `cover ink ${Math.min(...coverColumns)}..${Math.max(...coverColumns)} must stay inside the node box ${box.left}..${box.right}`);
+});

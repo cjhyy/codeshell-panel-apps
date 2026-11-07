@@ -44,13 +44,18 @@ export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = 
 /** Transport the historical hanging origin through the same CSS line box as
  * HTML. The logical hanging position stays exact; only the paint baseline is
  * quantized. Leading accumulates in LayoutUnits before CSS-pixel rounding. */
-export function textFiniteBaselineY(node, index, metrics, { originY = node.y } = {}) {
+export function textFiniteBaselineY(node, index, metrics, { originY = node.y, layoutScale = 1, layoutMetrics = null } = {}) {
   const alpha = Number.isFinite(metrics.alphabeticBaseline)
     ? metrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, metrics);
   if (!Number.isFinite(metrics.hangingToAlphabetic)) throw Error("Finite text requires a measured hanging baseline");
-  const top = Math.trunc((originY + metrics.hangingToAlphabetic - alpha) * 64) / 64;
-  const height = Math.round(textLineHeightPixels(node) * 64) / 64;
-  return Math.round(top + index * height + alpha) + (node.y - originY);
+  // The element top is authored in CSS px (HTML export: hanging origin minus the CSS alphabetic
+  // offset). Under a real device scale Blink then lays the line box out at fontSize x scale
+  // (`layoutMetrics`, measured at that size) and rounds the paint origin in physical pixels.
+  // Scale 1 is the historical CSS replay, unchanged.
+  const layoutAlpha = layoutScale !== 1 && layoutMetrics ? textLineBoxAlphabeticOffset(node, layoutMetrics, layoutScale) : alpha;
+  const top = Math.trunc((originY + metrics.hangingToAlphabetic - alpha) * 64 * layoutScale) / 64;
+  const height = Math.round(textLineHeightPixels(node) * layoutScale * 64) / 64;
+  return Math.round(top + index * height + layoutAlpha * layoutScale) / layoutScale + (node.y - originY);
 }
 
 /** SVG uses the same alphabetic offset when actual font metrics are available.

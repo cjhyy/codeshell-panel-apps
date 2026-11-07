@@ -503,7 +503,9 @@ function nodeStyle(sourceNode, parent, context) {
     ...transformDeclarations(node),
     ["box-sizing", "border-box"],
     ["opacity", String(Number.isFinite(Number(node.opacity)) ? Number(node.opacity) : 1)],
-    ["overflow", node.clipContent || node.textOverflow === "ellipsis" ? "hidden" : "visible"],
+    // An <img> with overflow:visible lets Chromium paint object-fit:cover content outside the node box;
+    // fill/contain never overflow and keep their existing (rounded) clip pixels.
+    ["overflow", node.clipContent || node.textOverflow === "ellipsis" || (node.type === "image" && (node.objectFit ?? "cover") === "cover") ? "hidden" : "visible"],
     ["display", node.visible === false ? "none" : undefined],
   ];
   if (node.type === "text") {

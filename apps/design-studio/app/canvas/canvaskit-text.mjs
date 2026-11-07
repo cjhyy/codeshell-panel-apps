@@ -278,10 +278,17 @@ export async function createCanvasKitText({
         const measured = measure.measureText("Hg");
         metrics = { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent,
           hangingToAlphabetic: hangingOffset(node, alias) };
+        if (layoutScale !== 1) {
+          // Line-box metrics at the layout font size (fontSize x scale), as Blink rounds them there.
+          configure(node, alias, node.fontSize * layoutScale);
+          const scaled = measure.measureText("Hg");
+          metrics.layoutMetrics = { ascent: scaled.fontBoundingBoxAscent, descent: scaled.fontBoundingBoxDescent };
+        }
         finiteFontMetrics.set(key, metrics);
         configure(node, alias);
       }
-      return textFiniteBaselineY(node, index, metrics, { originY: currentNodes.get(node.id)?.y ?? node.y });
+      return textFiniteBaselineY(node, index, metrics, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale,
+        layoutMetrics: metrics.layoutMetrics ?? null });
     }
     if (textRangeTypography(node, false).length)
       return node.y + textDisplayLineMetrics(node).offsets[index] + offset;
@@ -553,7 +560,7 @@ export async function createCanvasKitText({
   function beginScene(nextDesign, { layoutScale: nextLayoutScale = 1 } = {}) {
     const layoutChanged = nextLayoutScale !== layoutScale;
     layoutScale = nextLayoutScale;
-    if (layoutChanged) contentBoundsCache.clear();
+    if (layoutChanged) { contentBoundsCache.clear(); finiteFontMetrics.clear(); }
     const nextFontSnapshot = fontSnapshot(), fontsChanged = nextFontSnapshot !== loadedFontSnapshot;
     if (fontsChanged) {
       clearShapeRasters();

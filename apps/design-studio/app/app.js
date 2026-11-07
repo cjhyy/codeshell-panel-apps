@@ -11,6 +11,7 @@ import { createDocumentAutosave } from "./document-autosave.mjs";
 import { createRendererController } from "./renderer-controller.mjs";
 import {
   canvasNodeMatrix,
+  inlineTextEditorPlacement,
   drawCanvasInteraction,
   hitTestCanvasNode,
   hitTestCanvasLabel,
@@ -1942,7 +1943,10 @@ function updateInlineTextEditorPosition() {
   const matrix = box ? [box.matrix[0]*zoom,box.matrix[1]*zoom,box.matrix[2]*zoom,box.matrix[3]*zoom,pan.x+box.matrix[4]*zoom,pan.y+box.matrix[5]*zoom]
     : canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
+  const placement = inlineTextEditorPlacement(matrix, pan, zoom);
   Object.assign(elements.inlineTextEditor.style, {
+    left: `${placement.left}px`,
+    top: `${placement.top}px`,
     width: `${Math.max(28, box?.boxWidth ?? node.width)}px`,
     height: `${Math.max(24, box?.boxHeight ?? node.height)}px`,
     fontFamily: box?.fontFamily ?? (font
@@ -1954,7 +1958,7 @@ function updateInlineTextEditorPosition() {
     lineHeight: textLineHeightCss(node),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
-    transform: `matrix(${matrix.join(",")})`,
+    transform: `matrix(${placement.matrix.join(",")})`,
   });
 }
 
