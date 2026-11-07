@@ -123,3 +123,7 @@ GPU 渲染器按 148 的规则实现：`text-line-box.mjs` 中 `textLineBoxBasel
 - `/tmp/ds-host-harness-tmp/run4/headless148-wlQioj/`：包含 148 下的参照截图和 `compare.json`。
 - `/tmp/ds-host-harness-tmp/run4/headless148-strips-3LsTY6/`：包含 148 下的 SVG fixture 截图和 `strips.json`。
 - 脚本（只读，不在仓库中）：`/tmp/ds-host-harness-tmp/tools/analyze-run4.mjs`、`headless148-compare.mjs`、`headless148-strips.mjs`。
+
+## 更正（2026-11-07，见 `design-studio-snap-grid-probe-20261107.md`）
+
+上文把差异归因为“Chromium 版本差异”，这是错误的。当时用来对照的 headless 148 用的是 Playwright 仿真 DSF。同一个 Chromium 148 改用强制真实 DSF2 之后，结果与 Electron 130 在真实 DPR2 下一致：finite、Menlo、Arial、小矩形、细条的质心差都 ≤0.07 device px。因此根因是 **DSF 模式（仿真 vs 真实）**；GPU 之前与之匹配的，是仿真 DSF 的行为。
