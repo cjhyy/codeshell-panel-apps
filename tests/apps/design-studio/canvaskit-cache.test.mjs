@@ -70,7 +70,7 @@ const fixture = () => ({
     }),
     base("rotate", "rectangle", 1450, 100, 100, 24, { fill: "#00cc00", rotation: 90 }),
     base("system-text", "text", 70, 350, 300, 40, {
-      text: "Browser font glyphs", layoutBaselineOffset: 0, // Keep this tile-cache fixture on the historical master; phase coverage has dedicated tests.
+      text: "Browser font glyphs", layoutBaselineOffset: 0, // Tile-only tests disable device sampling; phase coverage has dedicated tests.
       fontFamily: "Arial",
       fontSize: 24,
       fontWeight: 400,
@@ -172,6 +172,29 @@ async function upload(page, design) {
   }, design);
 }
 
+test("finite raster halfzoom uses device phase while native <=1x and no-offset admission remain unchanged", async t => {
+  const page = await harness(t, { tileCacheEnabled: false });
+  const text = { text: "Finite HMI", fontFamily: "Arial", fontSize: 24, fontWeight: 400, lineHeight: 1.6, textAlign: "left" };
+  const design = { canvas: { width: 900, height: 600, background: "#ffffff" }, resources: [], nodes: [
+    base("finite", "text", 40, 40, 260, 50, { ...text, layoutBaselineOffset: 5.25 }),
+    base("no-offset", "text", 40, 120, 260, 50, text),
+    base("native", "text", 40, 200, 260, 50, { ...text, fontFamily: "Roboto", fontRef: "roboto", layoutBaselineOffset: -3 }),
+  ] };
+  await upload(page, design);
+  const rows = await page.evaluate(() => {
+    const rows = [];
+    for (const [zoom, pan] of [[.5, { x: .25, y: .5 }], [1, { x: .25, y: .5 }], [1, { x: 0, y: 0 }], [2, { x: .25, y: .5 }], [.5, { x: .25, y: .5 }]]) {
+      renderer.render({ zoom, pan });
+      rows.push({ zoom, pan, nodes: renderer.stats().deviceRasterNodeScales.map(row => row.nodeId).sort() });
+    }
+    return rows;
+  });
+  assert.deepEqual(rows.map(row => row.nodes), [
+    ["finite", "no-offset"], ["no-offset"], ["finite", "no-offset"], ["finite", "native", "no-offset"], ["finite", "no-offset"],
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.design), design, "sampling does not mutate finite origins or saved geometry");
+});
+
 for (const dpr of [1, 2]) test(`retained canvas renderer recreation keeps CSS geometry at DPR ${dpr}`, async (t) => {
   const width = 900, height = 600, page = await harness(t, { width, height, dpr });
   const design = { canvas: { width: 1409, height: 1233, background: "#ffffff" }, resources: [], nodes: [
@@ -224,8 +247,8 @@ const near = (actual, expected, tolerance = 5) =>
   );
 
 test("GPU tile cache preserves nonzero-position gradients, ancestor clip/alpha and shadows across tile seams", async (t) => {
-  const cached = await harness(t),
-    reference = await harness(t, { tileCacheEnabled: false });
+  const cached = await harness(t, { deviceTextSampling: false }),
+    reference = await harness(t, { tileCacheEnabled: false, deviceTextSampling: false });
   const design = fixture();
   await upload(cached, design);
   await upload(reference, design);
@@ -315,7 +338,7 @@ test("CanvasKit invalidates resized CSS gradient pictures and matches freshly re
 });
 
 test("live scene revisions reuse font providers and local node pictures while invalidating GPU tiles", async (t) => {
-  const page = await harness(t),
+  const page = await harness(t, { deviceTextSampling: false }),
     design = fixture();
   design.nodes.push(
     ...Array.from({ length: 1000 }, (_, i) =>
@@ -400,7 +423,7 @@ test("visible text gains physical zoom resolution with finite resource device va
 });
 
 test("GPU tile textures obey the LRU byte/pixel budget and scene/ancestor edits cannot reuse stale tiles", async (t) => {
-  const page = await harness(t);
+  const page = await harness(t, { deviceTextSampling: false });
   await upload(page, fixture());
   await page.evaluate(() => {
     for (let i = 0; i < 24; i++) renderer.render({ zoom: 0.5, pan: { x: -i * 1024, y: 0 } });

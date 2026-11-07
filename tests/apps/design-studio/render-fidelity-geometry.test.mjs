@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareChildEdges, compareCornerRadius, compareRotationGeometry, compareShadowGeometry, cornerRadiusGeometry, rotationEndpointDisplacement } from "./render-fidelity-geometry.mjs";
+import { compareChildEdges, compareCornerRadius, compareRotationGeometry, compareRotationMoments, compareShadowGeometry, cornerRadiusGeometry, rotationEndpointDisplacement } from "./render-fidelity-geometry.mjs";
 
 function rasterize(inside, { color = [0, 0, 0], opacity = 1 } = {}) {
   const width = 100, height = 100, data = new Uint8Array(width * height * 4).fill(255), samples = 8;
@@ -45,6 +45,24 @@ test("endpoint metric keeps raw short-bar angle while rejecting 30x1 CSS bar +2d
   assert.ok(shifted.centroid>.99&&shifted.failures.some(message=>message.startsWith("rotation centroid")),JSON.stringify(shifted));
   const missing=compareRotationGeometry(reference,reference);
   assert.equal(missing.measurable,false,"a missing HTML snapped long edge cannot become a geometry pass");
+});
+
+test("coverage second moments independently reject +1px length and +0.5px thickness", () => {
+  const strip = (length = 30, thickness = 4) => rasterize((x, y) => {
+    const angle = 15 * Math.PI / 180, px = x - 50, py = y - 50;
+    return Math.abs(px * Math.cos(angle) + py * Math.sin(angle)) < length / 2 &&
+      Math.abs(-px * Math.sin(angle) + py * Math.cos(angle)) < thickness / 2;
+  });
+  const reference = strip(), options = {localLongEdgeCss: 30, scale: 1};
+  const length = compareRotationGeometry(reference, strip(31), options);
+  assert.ok(length.lengthDeltaDevicePx > .9, JSON.stringify(length));
+  assert.ok(length.failures.some(message => message.startsWith("rotation length")));
+  const thickness = compareRotationGeometry(reference, strip(30, 4.5), options);
+  assert.ok(thickness.thicknessDeltaDevicePx > .35, JSON.stringify(thickness));
+  assert.ok(thickness.failures.some(message => message.startsWith("rotation thickness")));
+  assert.deepEqual(compareRotationMoments(length.reference, length.actual, options), length,
+    "offline raw-moment replay must use exactly the image-probe gates");
+  assert.equal(compareRotationMoments({}, {}, options).measurable, false);
 });
 
 test("radius fit is calibrated against a synthetic circle and detects 1px/2px radius errors", () => {

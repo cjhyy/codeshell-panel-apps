@@ -151,6 +151,8 @@ export const suites = [
         "tests/apps/design-studio/render-fidelity-metrics.test.mjs",
         "tests/apps/design-studio/browser-paint-box.test.mjs",
         "tests/apps/design-studio/render-fidelity-attribution.test.mjs",
+        "tests/apps/design-studio/render-fidelity-phase-attribution.test.mjs",
+        "tests/apps/design-studio/render-fidelity-frame-own.test.mjs",
         "tests/apps/design-studio/render-fidelity-audit.test.mjs",
         "tests/apps/design-studio/render-fidelity-geometry.test.mjs",
         "tests/apps/design-studio/rotation-moment-roi.test.mjs",

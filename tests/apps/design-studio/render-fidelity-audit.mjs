@@ -6,6 +6,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fidelityCounts } from "./render-fidelity-attribution.mjs";
+import { compareRotationMoments } from "./render-fidelity-geometry.mjs";
 
 export function auditRotatedFillBounds(report, sourceReport = {}) {
   const changed=[],unresolvedWithoutIsolation=[];
@@ -15,29 +16,37 @@ export function auditRotatedFillBounds(report, sourceReport = {}) {
     if(row.type==="text"||original.geometryProbe?.kind!=="rotation"||
       !["own-fill-leaf","visible-composite-fill-with-descendant-occlusion"].includes(original.geometryScope))return row;
     assessed++;
-    const added=original.delta?.measurable?["left","top","right","bottom"]
-      .filter(edge=>Math.abs(original.delta[edge])>.5)
-      .map(edge=>`rotated fill ${edge} ${original.delta[edge]} > 0.5`):["rotated fill bbox ink not measurable"];
-    if(!added.length)return row;
+    const probe=compareRotationMoments(original.geometryProbe.reference,original.geometryProbe.actual,
+      {localLongEdgeCss:original.geometryProbe.localLongEdgeCss,scale:original.geometryProbe.scale});
+    const bboxFailures=original.delta?.measurable?["left","top","right","bottom"].flatMap(edge=>{
+      const delta=original.delta[edge];
+      return !Number.isInteger(delta)?[`rotated fill ${edge} ${delta} is not an integer ink-bbox delta`]:
+        Math.abs(delta)>1?[`rotated fill ${edge} ${delta} > 1`]:[];
+    }):["rotated fill bbox ink not measurable"];
+    const added=[...probe.failures,...bboxFailures];
     const identity={matrix:row.matrix,page:row.page,id:row.id,route:row.route,coverage:row.coverage};
-    const geometryFailures=[...(original.geometryFailures??[]),...added],pixel=original.pixel;
+    const priorProbeFailures=new Set(original.geometryProbe.failures??[]);
+    const retainedGeometry=(original.geometryFailures??[]).filter(reason=>!priorProbeFailures.has(reason)&&!reason.startsWith("rotated fill "));
+    const geometryFailures=[...retainedGeometry,...added],pixel=original.pixel;
+    if(!geometryFailures.length)return {...row,value:{...original,geometryProbe:{...original.geometryProbe,...probe},
+      geometryFailures,rotatedBoundsAudit:{addedGeometryFailures:[],edgeThresholdDevicePx:1,integerBoundsRequired:true,classification:"geometry-pass"}}};
     const pixelFailures=pixel?[...(pixel.mismatchRatio>.001?[`pixel mismatch ${pixel.mismatchRatio} > 0.001`]:[]),
       ...(pixel.largestCluster>6?[`pixel cluster ${pixel.largestCluster} > 6`]:[])]:[];
-    const failures=[...(original.failures??[]).filter(reason=>!reason.startsWith("pixel")),...added,...pixelFailures];
+    const failures=[...geometryFailures,...pixelFailures];
     const diagnostic=original.gating==="diagnostic",hadAa=original.pixelQualification?.status==="qualified-aa-pass";
     if(hadAa)revokedAa++;
-    const value={...original,geometryFailures,failures,gateFailures:diagnostic?[]:failures,
+    const value={...original,geometryProbe:{...original.geometryProbe,...probe},geometryFailures,failures,gateFailures:diagnostic?[]:failures,
       diagnosticFailures:diagnostic?failures:[],
       preRotatedBoundsAudit:{geometryFailures:original.geometryFailures,failures:original.failures,
         gateFailures:original.gateFailures,diagnosticFailures:original.diagnosticFailures,pixelQualification:original.pixelQualification},
       pixelQualification:original.pixelQualification?{...original.pixelQualification,geometryPassed:false,qualified:false,
-        refined:null,status:"ineligible-rotated-bbox-geometry"}:undefined,
-      rotatedBoundsAudit:{addedGeometryFailures:added,edgeThresholdDevicePx:.5,
-        classification:row.isolation?"isolated-bbox-gate-failure":"unresolved-bbox-gate-failure-needs-isolation"}};
-    if(!original.delta?.measurable){value.primaryAvailable=false;value.unavailableReasonCodes=[...(original.unavailableReasonCodes??[]),"ROTATED_FILL_BBOX_UNAVAILABLE"];}
+        refined:null,status:"ineligible-rotated-moment-or-bbox-geometry"}:undefined,
+      rotatedBoundsAudit:{addedGeometryFailures:added,edgeThresholdDevicePx:1,integerBoundsRequired:true,
+        classification:row.isolation?"isolated-geometry-gate-failure":"unresolved-geometry-gate-failure-needs-isolation"}};
+    if(!original.delta?.measurable||!probe.measurable){value.primaryAvailable=false;value.unavailableReasonCodes=[...(original.unavailableReasonCodes??[]),...(!original.delta?.measurable?["ROTATED_FILL_BBOX_UNAVAILABLE"]:[]),...(!probe.measurable?["ROTATED_FILL_MOMENTS_UNAVAILABLE"]:[])];}
     changed.push({...identity,addedGeometryFailures:added,revokedAa:hadAa});
     if(!row.isolation)unresolvedWithoutIsolation.push({...identity,addedGeometryFailures:added,
-      reasonCode:"NEW_ROTATED_BBOX_FAILURE_WITHOUT_ISOLATION",defectConfirmed:false});
+      reasonCode:"NEW_ROTATED_GEOMETRY_FAILURE_WITHOUT_ISOLATION",defectConfirmed:false});
     return {...row,value};
   });
   const counts=fidelityCounts(uniqueRecords),failures=[...(report.failures??[]).filter(failure=>failure.reasonCode),
@@ -46,7 +55,7 @@ export function auditRotatedFillBounds(report, sourceReport = {}) {
   // the authoritative full/raw provenance and its content hash is supplied.
   const {records,isolationRecords,isolationTileRecords,rawUniqueRecords,uniqueRecords:sourceUnique,failures:sourceFailures,summary:sourceSummary,...metadata}=report;
   return {...metadata,schema:3,sourceReport,sourceSummary,uniqueRecords,failures,
-    rotatedBoundsAudit:{rule:"rotated painted-fill bounds <= 0.5 device px per edge; centroid/angle thresholds unchanged; failed bounds revoke conditional AA and restore raw pixel gate",
+    rotatedBoundsAudit:{rule:"rotated coverage moments: |delta Leff| <= .5, |delta Teff| <= .35, centroid <= .5, endpoint <= .5 device px; integer ink-bbox edge delta <= 1. Failed geometry revokes conditional AA and restores raw pixel gate. Short rounded-strip moment limits are not physical-width equivalence or exemptions.",
       rawEvidenceUnmodified:true,assessed,changed:changed.length,revokedAa,changedRows:changed,unresolvedWithoutIsolation},
     summary:{...sourceSummary,...counts,failingChecks:failures.length,unavailablePrimary:counts.effectiveUnavailable,
       diagnosticComparisons:counts.diagnostic,allMeasuredThresholdsPassed:failures.length===0&&counts.diagnostic===0&&counts.effectiveUnavailable===0&&

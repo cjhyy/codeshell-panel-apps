@@ -50,12 +50,24 @@ export function coverageGeometry(image, options) {
 
 export function rotationGeometry(image, options) {
   const moments = weightedMoments(image, options);
+  return rotationMomentGeometry(moments);
+}
+
+// These are coverage-equivalent dimensions, not an estimate of the authored
+// dimensions of a short rounded strip. Compare the same two raster probes;
+// subpixel AA can change their second moments and remains subject to the gate.
+export function rotationMomentGeometry(moments) {
   if (!moments) return null;
   const { covarianceXX: xx, covarianceXY: xy, covarianceYY: yy } = moments;
+  if (![xx, xy, yy, moments.centroidX, moments.centroidY].every(Number.isFinite)) return null;
   const separation = Math.hypot(xx - yy, 2 * xy), trace = xx + yy;
   if (trace <= 0 || separation / trace < .1) return null; // A square/circle has no stable long axis.
+  const lambdaMajor = (trace + separation) / 2, lambdaMinor = (trace - separation) / 2;
+  if (lambdaMinor < -1e-9) return null;
   return { ...moments, angleDegrees: Math.atan2(2 * xy, xx - yy) * 90 / Math.PI,
-    anisotropy: separation / trace };
+    anisotropy: separation / trace, lambdaMajor, lambdaMinor: Math.max(0, lambdaMinor),
+    effectiveLengthDevicePx: Math.sqrt(12 * lambdaMajor),
+    effectiveThicknessDevicePx: Math.sqrt(12 * Math.max(0, lambdaMinor)) };
 }
 
 const axisAngleDifference = (a, b) => ((a - b + 270) % 180) - 90;
@@ -66,17 +78,28 @@ export function rotationEndpointDisplacement(angleDegrees,{localLongEdgeCss,scal
   return localLongEdgeCss*scale/2*Math.abs(Math.sin(angleDegrees*Math.PI/180));
 }
 export function compareRotationGeometry(reference, actual, options) {
-  const expected = rotationGeometry(reference, options), observed = rotationGeometry(actual, options);
+  return compareRotationMoments(weightedMoments(reference, options), weightedMoments(actual, options), options);
+}
+
+// Also accepts immutable raw moments so old PNG captures can be re-evaluated
+// without rendering or changing the original measurements.
+export function compareRotationMoments(reference, actual, options = {}) {
+  const expected = rotationMomentGeometry(reference), observed = rotationMomentGeometry(actual);
   if (!expected || !observed) return { measurable: false, failures: ["rotation probe has no stable principal axis"] };
   const centroid = Math.hypot(observed.centroidX - expected.centroidX, observed.centroidY - expected.centroidY);
   const angleDegrees = axisAngleDifference(observed.angleDegrees, expected.angleDegrees);
+  const lengthDeltaDevicePx = observed.effectiveLengthDevicePx - expected.effectiveLengthDevicePx;
+  const thicknessDeltaDevicePx = observed.effectiveThicknessDevicePx - expected.effectiveThicknessDevicePx;
   const endpointDevicePx=rotationEndpointDisplacement(angleDegrees,options);
   if(!Number.isFinite(endpointDevicePx))return {measurable:false,reference:expected,actual:observed,centroid,angleDegrees,
     failures:["rotation HTML snapped local long edge or physical scale unavailable"]};
   return { measurable: true, reference: expected, actual: observed, centroid, angleDegrees,endpointDevicePx,
+    lengthDeltaDevicePx, thicknessDeltaDevicePx, lengthLimitDevicePx: .5, thicknessLimitDevicePx: .35,
     localLongEdgeCss:options.localLongEdgeCss,scale:options.scale,endpointLimitDevicePx:.5,
     failures: [...(centroid > .5 ? [`rotation centroid ${centroid} > 0.5`] : []),
-      ...(endpointDevicePx > .5 ? [`rotation endpoint ${endpointDevicePx} > 0.5`] : [])] };
+      ...(endpointDevicePx > .5 ? [`rotation endpoint ${endpointDevicePx} > 0.5`] : []),
+      ...(Math.abs(lengthDeltaDevicePx) > .5 ? [`rotation length ${lengthDeltaDevicePx} > 0.5`] : []),
+      ...(Math.abs(thicknessDeltaDevicePx) > .35 ? [`rotation thickness ${thicknessDeltaDevicePx} > 0.35`] : [])] };
 }
 
 export function compareChildEdges(reference, actual, options) {

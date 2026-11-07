@@ -994,8 +994,9 @@ export async function createRenderer({
         bounds.y - pad < viewport.y + viewport.height &&
         bounds.y + bounds.height + pad > viewport.y;
       if (deviceEligible) for (const candidate of deviceTextCandidates)
-        // Finite text uses the same device phase above 1x, avoiding master-image interpolation.
-        if ((!candidate.legacyOrigin || physicalScale > 1 || physicalScale === 1 && Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) && overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, screenOrigins.get(candidate.id));
+        // Finite raster text also needs the actual device phase below 1x;
+        // native deviceOnly plans retain their <=1x fallback in setDeviceSampling.
+        if ((!candidate.legacyOrigin || physicalScale !== 1 || Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) && overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, screenOrigins.get(candidate.id));
       if (qualityNeeded) for (const node of nodes) {
         if (node.type !== "text" || !isDesignNodeVisible(currentDesign, node, index)) continue;
         // Eligible integer-scale variants are optional and use the exact
