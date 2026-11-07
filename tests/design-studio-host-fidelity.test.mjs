@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  designStudioProbeSwitches, insertProbeSwitches,
   DESIGN_STUDIO_FIDELITY_FLAG,
   REQUIRED_HOST_FILES,
   FIDELITY_HOST_FILES,
@@ -55,7 +56,7 @@ test("fidelity opt-in requires a built Host and refuses any user-chosen report p
   assert.equal(parsePanelDesktopArguments(["/host", "/tmp/new-report.json"]).reportArgument, "/tmp/new-report.json", "the existing desktop gate keeps its report path");
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG]);
   assert.equal(parsed.selectedApp, "design-studio", "fidelity runs only the Design Studio package case");
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null, probe: false, forceDeviceScaleFactor: null });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null, probe: false, forceDeviceScaleFactor: null, disableGpuRasterization: false });
 });
 
 test("fidelity opt-in rejects other Panels and stray sample flags", () => {
@@ -65,7 +66,7 @@ test("fidelity opt-in rejects other Panels and stray sample flags", () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", "/tmp/r.json", "--unknown"]), /unexpected argument/);
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--app", "design-studio",
     "--design-studio-sample", "/tmp/sample.codesign.json"]);
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json", probe: false, forceDeviceScaleFactor: null });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json", probe: false, forceDeviceScaleFactor: null, disableGpuRasterization: false });
 });
 
 async function fakeHost(host, paths, { electron = true } = {}) {
@@ -1274,7 +1275,7 @@ test("low-zoom performance requires the 1000+ text layers to be open in the real
 
 test("--design-studio-probe runs only the two diagnostic probes and never the six scenarios", async () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", "--design-studio-probe"]), /requires --design-studio-fidelity/);
-  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe"]).designStudioFidelity, { samplePath: null, probe: true, forceDeviceScaleFactor: null });
+  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe"]).designStudioFidelity, { samplePath: null, probe: true, forceDeviceScaleFactor: null, disableGpuRasterization: false });
   const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
   const directory = await scratch("ds-fidelity-probe-");
   try {
@@ -1287,7 +1288,7 @@ test("--design-studio-probe runs only the two diagnostic probes and never the si
     const report = await runDesignStudioHostFidelity({ enabled: true, probe: true, guest, guestWebContentsId: 7, app: fakeElectron().app,
       projectDirectory: directory, packageDirectory: join(repository, "apps/design-studio"), fixtures, wait: async () => {}, timeoutMs: 20, settleTimeoutMs: 20 });
     assert.deepEqual(report.results, [], "no fidelity scenario runs in probe mode");
-    assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-snap-grid", "probe-zoom-input"]);
+    assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-snap-grid", "probe-raster-backend", "probe-zoom-input"]);
     assert.ok(report.probes.every(value => value.status === "UNVERIFIED"));
     assert.equal(report.summary.notRun.length, 6);
     assert.ok("environment" in report, "DPR/viewport/user agent are recorded");
@@ -1410,5 +1411,24 @@ test("--design-studio-force-dsf is a probe-only owned-Electron switch", () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-force-dsf", "1"]), /requires --design-studio-probe/);
   assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1.5x"]), /positive number/);
   assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1"]).designStudioFidelity,
-    { samplePath: null, probe: true, forceDeviceScaleFactor: 1 });
+    { samplePath: null, probe: true, forceDeviceScaleFactor: 1, disableGpuRasterization: false });
+});
+
+test("--design-studio-disable-gpu-raster is a probe-only switch appended before the bootstrap's first await", () => {
+  assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-disable-gpu-raster"]), /requires --design-studio-probe/);
+  assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-disable-gpu-raster",
+    "--design-studio-disable-gpu-raster"]), /given twice/);
+  const options = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-disable-gpu-raster"]).designStudioFidelity;
+  assert.deepEqual(options, { samplePath: null, probe: true, forceDeviceScaleFactor: null, disableGpuRasterization: true });
+  assert.deepEqual(designStudioProbeSwitches(options), [["disable-gpu-rasterization"]]);
+  assert.deepEqual(designStudioProbeSwitches({}), [], "default runs append nothing");
+  const host = 'import { app } from "electron";\nimport { syncBuiltinESMExports } from "node:module";\nawait import("preload");\nconst spawn = 1;\nawait import("main");\n';
+  assert.equal(insertProbeSwitches(host, []), host);
+  const patched = insertProbeSwitches(host, designStudioProbeSwitches(options));
+  const at = patched.indexOf('app.commandLine.appendSwitch("disable-gpu-rasterization")');
+  assert.ok(at > patched.indexOf("syncBuiltinESMExports") && at < patched.indexOf("await import"), "synchronous, before the first await");
+  assert.match(patched, /readyAtAppend: app\.isReady\(\)/);
+  assert.match(patched, /hasSwitch\(name\)/);
+  assert.throws(() => insertProbeSwitches('import { app } from "electron";\nawait import("x");\n', [["disable-gpu-rasterization"]]), /seam changed/);
+  assert.throws(() => insertProbeSwitches('await import("x");\nimport { syncBuiltinESMExports } from "node:module";\n', [["disable-gpu-rasterization"]]), /await precedes/);
 });

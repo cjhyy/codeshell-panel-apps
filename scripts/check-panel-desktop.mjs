@@ -17,7 +17,7 @@ import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./pa
 import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
 import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
   describeOwnedCleanup, desktopFixtureSettings, EXTERNAL_AGENT_RUNTIME_BOUNDARY, writeFidelityPartialOnce,
-  parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
+  designStudioProbeSwitches, insertProbeSwitches, parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // --design-studio-fidelity is a technical opt-in only. It is not user approval to
@@ -121,10 +121,9 @@ try {
   const captureSpawn = "const spawn = children.spawn;";
   assert.equal(bootstrap.split(captureSpawn).length, 2, "Host fixture spawn seam changed");
   bootstrap = bootstrap.replace(captureSpawn, nativeParentFixture.bootstrap + managedFixture.bootstrap + captureSpawn);
-  // Probe-only: force the owned Electron's device scale factor (never the operator's app).
-  const forceDsf = designStudioFidelity?.forceDeviceScaleFactor
-    ? `app.commandLine.appendSwitch("force-device-scale-factor", ${JSON.stringify(String(designStudioFidelity.forceDeviceScaleFactor))});\n` : "";
-  bootstrap = bootstrap.replace(mainImport, `${forceDsf}for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
+  // Probe-only Chromium switches for the owned Electron (never the operator's app), before ready.
+  bootstrap = insertProbeSwitches(bootstrap, designStudioProbeSwitches(designStudioFidelity ?? {}));
+  bootstrap = bootstrap.replace(mainImport, `for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
 app.on("session-created", session => {
   session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (_details, done) => done({ cancel: true }));
 });\n${mainImport}`);

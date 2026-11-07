@@ -16,8 +16,8 @@ export const SNAP_CAMERAS = Object.freeze([
   { label: "fit", zoom: 0.615, panX: 5.3, panY: 5.3 },
   { label: "z1-pan", zoom: 1, panX: 13.65, panY: 11.85 },
 ].map(camera => Object.freeze(camera)));
-/** GPU-vs-HTML acceptance per case and camera (device px of the capture). Text may use 4% ink: real fonts. */
-export const GPU_HTML_THRESHOLDS = Object.freeze({ centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03, realFontInkBias: 0.04 });
+/** GPU-vs-HTML acceptance per case and camera (device px of the capture). One strict contract for every case. */
+export const GPU_HTML_THRESHOLDS = Object.freeze({ centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03 });
 /** Inter is exercised through an actual document font resource (bytes + alias), never the app "Inter" name. */
 export const SNAP_INTER = Object.freeze({ id: "snap-inter", family: "DSSnapProbeInter", path: "fonts/InterVariable.woff2", weight: 400 });
 
@@ -35,6 +35,26 @@ export const SNAP_CASES = Object.freeze([
   { id: "gray-strip", kind: "strip", node: base("gray-strip", "rectangle", 50.6, 109.42, 9.6, 1.12, { fill: "#6b7280", rotation: 45, cornerRadius: 0.56 }) },
   { id: "small-rect", kind: "rect", node: base("small-rect", "rectangle", 28.3, 120.4, 1.26, 7.2, { fill: "#686e67" }) },
 ].map(value => Object.freeze(value)));
+
+/**
+ * Raster-backend probe (single variable: Chromium page rasterization). The review strip and the
+ * actual fixture chevron (frame + two ±45° strips, as in FIDELITY fixture rotation-strips). Each
+ * case may measure a region (`roi`, world units) and colour (`fill`) instead of its own node box.
+ */
+export const RASTER_BACKEND_CASES = Object.freeze([
+  { id: "gray-strip", kind: "strip", node: base("gray-strip", "rectangle", 50.6, 109.42, 9.6, 1.12, { fill: "#6b7280", rotation: 45, cornerRadius: 0.56 }) },
+  { id: "chevron", kind: "strip", node: base("chevron-group", "frame", 40, 40, 32, 32, { fill: "#ffffff", layout: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start" }),
+    roi: { x: 42, y: 42, width: 28, height: 28 }, fill: "#6b7280", children: [
+      base("chevron-upper", "rectangle", 50.6, 49.42, 9.6, 1.12, { fill: "#6b7280", rotation: 45, cornerRadius: 0.56, parentId: "chevron-group" }),
+      base("chevron-lower", "rectangle", 50.6, 57.42, 9.6, 1.12, { fill: "#6b7280", rotation: -45, cornerRadius: 0.56, parentId: "chevron-group" })] },
+].map(value => Object.freeze(value)));
+export function rasterBackendDocument() {
+  const chevron = RASTER_BACKEND_CASES[1];
+  return { format: "codeshell.design", version: 3, name: "Raster backend probe", canvas: { width: 400, height: 160, background: "#ffffff" },
+    tokens: { colors: [] }, resources: [], activePageId: "main", pages: [{ id: "main", name: "Main", children: [
+      structuredClone(RASTER_BACKEND_CASES[0].node),
+      { ...structuredClone(chevron.node), children: chevron.children.map(child => { const { parentId, ...rest } = structuredClone(child); return rest; }) }] }] };
+}
 
 export function snapProbeDocument({ interResource = null } = {}) {
   return { format: "codeshell.design", version: 3, name: "Snap grid probe", canvas: { width: 400, height: 160, background: "#ffffff" },
@@ -55,13 +75,13 @@ export async function snapProbeSources({ codec, resourceStore, interBytes, sha25
  * GPU (CanvasKit, the installed renderer) against HTML (installed frontend export) for one camera.
  * Same page, same fonts, same capture size; both measured with the same coverage statistics.
  */
-export function compareGpuToHtml({ htmlImage, gpuImage, camera, dpr }) {
+export function compareGpuToHtml({ htmlImage, gpuImage, camera, dpr, cases = SNAP_CASES }) {
   const world = (x, y) => [(camera.zoom * x + camera.panX) * dpr, (camera.zoom * y + camera.panY) * dpr];
-  return SNAP_CASES.map(({ id, kind, node }) => {
-    const margin = 4 + 2 / Math.max(camera.zoom, 0.25);
-    const [x0, y0] = world(node.x - margin, node.y - margin), [x1, y1] = world(node.x + node.width + margin, node.y + node.height + margin);
+  return cases.map(({ id, kind, node, roi: region = null, fill = null }) => {
+    const margin = region ? 0 : 4 + 2 / Math.max(camera.zoom, 0.25), box = region ?? node;
+    const [x0, y0] = world(box.x - margin, box.y - margin), [x1, y1] = world(box.x + box.width + margin, box.y + box.height + margin);
     const roi = { x: Math.floor(x0), y: Math.floor(y0), width: Math.ceil(x1) - Math.floor(x0), height: Math.ceil(y1) - Math.floor(y0) };
-    const colors = { foreground: node.fill, background: "#ffffff" };
+    const colors = { foreground: fill ?? node.fill, background: "#ffffff" };
     const html = coverageStats(htmlImage, roi, colors), gpu = coverageStats(gpuImage, roi, colors);
     if (!(html.area > 0) || !(gpu.area > 0)) return { id, kind, camera: camera.label, roi, html, gpu, pass: false, misses: ["no ink in one route"] };
     const centroid = Math.hypot(gpu.centroid[0] - html.centroid[0], gpu.centroid[1] - html.centroid[1]);
@@ -69,15 +89,14 @@ export function compareGpuToHtml({ htmlImage, gpuImage, camera, dpr }) {
     const edgeDeltas = Object.fromEntries(["left", "right", "top", "bottom"].map(key => [key, gpu.edges50[key] - html.edges50[key]]));
     const edge50 = Math.max(...Object.values(edgeDeltas).map(Math.abs));
     const ink = gpu.area / html.area - 1;
-    const realFont = kind === "text";
-    const inkLimit = realFont && Math.abs(ink) > GPU_HTML_THRESHOLDS.inkBias ? GPU_HTML_THRESHOLDS.realFontInkBias : GPU_HTML_THRESHOLDS.inkBias;
+    const inkLimit = GPU_HTML_THRESHOLDS.inkBias;
     const misses = [];
     if (!(centroid <= GPU_HTML_THRESHOLDS.centroidDevicePx)) misses.push(`centroid ${centroid.toFixed(3)}`);
     if (!(edge50 <= GPU_HTML_THRESHOLDS.edge50DevicePx)) misses.push(`edge50 ${edge50.toFixed(3)}`);
     if (!(Math.abs(ink) <= inkLimit)) misses.push(`ink ${(ink * 100).toFixed(2)}%`);
     return { id, kind, camera: camera.label, roi, centroid, centroidDelta, edge50, edgeDeltas, ink, inkLimit,
-      inkReason: inkLimit > GPU_HTML_THRESHOLDS.inkBias ? "real font: Blink/Skia glyph AA vs CanvasKit/Canvas2D raster of the same face" : null,
-      pass: misses.length === 0, misses, html: { area: html.area, centroid: html.centroid, edges50: html.edges50 }, gpu: { area: gpu.area, centroid: gpu.centroid, edges50: gpu.edges50 } };
+      pass: misses.length === 0, misses, html: { area: html.area, centroid: html.centroid, edges50: html.edges50, maxCoverage: html.maxCoverage },
+      gpu: { area: gpu.area, centroid: gpu.centroid, edges50: gpu.edges50, maxCoverage: gpu.maxCoverage } };
   });
 }
 
@@ -126,7 +145,7 @@ export function coverageStats(image, rect, { foreground, background }) {
   const [l, r] = areaEdges(columns, left), [t, b] = areaEdges(rows, top);
   const [l50, r50] = halfEdges(columnMax, left), [t50, b50] = halfEdges(rowMax, top);
   return { area, centroid: area ? [sx / area, sy / area] : null, edges: { left: l, right: r, top: t, bottom: b },
-    edges50: { left: l50, right: r50, top: t50, bottom: b50 } };
+    edges50: { left: l50, right: r50, top: t50, bottom: b50 }, maxCoverage: Math.max(0, ...rowMax) };
 }
 
 /** Device-pixel edges of an axis-aligned box under a CSS-px (s=1) or device-px (s=dpr) snapping grid. */

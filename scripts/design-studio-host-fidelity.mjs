@@ -19,6 +19,7 @@ export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
 export const DESIGN_STUDIO_SAMPLE_FLAG = "--design-studio-sample";
 export const DESIGN_STUDIO_PROBE_FLAG = "--design-studio-probe";
 export const DESIGN_STUDIO_FORCE_DSF_FLAG = "--design-studio-force-dsf";
+export const DESIGN_STUDIO_DISABLE_GPU_RASTER_FLAG = "--design-studio-disable-gpu-raster";
 const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] | " +
   `<built-host-checkout> ${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]`;
 
@@ -50,7 +51,7 @@ export const FIDELITY_HOST_FILES = Object.freeze([...REQUIRED_HOST_FILES]);
  */
 export function parsePanelDesktopArguments(argv, _environment = {}) {
   const [hostArgument, ...rest] = argv;
-  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false, probe = false, forceDeviceScaleFactor = null;
+  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false, probe = false, forceDeviceScaleFactor = null, disableGpuRasterization = false;
   if (!hostArgument || hostArgument.startsWith("--"))
     throw new Error(`a built Host checkout path is required; ${USAGE}`);
   for (let index = 0; index < rest.length; index++) {
@@ -67,6 +68,9 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
         throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires one positive number (owned Electron only)`);
       forceDeviceScaleFactor = factor;
       index++;
+    } else if (value === DESIGN_STUDIO_DISABLE_GPU_RASTER_FLAG) {
+      if (disableGpuRasterization) throw new Error(`${DESIGN_STUDIO_DISABLE_GPU_RASTER_FLAG} given twice`);
+      disableGpuRasterization = true;
     } else if (value === DESIGN_STUDIO_PROBE_FLAG) {
       if (probe) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} given twice`);
       probe = true;
@@ -83,6 +87,8 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
   if (probe && !fidelity) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   // A forced device scale factor changes the owned Electron's real display mode; probes only.
   if (forceDeviceScaleFactor !== null && !probe) throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires ${DESIGN_STUDIO_PROBE_FLAG}`);
+  // Single-variable raster-backend control for the owned Electron only; probes only.
+  if (disableGpuRasterization && !probe) throw new Error(`${DESIGN_STUDIO_DISABLE_GPU_RASTER_FLAG} requires ${DESIGN_STUDIO_PROBE_FLAG}`);
   if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
   // Breaking for this opt-in only: outputs are created by the harness itself in the
   // root-owned system temp directory and written through held handles.
@@ -90,7 +96,7 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     "its report and artifact bundle are harness-owned files in the root-owned system temp directory, printed at start");
   if (selectedApp && selectedApp !== "design-studio")
     throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} only runs --app design-studio, not ${selectedApp}`);
-  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath, probe, forceDeviceScaleFactor } };
+  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath, probe, forceDeviceScaleFactor, disableGpuRasterization } };
 }
 
 /**
@@ -839,4 +845,28 @@ export function svgReferenceGeometry(svg) {
   return { viewport: { width: Number(width[1]), height: Number(height[1]) }, minX, minY, scale,
     toDevice: (node, dpr) => ({ x: round(dpr * scale * (node.x - minX)), y: round(dpr * scale * (node.y - minY)),
       width: round(dpr * scale * node.width), height: round(dpr * scale * node.height) }) };
+}
+
+/**
+ * Probe-only Chromium switches for the owned Electron. They are appended synchronously after the
+ * bootstrap's static imports, before its first top-level await (ESM `ready` can fire during an
+ * await), and `app.isReady()` at append time is recorded so a late switch is reported, not assumed.
+ */
+const PROBE_SWITCH_ANCHOR = 'import { syncBuiltinESMExports } from "node:module";\n';
+export function designStudioProbeSwitches({ forceDeviceScaleFactor = null, disableGpuRasterization = false } = {}) {
+  const switches = [];
+  if (forceDeviceScaleFactor) switches.push(["force-device-scale-factor", String(forceDeviceScaleFactor)]);
+  if (disableGpuRasterization) switches.push(["disable-gpu-rasterization"]);
+  return switches;
+}
+export function insertProbeSwitches(bootstrap, switches) {
+  if (!switches.length) return bootstrap;
+  if (bootstrap.split(PROBE_SWITCH_ANCHOR).length !== 2) throw new Error("Host fixture import seam changed; probe switches not applied");
+  const head = bootstrap.slice(0, bootstrap.indexOf(PROBE_SWITCH_ANCHOR) + PROBE_SWITCH_ANCHOR.length);
+  if (/\bawait\b/u.test(head)) throw new Error("a top-level await precedes the probe switch seam");
+  const code = `globalThis.__designStudioProbeSwitches = { readyAtAppend: app.isReady(), appended: ${JSON.stringify(switches)} };\n` +
+    switches.map(([name, value]) => value === undefined ? `app.commandLine.appendSwitch(${JSON.stringify(name)});\n`
+      : `app.commandLine.appendSwitch(${JSON.stringify(name)}, ${JSON.stringify(value)});\n`).join("") +
+    `globalThis.__designStudioProbeSwitches.present = ${JSON.stringify(switches.map(([name]) => name))}.map(name => [name, app.commandLine.hasSwitch(name)]);\n`;
+  return head + code + bootstrap.slice(head.length);
 }

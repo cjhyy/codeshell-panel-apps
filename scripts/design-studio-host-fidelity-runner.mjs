@@ -8,12 +8,13 @@
  * on-disk project bytes, real input events, capturePage pixels or CDP metrics.
  * Anything the installed app does not expose is reported UNVERIFIED.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
-import { GPU_DIAGNOSTIC_VARIANT, SNAP_CAMERAS, SNAP_INTER, SNAP_PROBE_SIZE, analyzeSnapCapture, compareGpuToHtml, inferLayoutQuantum, snapProbeCollectSource,
+import { GPU_DIAGNOSTIC_VARIANT, RASTER_BACKEND_CASES, SNAP_CAMERAS, SNAP_INTER, rasterBackendDocument, SNAP_PROBE_SIZE, analyzeSnapCapture, compareGpuToHtml, inferLayoutQuantum, snapProbeCollectSource,
   snapProbeGpuMountSource, snapProbeGpuUnmountSource, snapProbeMountSource, snapProbeSources, snapProbeUnmountSource } from "./design-studio-snap-probe.mjs";
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
@@ -668,6 +669,53 @@ export async function runDesignStudioHostFidelity(options) {
       comparisons,
       layout: { plain: inferLayoutQuantum(collect.layout.plain.map(v => ({ requested: v.requested, measured: v.left }))),
         scaled: inferLayoutQuantum(collect.layout.scaled.map(v => ({ requested: v.requested * 2, measured: v.left }))), raw: collect.layout }, captures };
+  });
+  // Probe: page raster backend as the single variable (run once by default, once with the owned
+  // Electron's --disable-gpu-rasterization). HTML vs the installed GPU renderer's device shape
+  // raster (P2) and its direct CanvasKit drawing, for the review strip and the fixture chevron.
+  await probeStep("probe-raster-backend", async () => {
+    const runtime = await evaluateMain(async ({ app, webContents }, { id }) => ({
+      argv: process.argv, switches: globalThis.__designStudioProbeSwitches ?? null,
+      hasDisableGpuRasterization: app.commandLine.hasSwitch("disable-gpu-rasterization"),
+      metrics: app.getAppMetrics().map(value => ({ pid: value.pid, type: value.type, serviceName: value.serviceName ?? null })),
+      guestPid: webContents.fromId(id).getOSProcessId(),
+      // Informational only: never used to choose or label the HTML page's raster backend.
+      gpuFeatureStatusInformational: app.getGPUFeatureStatus(),
+    }), { id: guestWebContentsId });
+    const processes = runtime.metrics.filter(value => value.type === "GPU" || value.pid === runtime.guestPid).map(value => {
+      let command = null;
+      try { command = execFileSync("ps", ["-o", "command=", "-p", String(value.pid)], { encoding: "utf8", timeout: 5_000 }).trim(); } catch { /* exited */ }
+      return { ...value, role: value.pid === runtime.guestPid ? "guest-renderer" : "gpu", command,
+        disableGpuRasterizationInCommand: command ? command.includes("--disable-gpu-rasterization") : null };
+    });
+    const logicalSource = codec.serializeDesignDocument(codec.normalizeDesignDocument(rasterBackendDocument()));
+    const collect = await dom(snapProbeCollectSource({ logicalSource, moduleBase: "./" }));
+    if (!collect?.markup) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["raster backend probe collection unavailable"] };
+    const capture = async host => {
+      const shot = await evaluateMain(async ({ webContents }, { id, rect }) => (await webContents.fromId(id).capturePage(rect)).toPNG().toString("base64"),
+        { id: guestWebContentsId, rect: { x: Math.round(host.x), y: Math.round(host.y), width: Math.round(host.width), height: Math.round(host.height) } });
+      return Buffer.from(shot, "base64");
+    };
+    const cameras = [];
+    try {
+      for (const value of SNAP_CAMERAS) {
+        const mount = await dom(snapProbeMountSource({ markup: collect.markup, camera: value, size: SNAP_PROBE_SIZE }));
+        const html = await saveArtifact(`rb-html-${value.label}`, await capture(mount.host));
+        await dom(snapProbeUnmountSource());
+        const dpr = html.image.width / mount.host.width, routes = {};
+        for (const [route, rendererOptions] of [["p2", {}], ["direct", GPU_DIAGNOSTIC_VARIANT.rendererOptions]]) {
+          const gpuMount = await dom(snapProbeGpuMountSource({ logicalSource, moduleBase: "./", camera: value, size: SNAP_PROBE_SIZE, rendererOptions }));
+          const shot = await saveArtifact(`rb-${route}-${value.label}`, await capture(gpuMount.host));
+          await dom(snapProbeGpuUnmountSource());
+          routes[route] = { png: shot.summary, gpu: gpuMount.stats?.gpu ?? null,
+            rows: compareGpuToHtml({ htmlImage: html.image, gpuImage: shot.image, camera: value, dpr, cases: RASTER_BACKEND_CASES }) };
+        }
+        cameras.push({ camera: value, dpr, html: html.summary, routes });
+      }
+    } finally { await dom(snapProbeUnmountSource()).catch(() => {}); await dom(snapProbeGpuUnmountSource()).catch(() => {}); }
+    return { status: FIDELITY_STATUS.EVIDENCE_ONLY, runtime: { ...runtime, processes },
+      htmlRasterBackend: "not observable from the page or Main; only the owned command-line switch is known",
+      environment: collect.env, profile: collect.profile, cameras };
   });
   // Probe 2: what DOM wheel event does an Electron Ctrl+wheel input produce, and does the closed loop reach 1 and 2?
   await probeStep("probe-zoom-input", async () => {

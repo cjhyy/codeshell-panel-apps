@@ -124,8 +124,8 @@ function solidPng(width, height, boxes, fg = [0x1f, 0x23, 0x28]) {
   return image;
 }
 
-test("GPU/HTML comparison applies centroid, 50% edge and ink limits per case; 4% ink only for real-font text, with a reason", () => {
-  assert.deepEqual(GPU_HTML_THRESHOLDS, { centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03, realFontInkBias: 0.04 });
+test("GPU/HTML comparison applies one strict contract to every case: a 3%..4% text ink bias fails like any shape", () => {
+  assert.deepEqual(GPU_HTML_THRESHOLDS, { centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03 });
   const camera = { label: "t", zoom: 1, panX: 0, panY: 0 }, dpr = 1;
   const arial = SNAP_CASES.find(value => value.id === "arial-button").node, rect = SNAP_CASES.find(value => value.id === "small-rect").node;
   // Same geometry, 3.5% lighter HTML ink: only the ink limit differs between text and shapes.
@@ -139,8 +139,11 @@ test("GPU/HTML comparison applies centroid, 50% edge and ink limits per case; 4%
   const inky = compareGpuToHtml({ htmlImage: html, gpuImage: solidPng(420, 160, [box(arial, 0, 1), { fg: [0x68, 0x6e, 0x67], x: rect.x, y: rect.y, w: 2, h: 7 }]), camera, dpr });
   assert.ok(inky.find(value => value.id === "arial-button").ink > 0.03);
   const text = inky.find(value => value.id === "arial-button"), shape = inky.find(value => value.id === "small-rect");
-  assert.equal(text.inkLimit, 0.04); assert.match(text.inkReason, /real font/); assert.equal(text.pass, true);
-  assert.equal(shape.inkLimit, 0.03); assert.equal(shape.inkReason, null); assert.equal(shape.pass, false);
+  assert.ok(text.ink > 0.03 && text.ink < 0.04, "the fixture sits in the former 3%..4% text allowance");
+  assert.equal(text.pass, false, "no real-font allowance: text ink above 3% fails");
+  assert.match(text.misses.join(), /^ink 3\.\d\d%$/u);
+  assert.equal(shape.pass, false);
+  for (const row of [text, shape]) { assert.equal(row.inkLimit, 0.03); assert.equal("inkReason" in row, false); }
 });
 
 test("the GPU probe source drives only the installed renderer in a probe-owned host and disposes it", () => {
@@ -150,4 +153,20 @@ test("the GPU probe source drives only the installed renderer in a probe-owned h
   assert.match(mount, /canvas\/canvaskit-renderer\.mjs/);
   assert.match(mount, /renderer\.resize\(10, 10, window\.devicePixelRatio\)/);
   assert.match(unmount, /dispose\(\)/);
+});
+
+test("raster-backend cases: the review strip and the fixture chevron, measured on the chevron region in strip colour", async () => {
+  const { RASTER_BACKEND_CASES, rasterBackendDocument } = await import("../scripts/design-studio-snap-probe.mjs");
+  const codec = await import("../apps/design-studio/app/document.mjs");
+  const nodes = codec.normalizeDesignDocument(rasterBackendDocument()).pages[0].nodes;
+  assert.deepEqual(nodes.map(node => [node.id, node.parentId ?? null, node.x, node.y, node.width, node.height, node.rotation, node.cornerRadius]), [
+    ["gray-strip", null, 50.6, 109.42, 9.6, 1.12, 45, 0.56], ["chevron-group", null, 40, 40, 32, 32, 0, 0],
+    ["chevron-upper", "chevron-group", 50.6, 49.42, 9.6, 1.12, 45, 0.56], ["chevron-lower", "chevron-group", 50.6, 57.42, 9.6, 1.12, -45, 0.56]]);
+  const camera = { label: "t", zoom: 1, panX: 0, panY: 0 };
+  const image = solidPng(140, 140, [{ fg: [0x6b, 0x72, 0x80], x: 50, y: 50, w: 10, h: 1 }, { fg: [0x6b, 0x72, 0x80], x: 50, y: 58, w: 10, h: 1, alpha: 0.5 }]);
+  const [strip, chevron] = compareGpuToHtml({ htmlImage: image, gpuImage: image, camera, dpr: 1, cases: RASTER_BACKEND_CASES });
+  assert.deepEqual(chevron.roi, { x: 42, y: 42, width: 28, height: 28 });
+  assert.ok(Math.abs(chevron.html.area - 15) < 0.1, "both chevron strips counted in strip colour, not the white frame fill");
+  assert.equal(chevron.html.maxCoverage, 1);
+  assert.equal(strip.pass, false, "an empty strip region is never a pass");
 });
