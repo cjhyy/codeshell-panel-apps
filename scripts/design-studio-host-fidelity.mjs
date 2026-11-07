@@ -1,0 +1,457 @@
+/* Design Studio real-Host fidelity acceptance: pure planning, fixtures and verdicts.
+ *
+ * This module is imported by scripts/check-panel-desktop.mjs only when the explicit
+ * --design-studio-fidelity flag is given. It never launches Electron, Chromium or a
+ * Host build itself, never installs, downloads or builds anything, and has no
+ * top-level side effects. Electron-specific steps receive already-owned handles.
+ *
+ * The CLI flag is only a technical opt-in. It is not user approval to open a Host
+ * window; that approval must be obtained separately before anyone runs the command.
+ */
+import { createHash } from "node:crypto";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
+export const DESIGN_STUDIO_SAMPLE_FLAG = "--design-studio-sample";
+const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] " +
+  `[${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]]`;
+
+/** Build outputs hashed by the existing desktop gate (unchanged list). */
+export const HASHED_HOST_BUILD_FILES = Object.freeze([
+  "packages/desktop/out/main/index.mjs", "packages/desktop/out/preload/index.cjs",
+  "packages/desktop/out/preload/panel-app.cjs", "packages/desktop/out/renderer/index.html",
+  "packages/desktop/out/managed-runtimes/node/bin/node",
+  "packages/core/dist/panel-apps/installer.js", "packages/server/dist/panels/runtime-services.js",
+]);
+/** Every Host file the existing desktop gate reads or imports. */
+export const REQUIRED_HOST_FILES = Object.freeze([
+  ...HASHED_HOST_BUILD_FILES,
+  "packages/desktop/package.json",
+  "packages/core/dist/index.js",
+  "packages/core/dist/panel-apps/package-content.js",
+  "scripts/bun-test-completion.mjs",
+  "packages/desktop/scripts/confined-electron-fixture.mjs",
+  "packages/desktop/scripts/owned-electron-control.mjs",
+  "packages/desktop/scripts/electron-harness.mjs",
+  "packages/desktop/scripts/runtime-cost-gui-guard.mjs",
+]);
+/** Fidelity reads the same Host files; Electron is resolved separately (see preflight). */
+export const FIDELITY_HOST_FILES = Object.freeze([...REQUIRED_HOST_FILES]);
+
+/**
+ * Parse check-panel-desktop arguments. Environment variables are deliberately
+ * ignored: no variable can enable fidelity or represent user approval.
+ */
+export function parsePanelDesktopArguments(argv, _environment = {}) {
+  const [hostArgument, ...rest] = argv;
+  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false;
+  if (!hostArgument || hostArgument.startsWith("--"))
+    throw new Error(`a built Host checkout path is required; ${USAGE}`);
+  for (let index = 0; index < rest.length; index++) {
+    const value = rest[index];
+    if (value === "--app") {
+      if (selectedApp || !rest[index + 1] || rest[index + 1].startsWith("--")) throw new Error("--app requires one Panel id");
+      selectedApp = rest[++index];
+    } else if (value === DESIGN_STUDIO_FIDELITY_FLAG) {
+      if (fidelity) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} given twice`);
+      fidelity = true;
+    } else if (value === DESIGN_STUDIO_SAMPLE_FLAG) {
+      if (sampleSeen || !rest[index + 1] || rest[index + 1].startsWith("--"))
+        throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires one sample path`);
+      sampleSeen = true;
+      samplePath = rest[++index];
+    } else if (!value.startsWith("--") && !reportArgument) {
+      reportArgument = value;
+    } else throw new Error(`unexpected argument: ${value}; ${USAGE}`);
+  }
+  if (sampleSeen && !fidelity) throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
+  if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
+  if (!reportArgument) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} requires a new report path; ${USAGE}`);
+  if (selectedApp && selectedApp !== "design-studio")
+    throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} only runs --app design-studio, not ${selectedApp}`);
+  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath } };
+}
+
+/**
+ * Read-only preflight. Uses stat/resolve only; it never installs, downloads,
+ * builds or writes inside the Host checkout. Missing outputs are reported exactly.
+ */
+export async function preflightPanelDesktopHost(hostRoot, { fidelity = false } = {}) {
+  const root = resolve(hostRoot);
+  const wanted = fidelity ? FIDELITY_HOST_FILES : REQUIRED_HOST_FILES;
+  const present = [], missing = [], mtimes = {}, warnings = [];
+  for (const path of wanted) {
+    try {
+      const value = await stat(join(root, path));
+      if (!value.isFile()) throw new Error("not a file");
+      present.push(path);
+      mtimes[path] = value.mtimeMs;
+    } catch { missing.push(path); }
+  }
+  let electron = null;
+  if (!missing.includes("packages/desktop/scripts/electron-harness.mjs")) {
+    try {
+      const resolveFrom = createRequire(join(root, "packages/desktop/scripts/electron-harness.mjs"));
+      const packagePath = resolveFrom.resolve("electron/package.json");
+      const version = JSON.parse(await readFile(packagePath, "utf8")).version;
+      const distribution = join(dirname(packagePath), "dist");
+      const distStat = await stat(distribution).catch(() => null);
+      electron = { packagePath, version, distributionPresent: Boolean(distStat?.isDirectory()) };
+      if (!electron.distributionPresent) missing.push("electron/dist (Electron binary not installed for the Host)");
+    } catch { missing.push("electron/package.json (not resolvable from packages/desktop/scripts)"); }
+  }
+  const desktopOut = mtimes["packages/desktop/out/main/index.mjs"];
+  for (const path of ["packages/core/dist/panel-apps/installer.js", "packages/server/dist/panels/runtime-services.js"]) {
+    if (desktopOut !== undefined && mtimes[path] !== undefined && mtimes[path] > desktopOut)
+      warnings.push(`${path} is newer than packages/desktop/out/main/index.mjs; the Desktop out/ may be stale relative to Core/Server dist`);
+  }
+  const ok = missing.length === 0;
+  const message = ok
+    ? `Host preflight passed for ${root}${warnings.length ? ` with warnings: ${warnings.join("; ")}` : ""}`
+    : `Host preflight failed for ${root}: missing or not built: ${missing.join(", ")}. ` +
+      "This harness never builds, downloads or installs Host outputs; build them separately in an authorized Host checkout.";
+  return { ok, hostRoot: root, present, missing, mtimes, warnings, electron, message, actionsTaken: [] };
+}
+
+const sha256 = value => createHash("sha256").update(value).digest("hex");
+function inside(parent, child) {
+  const value = relative(parent, child);
+  return value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
+}
+
+/** Copy an explicitly supplied design into the temporary project; the original is only read. */
+export async function copyDesignStudioSample({ samplePath, projectDirectory, afterCopy }) {
+  if (!samplePath || !isAbsolute(samplePath)) throw new Error("the Design Studio sample path must be absolute");
+  const project = resolve(projectDirectory);
+  if (inside(project, resolve(samplePath))) throw new Error("the sample must be outside the temporary project");
+  const before = await readFile(samplePath);
+  const beforeStat = await stat(samplePath);
+  const relativePath = "designs/host-fidelity-sample.codesign.json";
+  const destination = join(project, relativePath);
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(samplePath, destination);
+  if (afterCopy) await afterCopy();
+  const after = await readFile(samplePath);
+  const afterStat = await stat(samplePath);
+  const copy = await readFile(destination);
+  const receipt = { samplePath, relativePath, bytes: before.length,
+    sourceSha256Before: sha256(before), sourceSha256After: sha256(after), copySha256: sha256(copy),
+    sourceMtimeMsBefore: beforeStat.mtimeMs, sourceMtimeMsAfter: afterStat.mtimeMs };
+  if (receipt.sourceSha256After !== receipt.sourceSha256Before || receipt.sourceMtimeMsAfter !== receipt.sourceMtimeMsBefore)
+    throw new Error(`Design Studio sample changed while it was copied: ${JSON.stringify(receipt)}`);
+  if (receipt.copySha256 !== receipt.sourceSha256Before) throw new Error("temporary sample copy differs from the original");
+  return receipt;
+}
+
+/** Only in-memory and the Panel protocol may load; every network and file URL is denied. */
+const ALLOWED_PROTOCOLS = new Set(["data:", "blob:", "about:", "cspanel:"]);
+export function isAllowedFidelityRequest(url) {
+  if (typeof url !== "string" || !url) return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  return ALLOWED_PROTOCOLS.has(parsed.protocol.toLowerCase());
+}
+
+/* ---------------------------------------------------------------------------
+ * Synthetic fixtures. All bytes are canonical output of the supplied (installed)
+ * codec, so the Host opens exactly what a real save would have produced. Personal
+ * designs are never copied unless explicitly passed as --design-studio-sample.
+ * ------------------------------------------------------------------------- */
+export const FIDELITY_FIXTURE_PATHS = Object.freeze({
+  legacyReceipts: "designs/host-fidelity-legacy-receipts.codesign.json",
+  interaction: "designs/host-fidelity-interaction.codesign.json",
+  rotationStrips: "designs/host-fidelity-rotation-strips.codesign.json",
+  svgCornerAa: "designs/host-fidelity-svg-corner-aa.codesign.json",
+  largeText: "designs/host-fidelity-large-text.codesign.json",
+});
+const CONTAINERS = new Set(["frame", "component", "group"]);
+function fixtureNode(id, type, x, y, width, height, extra = {}) {
+  return { id, type, name: id, x, y, width, height, fill: "#1f2328", stroke: "transparent", strokeWidth: 0,
+    opacity: 1, rotation: 0, cornerRadius: 0, visible: true, locked: false,
+    ...(CONTAINERS.has(type) ? { layout: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start", children: [] } : {}),
+    ...extra };
+}
+function fixtureText(id, x, y, width, height, text, extra = {}) {
+  return fixtureNode(id, "text", x, y, width, height, { text, fontFamily: "Arial", fontSize: 14, fontWeight: 400,
+    lineHeight: 1.4, textAlign: "left", fill: "#1f2328", ...extra });
+}
+function fixtureDocument(name, children, { width = 1280, height = 800, background = "#f6f7f5" } = {}) {
+  return { format: "codeshell.design", version: 3, name, canvas: { width, height, background },
+    tokens: { colors: [] }, resources: [], activePageId: "main", pages: [{ id: "main", name: "Main", children }] };
+}
+/** A receipt in the shape the browser measurer records, for an explicit signature. */
+function receiptFor(node, signature) {
+  const lines = node.text.split("\n");
+  const lineHeight = node.fontSize * node.lineHeight;
+  const lineWidths = lines.map(line => Math.round(Math.min(node.width, [...line].length * node.fontSize * 0.56) * 64) / 64);
+  return { version: 1, signature, lineWidths,
+    lineInkBounds: lineWidths.map(width => ({ x: 0, y: Math.round(node.fontSize * 0.18 * 64) / 64, width, height: node.fontSize })),
+    height: Math.round(lines.length * lineHeight * 64) / 64, fontAvailable: true };
+}
+/** Pre-line-box receipts: the current signature without the line-box-v1 origin marker. */
+function legacySignature(textMetrics, node) {
+  const value = JSON.parse(textMetrics.textMetricsSignature(node));
+  const origin = value.at(-1);
+  if (origin && typeof origin === "object" && !Array.isArray(origin) && origin.origin === "line-box-v1") value.pop();
+  return JSON.stringify(value);
+}
+
+export function buildDesignStudioFidelityFixtures({ codec, textMetrics }) {
+  const canonical = (relativePath, purpose, raw) => {
+    const bytes = codec.serializeDesignDocument(codec.normalizeDesignDocument(raw));
+    return { relativePath, purpose, bytes, sha256: sha256(bytes) };
+  };
+  const withLegacy = node => ({ ...node, textMetrics: receiptFor(node, legacySignature(textMetrics, node)) });
+  const withCurrent = node => ({ ...node, textMetrics: receiptFor(node, textMetrics.textMetricsSignature(node)) });
+
+  const legacyChildren = [
+    withLegacy(fixtureText("legacy-latin-line-box", 40.25, 40.5, 260, 44, "Legacy receipt HMI\nSecond line")),
+    withLegacy(fixtureText("legacy-cjk-line-box", 340.5, 40.25, 260, 44, "旧版测量回执\n中文第二行", { fontFamily: '"PingFang SC", sans-serif' })),
+    withCurrent(fixtureText("finite-offset-latin", 40.25, 120.75, 260, 24, "Imported finite 5.25", { layoutBaselineOffset: 5.25 })),
+    withCurrent(fixtureText("finite-zero-cjk", 340.5, 120.5, 260, 24, "导入零偏移 Zero", { layoutBaselineOffset: 0, fontFamily: '"PingFang SC", sans-serif' })),
+    withLegacy(fixtureText("wrap-legacy", 40.25, 180.25, 150, 44, "Wrapped legacy \ncopy text", { textSource: "Wrapped legacy copy text",
+      textFlow: "wrap", textFlowWidth: 150 })),
+    fixtureNode("hug-row", "frame", 340.5, 180.5, 220, 40, { layout: "horizontal", gap: 8, padding: 8, alignItems: "center", fill: "#ffffff",
+      children: [withLegacy(fixtureText("hug-label", 348.5, 190.5, 96, 20, "Hug 文字 label", { layoutSizingHorizontal: "hug" }))] }),
+    fixtureText("unmeasured-line-box", 40.25, 260.25, 260, 24, "No receipt line box"),
+  ];
+  const interactionChildren = [
+    fixtureNode("move-target", "rectangle", 120, 140, 120, 80, { fill: "#2f6fb2", cornerRadius: 6 }),
+    fixtureNode("underlay", "rectangle", 400, 140, 160, 120, { fill: "#d9dde3" }),
+    fixtureText("edit-target", 120, 320, 220, 24, "Edit me HMI"),
+  ];
+  const rotationChildren = [
+    fixtureNode("chevron-group", "frame", 40, 40, 32, 32, { fill: "#ffffff", children: [
+      fixtureNode("chevron-upper", "rectangle", 50.6, 49.42, 9.6, 1.12, { fill: "#6b7280", rotation: 45, cornerRadius: 0.56 }),
+      fixtureNode("chevron-lower", "rectangle", 50.6, 57.42, 9.6, 1.12, { fill: "#6b7280", rotation: -45, cornerRadius: 0.56 }),
+    ] }),
+    fixtureNode("prompt-glyph-group", "frame", 96, 40, 48, 32, { fill: "#ffffff", children: [
+      fixtureNode("prompt-glyph-stroke-a", "rectangle", 104.42, 50.49, 7.8, 1.19, { fill: "#686e67", rotation: 40, cornerRadius: 0.595 }),
+      fixtureNode("prompt-glyph-stroke-b", "rectangle", 104.42, 55.49, 7.8, 1.19, { fill: "#686e67", rotation: -40, cornerRadius: 0.595 }),
+      fixtureText("prompt-glyph", 118.25, 46.5, 22, 20, ">_", { fontFamily: "Menlo, monospace", fontSize: 13, lineHeight: 1.2 }),
+    ] }),
+    fixtureNode("button-frame", "frame", 168, 40, 120, 32, { fill: "#2f6fb2", cornerRadius: 6, layout: "horizontal", padding: 8, alignItems: "center",
+      children: [fixtureText("button-label", 176, 46, 104, 20, "Continue 继续", { fill: "#ffffff", fontWeight: 600, layoutSizingHorizontal: "hug" })] }),
+    fixtureNode("finite-sample", "frame", 312, 40, 200, 32, { fill: "#ffffff", children: [
+      fixtureText("finite-sample-text", 320.25, 46.5, 184, 20, "Finite 有限 offset", { layoutBaselineOffset: 3.5, lineHeight: 1.2 })] }),
+  ];
+  // One page only: switching pages through #active-page marks the document dirty.
+  // Authored fractional phases match the audited rows (x .3/.4, y .4/.3).
+  const svgSurface = (id, x0) => fixtureNode(`${id}-surface`, "frame", x0, 80, 80, 260, { fill: "#f3f4f1", children: [
+    fixtureNode(`svg-corner-${id}-vertical`, "rectangle", x0 + 28.3, 303.4, 1.26, 7.2, { fill: "#686e67" }),
+    fixtureNode(`svg-corner-${id}-horizontal`, "rectangle", x0 + 27.4, 97.3, 7.2, 1.17, { fill: "#686e67" }),
+  ] });
+  const largeChildren = [];
+  const samples = ["Dashboard HMI 1024", "设计渲染 文字缓存", "Mixed 中文 Latin 42", "Status: ready ✓", "低缩放 fractional pan"];
+  for (let index = 0; index < 1200; index++) {
+    const column = index % 30, row = Math.floor(index / 30);
+    largeChildren.push(fixtureText(`large-text-${index}`, 20.25 + column * 132.5, 16.375 + row * 30.25, 128, 22,
+      `${samples[index % samples.length]} #${index}`, { fontSize: 12 + (index % 3), fontFamily: index % 2 ? '"PingFang SC", sans-serif' : "Arial" }));
+  }
+  return [
+    canonical(FIDELITY_FIXTURE_PATHS.legacyReceipts, "open without editing must not rewrite bytes/mtime or become dirty",
+      fixtureDocument("Host fidelity legacy receipts", legacyChildren)),
+    canonical(FIDELITY_FIXTURE_PATHS.interaction, "move/edit then immediate click selects the actual node at the new geometry",
+      fixtureDocument("Host fidelity interaction", interactionChildren)),
+    canonical(FIDELITY_FIXTURE_PATHS.rotationStrips, "GPU/browser/HTML captures of chevron, >_, button and finite text",
+      fixtureDocument("Host fidelity rotation strips", rotationChildren, { width: 600, height: 120, background: "#ffffff" })),
+    canonical(FIDELITY_FIXTURE_PATHS.svgCornerAa, "real-Host original-size captures for the four DPR1 SVG corner-AA FAIL geometries",
+      fixtureDocument("Host fidelity SVG corner AA", [svgSurface("chat", 0), svgSurface("panels", 120)], { width: 400, height: 400 })),
+    canonical(FIDELITY_FIXTURE_PATHS.largeText, "1000+ real text nodes at fractional low zoom/pan for device sampling and tile bypass",
+      fixtureDocument("Host fidelity large text", largeChildren, { width: 4000, height: 1240 })),
+  ];
+}
+
+/* ---------------------------------------------------------------------------
+ * Verdicts. PASS needs concrete measured evidence; an absent or boolean-only
+ * observation is UNVERIFIED. Performance and visual captures have no approved
+ * numeric budget, so they are EVIDENCE_ONLY at best and never auto-pass.
+ * ------------------------------------------------------------------------- */
+export const FIDELITY_STATUS = Object.freeze({ PASS: "PASS", FAIL: "FAIL", UNVERIFIED: "UNVERIFIED", EVIDENCE_ONLY: "EVIDENCE_ONLY" });
+export const OPEN_WAIT_MIN_MS = 2000;
+export const IMMEDIATE_CLICK_MAX_MS = 250;
+const isSha = value => typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+const finite = value => typeof value === "number" && Number.isFinite(value);
+const validFileState = value => Boolean(value && isSha(value.sha256) && finite(value.mtimeMs) && finite(value.size));
+const sameFileState = (a, b) => a.sha256 === b.sha256 && a.mtimeMs === b.mtimeMs && a.size === b.size;
+const verdict = (status, reasons = [], extra = {}) => ({ status, reasons, ...extra });
+const BUSY_SAVE_TEXT = /正在自动保存|保存中|有修改|外部变更|失败/u;
+
+export function judgeOpenWithoutEdit(observation) {
+  const missing = [];
+  if (!observation || typeof observation !== "object") return verdict(FIDELITY_STATUS.UNVERIFIED, ["no observation"]);
+  if (!validFileState(observation.before)) missing.push("before{sha256,mtimeMs,size}");
+  if (!validFileState(observation.after)) missing.push("after{sha256,mtimeMs,size}");
+  if (!finite(observation.waitedMs)) missing.push("waitedMs");
+  const states = Array.isArray(observation.saveStates) ? observation.saveStates : [];
+  if (states.length < 2) missing.push("at least two #save-state samples");
+  if (states.some(state => typeof state?.kind !== "string" || !finite(state?.atMs))) missing.push("each #save-state sample needs kind and atMs");
+  if (missing.length) return verdict(FIDELITY_STATUS.UNVERIFIED, [`missing ${missing.join(", ")}`]);
+  const failures = [];
+  if (!sameFileState(observation.before, observation.after)) failures.push("design bytes, mtime or size changed without an edit");
+  for (const state of states)
+    if (["dirty", "error"].includes(state.kind) || BUSY_SAVE_TEXT.test(state.text ?? ""))
+      failures.push(`#save-state became ${state.kind} "${state.text ?? ""}" at ${state.atMs}ms`);
+  if (failures.length) return verdict(FIDELITY_STATUS.FAIL, failures);
+  if (observation.waitedMs < OPEN_WAIT_MIN_MS || Math.max(...states.map(state => state.atMs)) < OPEN_WAIT_MIN_MS)
+    return verdict(FIDELITY_STATUS.UNVERIFIED, [`observed ${observation.waitedMs}ms; at least ${OPEN_WAIT_MIN_MS}ms after open is required`]);
+  return verdict(FIDELITY_STATUS.PASS);
+}
+
+export function judgeImmediateClick(observation) {
+  if (!observation || !Array.isArray(observation.clicks)) return verdict(FIDELITY_STATUS.UNVERIFIED, ["no click observations"]);
+  const reasons = [];
+  const before = observation.geometryBefore, after = observation.geometryAfter;
+  if (!before || !after || ![before.x, before.y, after.x, after.y].every(finite)) reasons.push("missing committed geometry before/after");
+  else if (observation.operation !== "text-edit" && before.x === after.x && before.y === after.y) reasons.push("the edit did not change geometry");
+  const labels = new Set(observation.clicks.map(click => click?.label));
+  for (const label of ["new-position", "old-position"]) if (!labels.has(label)) reasons.push(`missing ${label} click`);
+  for (const click of observation.clicks) {
+    if (!Array.isArray(click?.actualSelectedIds) || !Array.isArray(click?.expectedSelectedIds))
+      reasons.push(`${click?.label}: actual DOM selection was not observed`);
+    else if (!finite(click.elapsedSinceCommitMs)) reasons.push(`${click.label}: missing elapsedSinceCommitMs`);
+    else if (click.elapsedSinceCommitMs > IMMEDIATE_CLICK_MAX_MS)
+      reasons.push(`${click.label}: click ${click.elapsedSinceCommitMs}ms after commit is not immediate (<=${IMMEDIATE_CLICK_MAX_MS}ms)`);
+  }
+  if (reasons.length) return verdict(FIDELITY_STATUS.UNVERIFIED, reasons);
+  const failures = observation.clicks.filter(click =>
+    JSON.stringify([...click.actualSelectedIds].sort()) !== JSON.stringify([...click.expectedSelectedIds].sort()))
+    .map(click => `${click.label}: selected ${JSON.stringify(click.actualSelectedIds)}, expected ${JSON.stringify(click.expectedSelectedIds)}`);
+  return failures.length ? verdict(FIDELITY_STATUS.FAIL, failures) : verdict(FIDELITY_STATUS.PASS);
+}
+
+const RENDERER_COUNTERS = ["deviceTextSamplingBuilds", "deviceSamplingMisses", "tileBypassFrames", "cpuPrepMs"];
+export function judgeLowZoomPerformance(observation) {
+  if (!observation || typeof observation !== "object") return verdict(FIDELITY_STATUS.UNVERIFIED, ["no observation"]);
+  const evidence = { frames: observation.frames, cpu: observation.cpu, renderer: observation.renderer ?? null, camera: observation.camera };
+  const reasons = [];
+  if (!(observation.textNodeCount >= 1000)) reasons.push(`fixture has ${observation.textNodeCount} text nodes; 1000+ real text nodes are required`);
+  const camera = observation.camera;
+  if (!camera || ![camera.zoom, camera.panX, camera.panY, camera.dpr].every(finite)) reasons.push("camera was not observed");
+  else {
+    if (!(camera.zoom < 1) || Number.isInteger(camera.zoom * camera.dpr)) reasons.push(`zoom ${camera.zoom} is not a non-integer low zoom`);
+    if (Number.isInteger(camera.panX * camera.dpr) && Number.isInteger(camera.panY * camera.dpr)) reasons.push("pan has no fractional device phase");
+  }
+  if (!(observation.frames?.count > 0) || !Array.isArray(observation.frames?.intervalsMs) || !observation.frames.intervalsMs.length)
+    reasons.push("no real frame timing was recorded");
+  const renderer = observation.renderer;
+  if (!renderer || !RENDERER_COUNTERS.every(key => finite(renderer[key])))
+    reasons.push("renderer device sampling builds/misses, tile bypass and CPU prep counters are not observable in the installed app");
+  if (reasons.length) return verdict(FIDELITY_STATUS.UNVERIFIED, reasons, { evidence });
+  return verdict(FIDELITY_STATUS.EVIDENCE_ONLY, ["no approved performance budget; recorded for review"], { evidence });
+}
+
+export function judgeSaveReopen(observation) {
+  if (!observation || typeof observation !== "object") return verdict(FIDELITY_STATUS.UNVERIFIED, ["no observation"]);
+  const missing = ["saved", "resaved", "reopened"].filter(key => !validFileState(observation[key]));
+  if (!isSha(observation.canonicalSha256)) missing.push("canonicalSha256");
+  if (!Array.isArray(observation.layerIdsBefore) || !Array.isArray(observation.layerIdsAfterReopen)) missing.push("layer ids");
+  if (typeof observation.saveStateAfterSave !== "string" || typeof observation.dirtyAfterReopen !== "string") missing.push("save states");
+  if (missing.length) return verdict(FIDELITY_STATUS.UNVERIFIED, [`missing ${missing.join(", ")}`]);
+  const failures = [];
+  if (observation.saveStateAfterSave !== "saved") failures.push(`save ended as ${observation.saveStateAfterSave}`);
+  if (observation.resaved.sha256 !== observation.saved.sha256) failures.push("second save changed bytes");
+  if (!sameFileState(observation.reopened, observation.resaved)) failures.push("reopen rewrote the saved file");
+  if (observation.canonicalSha256 !== observation.saved.sha256) failures.push("saved bytes are not the installed codec's canonical serialization");
+  if (JSON.stringify(observation.layerIdsBefore) !== JSON.stringify(observation.layerIdsAfterReopen)) failures.push("layer identity/order changed after reopen");
+  if (["dirty", "error"].includes(observation.dirtyAfterReopen)) failures.push(`reopened document is ${observation.dirtyAfterReopen}`);
+  return failures.length ? verdict(FIDELITY_STATUS.FAIL, failures) : verdict(FIDELITY_STATUS.PASS);
+}
+
+const REQUIRED_VISUAL_ROUTES = ["gpu", "browser", "html"];
+export function judgeVisualCaptureGroup(group) {
+  const captures = Array.isArray(group?.captures) ? group.captures : [];
+  const reasons = [];
+  for (const route of REQUIRED_VISUAL_ROUTES) if (!captures.some(capture => capture.route === route)) reasons.push(`missing ${route} capture`);
+  for (const capture of captures) {
+    if (!isSha(capture.png?.sha256) || !(capture.png?.width > 0) || !(capture.png?.height > 0)) reasons.push(`${capture.route}: no PNG`);
+    else if (!(capture.png.distinctColors > 1)) reasons.push(`${capture.route}: blank capture`);
+    if (![capture.camera?.zoom, capture.camera?.panX, capture.camera?.panY, capture.camera?.dpr].every(finite)) reasons.push(`${capture.route}: camera not observed`);
+  }
+  const first = captures[0]?.camera;
+  if (first && captures.some(capture => ["zoom", "panX", "panY", "dpr"].some(key => Math.abs(capture.camera?.[key] - first[key]) > 1e-9)))
+    reasons.push("routes do not share one camera");
+  if (reasons.length) return verdict(FIDELITY_STATUS.UNVERIFIED, reasons);
+  return verdict(FIDELITY_STATUS.EVIDENCE_ONLY, ["visual equivalence needs reviewed comparison; captures are evidence only"]);
+}
+
+export function judgeSvgCornerProbe(observation) {
+  const notes = [];
+  if (observation?.dpr !== 1) notes.push(`captured at DPR${observation?.dpr}; the four FAIL rows were DPR1/z1`);
+  const status = observation?.semantic?.status;
+  if (status === "PASS") return verdict(FIDELITY_STATUS.PASS, [], { notes });
+  if (status === "FAIL_SVG_GEOMETRY") return verdict(FIDELITY_STATUS.FAIL, [observation.semantic.reason ?? "SVG coverage outside the authored geometry contract"], { notes });
+  return verdict(FIDELITY_STATUS.UNVERIFIED, [`semantic status ${status ?? "missing"}`], { notes });
+}
+
+export function planDesignStudioFidelityScenarios({ sample = false } = {}) {
+  const P = FIDELITY_FIXTURE_PATHS;
+  return [
+    { id: "open-without-edit", fixture: P.legacyReceipts, fixtures: [P.legacyReceipts, ...(sample ? ["sample"] : [])],
+      steps: ["open via #open-files → #files-dialog .file-row", `sample #save-state and file bytes/mtime for >= ${OPEN_WAIT_MIN_MS}ms without input`],
+      observables: ["file sha256/mtime/size (Node, temp project)", "#save-state[data-kind] + text", "#path value"],
+      knownGaps: ["Host storage writes for lastPath/recent/recovery are not design bytes and are not gated here"] },
+    { id: "immediate-click-after-edit", fixture: P.interaction, fixtures: [P.interaction],
+      steps: ["real drag via webContents.sendInputEvent", "immediate click at new and old geometry", "inspector #prop-x edit then immediate click",
+        "inline text edit (Enter, type, Cmd/Ctrl+Enter) then immediate click"],
+      observables: ["#layers-list .layer-row[aria-selected=true][data-id]", "#prop-x/#prop-y", "#stage 2D transform (camera)"],
+      knownGaps: ["hitTest is synchronous on cached scene geometry; the GPU scene rebuild timing itself is not exposed"] },
+    { id: "low-zoom-fractional-performance", fixture: P.largeText, fixtures: [P.largeText],
+      steps: ["Ctrl+wheel to a non-integer zoom < 1", "fractional wheel pans", "record rAF frame intervals and CDP Performance.getMetrics deltas"],
+      observables: ["requestAnimationFrame intervals in the guest", "CDP Performance.getMetrics ScriptDuration/TaskDuration/LayoutDuration"],
+      knownGaps: ["CanvasKit renderer stats() (deviceTextSamplingBuilds, tile builds/hits, renderMode, lastRenderSubmitMs) are not exposed to DOM/window in the installed app; device sampling misses and tile bypass remain UNVERIFIED without a reviewed read-only surface"] },
+    { id: "save-reopen-stable", fixture: P.interaction, fixtures: [P.interaction],
+      steps: ["after the edit scenario, explicit #save", "second #save", "reload the guest (lastPath reopen)", "wait and re-read bytes"],
+      observables: ["file sha256/mtime/size", "installed codec canonical serialization", "layer ids/order", "#save-state"], knownGaps: [] },
+    { id: "same-camera-visual", fixture: P.rotationStrips, fixtures: [P.rotationStrips],
+      steps: ["GPU and browser renderer captures at ~100%, ~200% (Ctrl+wheel) and fit", "HTML reference from installed frontend-export in an owned hidden BrowserWindow of the same Electron"],
+      observables: ["capturePage PNG + sha256", "#stage transform for every route"],
+      knownGaps: ["no 100%/200% preset exists; zoom is reached by Ctrl+wheel within float tolerance", "visual equivalence requires review; no automatic pass"] },
+    { id: "svg-corner-aa-host", fixture: P.svgCornerAa, fixtures: [P.svgCornerAa],
+      steps: ["installed exportDesignSvg rendered at original size in the owned reference window", "GPU/browser captures at zoom 1", "SVG semantic oracle on the SVG capture"],
+      observables: ["capturePage PNG", "tests/apps/design-studio/svg-semantic-metrics.mjs compareSvgSemantics"],
+      knownGaps: ["a Retina Host captures DPR2; the four FAIL rows were DPR1/z1 and need a DPR1 display to reproduce"] },
+  ];
+}
+
+export function summarizeFidelityReport(results, plan = planDesignStudioFidelityScenarios()) {
+  const byId = new Map(results.map(result => [result.id, result]));
+  const counts = Object.fromEntries(Object.values(FIDELITY_STATUS).map(status => [status, 0]));
+  const notRun = [];
+  for (const scenario of plan) {
+    const result = byId.get(scenario.id);
+    if (!result) { notRun.push(scenario.id); continue; }
+    counts[result.status] = (counts[result.status] ?? 0) + 1;
+  }
+  const ids = status => plan.map(value => value.id).filter(id => byId.get(id)?.status === status);
+  const overall = counts.FAIL ? "FAIL" : counts.PASS === plan.length ? "PASS" : "INCOMPLETE";
+  return { overall, goalComplete: false, counts, notRun, failed: ids("FAIL"), unverified: ids("UNVERIFIED"), evidenceOnly: ids("EVIDENCE_ONLY"),
+    note: "A PASS here covers only these synthetic real-Host scenarios; it is not overall visual acceptance or goal completion." };
+}
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** The report and PNG artifacts are create-only and live outside this repository. */
+export async function assertFidelityOutputsAbsent(reportPath) {
+  const report = resolve(reportPath), artifactsDirectory = `${report}.artifacts`;
+  if (inside(REPOSITORY_ROOT, report)) throw new Error(`fidelity report must be outside the repository: ${report}`);
+  for (const path of [report, artifactsDirectory])
+    if (await stat(path).then(() => true, () => false)) throw new Error(`fidelity output already exists: ${path}`);
+  return { reportPath: report, artifactsDirectory };
+}
+
+/** Map authored world geometry into the exported SVG's original-size device pixels. */
+export function svgReferenceGeometry(svg) {
+  const root = /<svg\b[^>]*>/u.exec(svg)?.[0];
+  const viewBox = root && /\sviewBox="([-\d.]+) ([-\d.]+) ([\d.]+) ([\d.]+)"/u.exec(root);
+  const width = root && /\swidth="([\d.]+)"/u.exec(root), height = root && /\sheight="([\d.]+)"/u.exec(root);
+  if (!viewBox || !width || !height) return null;
+  const [minX, minY, boxWidth] = viewBox.slice(1).map(Number);
+  const scale = Number(width[1]) / boxWidth;
+  const round = value => Math.round(value * 1e9) / 1e9;
+  return { viewport: { width: Number(width[1]), height: Number(height[1]) }, minX, minY, scale,
+    toDevice: (node, dpr) => ({ x: round(dpr * scale * (node.x - minX)), y: round(dpr * scale * (node.y - minY)),
+      width: round(dpr * scale * node.width), height: round(dpr * scale * node.height) }) };
+}
