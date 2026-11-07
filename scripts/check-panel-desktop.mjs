@@ -14,7 +14,7 @@ import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-des
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
-import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
+import { DESIGN_STUDIO_PROBES, createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
 import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
   describeOwnedCleanup, desktopFixtureSettings, EXTERNAL_AGENT_RUNTIME_BOUNDARY, writeFidelityPartialOnce,
   designStudioProbeSwitches, insertProbeSwitches, parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
@@ -142,7 +142,9 @@ app.on("session-created", session => {
     const fixtures = await buildDesignStudioFidelityFixtures({
       codec: await import(pathToFileURL(join(studioApp, "document.mjs")).href),
       textMetrics: await import(pathToFileURL(join(studioApp, "text-metrics.mjs")).href),
-      documentIndex: await import(pathToFileURL(join(studioApp, "document-index.mjs")).href) });
+      documentIndex: await import(pathToFileURL(join(studioApp, "document-index.mjs")).href),
+      resourceStore: await import(pathToFileURL(join(studioApp, "resource-store.mjs")).href),
+      readAppBytes: path => readFile(join(studioApp, path)) });
     const seededStates = {};
     // Every file (single documents, index manifests and page parts) fits one Host readText.
     for (const fixture of fixtures) for (const file of fixture.files) {
@@ -368,7 +370,8 @@ app.on("session-created", session => {
         await withOwnedFidelityGuest(guestCleanup, async () => {
           // Bounded readiness and webContents id; a hung guest goes to the shared cleanup.
           const { guestWebContentsId } = await prepareFidelityGuest({ guest: fidelityGuest, guestCleanup,
-            readySource: 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"' });
+            readySource: 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"',
+            stateSource: DESIGN_STUDIO_PROBES.openState() });
           const core = await hostModule("packages/core/dist/index.js");
           const selected = (await core.listProjectPanelApps(fidelityProject, id)).find(value => value.id === id);
           assert.ok(selected?.installPath, "installed Design Studio package path not found for the fidelity project");

@@ -85,8 +85,9 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
   }
   if (sampleSeen && !fidelity) throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   if (probe && !fidelity) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
-  // A forced device scale factor changes the owned Electron's real display mode; probes only.
-  if (forceDeviceScaleFactor !== null && !probe) throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires ${DESIGN_STUDIO_PROBE_FLAG}`);
+  // A forced device scale factor changes only the owned Electron's display scale (a controlled DPR,
+  // not a physical display). Allowed for probes and for the fidelity scenarios; reports record it.
+  if (forceDeviceScaleFactor !== null && !fidelity) throw new Error(`${DESIGN_STUDIO_FORCE_DSF_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   // Single-variable raster-backend control for the owned Electron only; probes only.
   if (disableGpuRasterization && !probe) throw new Error(`${DESIGN_STUDIO_DISABLE_GPU_RASTER_FLAG} requires ${DESIGN_STUDIO_PROBE_FLAG}`);
   if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
@@ -190,7 +191,36 @@ export const FIDELITY_FIXTURE_PATHS = Object.freeze({
   rotationStrips: "designs/host-fidelity-rotation-strips.codesign.json",
   svgCornerAa: "designs/host-fidelity-svg-corner-aa.codesign.json",
   largeText: "designs/host-fidelity-large-text.codesign.json",
+  coverage: "designs/host-fidelity-coverage.codesign.json",
 });
+/**
+ * High-risk coverage matrix (one small document, top-level nodes on white so no frame label
+ * band overlaps a region). World regions include a margin around each node's paint.
+ * `editable` marks the text nodes whose inline editor overlay is measured.
+ */
+export const COVERAGE_BUILTIN_INTER = Object.freeze({ id: "builtin-inter-400-normal", family: "Inter", file: "fonts/InterVariable.woff2" });
+export const COVERAGE_IMAGE_ID = "coverage-png";
+export const COVERAGE_CASES = Object.freeze([
+  { id: "inter-default", region: [16, 36, 208, 40], note: "fontFamily Inter stack without fontRef (the app's default text)" },
+  { id: "inter-bytes", region: [246, 36, 208, 40], note: "Inter bound to the bundled bytes as builtin-inter-400-normal", editable: true },
+  { id: "cjk-center", region: [16, 92, 208, 36], note: "CJK + Latin, textAlign center", editable: true },
+  { id: "cjk-right", region: [246, 92, 208, 36], note: "CJK + Latin, textAlign right" },
+  { id: "ranges-fill-link", region: [16, 144, 208, 36], note: "textRanges: plain fill run + href link run on bundled Inter" },
+  { id: "finite-multiline", region: [246, 140, 208, 60], note: "imported finite baseline offset, two lines" },
+  { id: "image-cover", region: [16, 216, 104, 64], note: "PNG resource, objectFit cover" },
+  { id: "image-contain", region: [136, 216, 104, 64], note: "PNG resource, objectFit contain" },
+].map(value => Object.freeze(value)));
+/** Deterministic 64x32 PNG: two colour fields and a dark diagonal, so cover/contain crops differ visibly. */
+export function coveragePngBytes() {
+  const require = createRequire(import.meta.url), { PNG } = require("pngjs");
+  const image = new PNG({ width: 64, height: 32 });
+  for (let y = 0; y < 32; y++) for (let x = 0; x < 64; x++) {
+    const o = (y * 64 + x) * 4, diagonal = Math.abs(x - 2 * y) <= 1;
+    const [r, g, b] = diagonal ? [31, 35, 40] : x < 32 ? [37, 99, 235] : [249, 115, 22];
+    image.data[o] = r; image.data[o + 1] = g; image.data[o + 2] = b; image.data[o + 3] = 255;
+  }
+  return PNG.sync.write(image);
+}
 const CONTAINERS = new Set(["frame", "component", "group"]);
 function fixtureNode(id, type, x, y, width, height, extra = {}) {
   return { id, type, name: id, x, y, width, height, fill: "#1f2328", stroke: "transparent", strokeWidth: 0,
@@ -231,7 +261,7 @@ const fixtureFile = (relativePath, bytes) => {
   return { relativePath, bytes, sha256: sha256(bytes) };
 };
 
-export async function buildDesignStudioFidelityFixtures({ codec, textMetrics, documentIndex }) {
+export async function buildDesignStudioFidelityFixtures({ codec, textMetrics, documentIndex, resourceStore = null, readAppBytes = null }) {
   const canonical = (relativePath, purpose, raw) => {
     const bytes = codec.serializeDesignDocument(codec.normalizeDesignDocument(raw));
     return { relativePath, purpose, storage: "single", bytes, sha256: sha256(bytes), logicalSource: bytes, logicalSha256: sha256(bytes),
@@ -297,6 +327,9 @@ export async function buildDesignStudioFidelityFixtures({ codec, textMetrics, do
       `${samples[index % samples.length]} #${index}`, { fontSize: 12 + (index % 3), fontFamily: index % 2 ? '"PingFang SC", sans-serif' : "Arial" }));
   }
   return [
+    // Seeded first (oldest mtime): the app auto-opens the newest design at startup (chooseRepoDesignFile),
+    // which must stay large-text as in earlier runs; cov-dpr2-c auto-opened this one instead.
+    ...(resourceStore && readAppBytes ? [await coverageFixture({ codec, textMetrics, resourceStore, readAppBytes, canonical })] : []),
     canonical(FIDELITY_FIXTURE_PATHS.legacyReceipts, "open without editing must not rewrite bytes/mtime or become dirty",
       fixtureDocument("Host fidelity legacy receipts", legacyChildren)),
     canonical(FIDELITY_FIXTURE_PATHS.interaction, "move/edit then immediate click selects the actual node at the new geometry",
@@ -309,6 +342,39 @@ export async function buildDesignStudioFidelityFixtures({ codec, textMetrics, do
       fixtureDocument("Host fidelity large text", largeChildren, { width: 4000, height: 1240 })),
   ];
 }
+
+/** Coverage document with two codec resources (bundled Inter bytes, synthetic PNG) and their part files. */
+async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes, canonical }) {
+  const plan = (id, kind, mime, bytes, font = {}) => resourceStore.createDesignResourcePersistencePlan({ id, kind, mime,
+    base64: Buffer.from(bytes).toString("base64"), ...font, sha256Bytes: async value => sha256(value) });
+  const font = await plan(COVERAGE_BUILTIN_INTER.id, "font", "font/woff2", await readAppBytes(COVERAGE_BUILTIN_INTER.file),
+    { family: COVERAGE_BUILTIN_INTER.family, weight: 400, style: "normal" });
+  const image = await plan(COVERAGE_IMAGE_ID, "image", "image/png", coveragePngBytes());
+  const bound = { fontFamily: "Inter", fontRef: COVERAGE_BUILTIN_INTER.id };
+  // Latin only: bundled Inter has every glyph. A CJK run here makes the GPU renderer refuse the whole
+  // scene (TEXT_RANGES_UNSUPPORTED, cov-dpr2-b), recorded separately as a finding.
+  const linkText = "Plain fill and link run";
+  const children = [
+    fixtureText("inter-default", 20.3, 44.3, 200, 28, "Inter 默认 Hgx 42", { fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif", fontSize: 20, lineHeight: 1.3 }),
+    fixtureText("inter-bytes", 250.3, 44.3, 200, 28, "Inter 字节 Hgx 42", { ...bound, fontSize: 20, lineHeight: 1.3 }),
+    fixtureText("cjk-center", 20.3, 98.3, 200, 24, "居中 Center 中文 Hg", { fontFamily: '"PingFang SC", sans-serif', textAlign: "center", lineHeight: 1.3 }),
+    fixtureText("cjk-right", 250.3, 98.3, 200, 24, "右对齐 Right 42", { fontFamily: '"PingFang SC", sans-serif', textAlign: "right", lineHeight: 1.3 }),
+    fixtureText("ranges-fill-link", 20.3, 150.3, 200, 24, linkText, { ...bound, lineHeight: 1.3,
+      textRanges: { version: 1, sourceSignature: textRangesSignature(linkText), ranges: [
+        { start: 6, end: 10, fill: "#b42318" }, { start: 15, end: linkText.length, fill: "#175cd3", href: "https://example.invalid/coverage" }] } }),
+    fixtureText("finite-multiline", 250.3, 146.3, 200, 48, "Finite 第一行 Hg\nSecond 第二行 42", { layoutBaselineOffset: 3.5, lineHeight: 1.3 }),
+    fixtureNode("image-cover", "image", 20.3, 220.3, 96, 56, { imageRef: COVERAGE_IMAGE_ID, objectFit: "cover", fill: "#ffffff" }),
+    fixtureNode("image-contain", "image", 140.3, 220.3, 96, 56, { imageRef: COVERAGE_IMAGE_ID, objectFit: "contain", fill: "#ffffff" }),
+  ];
+  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 300, background: "#ffffff" });
+  raw.resources = [font.descriptor, image.descriptor];
+  const entry = canonical(FIDELITY_FIXTURE_PATHS.coverage, "high-risk coverage: default vs bundled Inter, CJK center/right, ranges, finite multiline, PNG cover/contain, editor overlay", raw);
+  entry.files.push(...[...font.parts, ...image.parts].map(part => fixtureFile(part.path, part.content)));
+  entry.resources = [font.descriptor, image.descriptor];
+  return entry;
+}
+// Mirrors text-ranges.mjs textRangeSourceSignature; the codec's normalisation rejects any mismatch.
+function textRangesSignature(text) { return JSON.stringify([text]); }
 
 /** Read a seeded/saved design exactly as the app does: single file or real index + parts. */
 export async function readFixtureDocument({ projectDirectory, relativePath, codec, documentIndex }) {
@@ -658,6 +724,12 @@ export function planDesignStudioFidelityScenarios({ sample = false } = {}) {
       steps: ["installed exportDesignSvg rendered at original size in the owned reference window", "GPU/browser captures at zoom 1", "SVG semantic oracle on the SVG capture"],
       observables: ["capturePage PNG", "tests/apps/design-studio/svg-semantic-metrics.mjs compareSvgSemantics"],
       knownGaps: ["a Retina Host captures DPR2; the four FAIL rows were DPR1/z1 and need a DPR1 display to reproduce"] },
+    { id: "coverage-matrix", fixture: P.coverage, fixtures: [P.coverage],
+      steps: ["open the coverage document (bundled-Inter font + PNG codec resources)", "record document.fonts and Canvas metrics for the default Inter stack and loaded faces",
+        "GPU and browser captures at ~100% and fit, each moved to a .3 fractional pan", "per-case regionInk GPU vs browser (strict: centroid 0.15 device px, ink 3%)",
+        "inline editor overlay ink vs canvas ink for editable text; real edit, commit, save, reopen"],
+      observables: ["capturePage PNG + sha256", "#stage transform", "#inline-text-editor rect/style", "installed codec read of disk after save"],
+      knownGaps: ["the textarea caret is not observable as geometry; overlay alignment is measured as rendered ink", "the page's raster backend is not observable"] },
   ];
 }
 
@@ -869,4 +941,38 @@ export function insertProbeSwitches(bootstrap, switches) {
       : `app.commandLine.appendSwitch(${JSON.stringify(name)}, ${JSON.stringify(value)});\n`).join("") +
     `globalThis.__designStudioProbeSwitches.present = ${JSON.stringify(switches.map(([name]) => name))}.map(name => [name, app.commandLine.hasSwitch(name)]);\n`;
   return head + code + bootstrap.slice(head.length);
+}
+
+/**
+ * Ink of one device crop for multi-colour content (text runs, images): per-pixel colour distance
+ * from the crop border's dominant colour, mass-weighted centroid, and the >=24 distance bbox.
+ */
+export function regionInk(image, crop, { neutralOnly = false } = {}) {
+  const px = (x, y) => { const o = ((crop.y + y) * image.width + crop.x + x) * 4; return [image.data[o], image.data[o + 1], image.data[o + 2]]; };
+  const counts = new Map();
+  for (let x = 0; x < crop.width; x++) for (const y of [0, crop.height - 1]) { const key = px(x, y).join(); counts.set(key, (counts.get(key) ?? 0) + 1); }
+  for (let y = 0; y < crop.height; y++) for (const x of [0, crop.width - 1]) { const key = px(x, y).join(); counts.set(key, (counts.get(key) ?? 0) + 1); }
+  const background = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split(",").map(Number);
+  let mass = 0, sx = 0, sy = 0, minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
+  for (let y = 0; y < crop.height; y++) for (let x = 0; x < crop.width; x++) {
+    const [r, g, b] = px(x, y);
+    // neutralOnly: glyphs of a neutral text fill; coloured app chrome (selection frame, handles) is not ink.
+    if (neutralOnly && Math.max(r, g, b) - Math.min(r, g, b) > 24) continue;
+    const distance = Math.hypot(r - background[0], g - background[1], b - background[2]);
+    mass += distance; sx += distance * (x + 0.5); sy += distance * (y + 0.5);
+    if (distance >= 24) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x + 1); maxY = Math.max(maxY, y + 1); }
+  }
+  return { background, mass, centroid: mass ? [sx / mass, sy / mass] : null, bbox: maxX >= 0 ? [minX, minY, maxX, maxY] : null };
+}
+/** Strict GPU-vs-HTML contract for a coverage region (device px): centroid <= 0.15 and ink within ±3%; bbox recorded. */
+export const COVERAGE_THRESHOLDS = Object.freeze({ centroidDevicePx: 0.15, inkBias: 0.03 });
+export function compareCoverageRegion(reference, candidate) {
+  if (!reference?.centroid || !candidate?.centroid) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["no ink in one route"] };
+  const delta = [candidate.centroid[0] - reference.centroid[0], candidate.centroid[1] - reference.centroid[1]];
+  const centroid = Math.hypot(...delta), ink = candidate.mass / reference.mass - 1;
+  const bboxDelta = reference.bbox && candidate.bbox ? candidate.bbox.map((value, index) => value - reference.bbox[index]) : null;
+  const reasons = [];
+  if (!(centroid <= COVERAGE_THRESHOLDS.centroidDevicePx)) reasons.push(`centroid ${centroid.toFixed(3)} device px`);
+  if (!(Math.abs(ink) <= COVERAGE_THRESHOLDS.inkBias)) reasons.push(`ink ${(ink * 100).toFixed(2)}%`);
+  return { status: reasons.length ? FIDELITY_STATUS.FAIL : FIDELITY_STATUS.PASS, reasons, centroid, centroidDelta: delta, ink, bboxDelta };
 }

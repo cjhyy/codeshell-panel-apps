@@ -2,6 +2,8 @@
 
 **这是一个“有限边界”的修复候选，不是正式发布。** 它解决的是“真实 HiDPI Host 里 GPU 画布和 HTML 有明显样式差异”这个问题，但并不像素级一致（not pixel-perfect），也**不代表所有绘制路径都已通过**。下面列出的严格 FAIL 全部保留。独立 review 448732e1 的结论是：代码 PASS，无 Critical/Important；有限产品验收为 ACCEPTABLE_WITH_LIMITS。
 
+> 后续补测（高风险路径与 DPR1，修复 3 个真实缺陷，DPR1 未能受控）见 [design-studio-fidelity-coverage-followup-20261107.md](design-studio-fidelity-coverage-followup-20261107.md)；下文是 `29833828` 时的状态。
+
 ## 1. 版本与提交链
 
 - **分支**：`codex/design-studio/fidelity-host-harness-20261107`（只是本地一次性 worktree，没有 push）。

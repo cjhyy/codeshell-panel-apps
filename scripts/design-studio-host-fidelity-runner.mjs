@@ -19,6 +19,7 @@ import { GPU_DIAGNOSTIC_VARIANT, RASTER_BACKEND_CASES, SNAP_CAMERAS, SNAP_INTER,
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
   readFixtureDocument, zoomMatches, VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop,
+  COVERAGE_CASES, compareCoverageRegion, regionInk,
   judgeImmediateClick, judgeLowZoomPerformance, judgeOpenWithoutEdit, judgeSaveReopen, judgeSvgCornerProbe,
   judgeVisualCaptureGroup, planDesignStudioFidelityScenarios, summarizeFidelityReport, svgReferenceGeometry,
 } from "./design-studio-host-fidelity.mjs";
@@ -175,6 +176,8 @@ export const DESIGN_STUDIO_PROBES = Object.freeze({
     return { stage: stage && { x: stage.x, y: stage.y, width: stage.width, height: stage.height }, dpr: window.devicePixelRatio, text, shapes };
   })()`,
   environment: () => `({ devicePixelRatio: window.devicePixelRatio, innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+    resolution: [1, 1.5, 2, 3].filter(value => matchMedia("(resolution: " + value + "dppx)").matches),
+    screen: { width: screen.width, height: screen.height },
     userAgent: typeof navigator === "undefined" ? null : navigator.userAgent })`,
   openState: () => `(() => { const wrap = document.querySelector("#stage-wrap"), save = document.querySelector("#save-state");
     return { documentPath: document.querySelector("#document-path")?.value ?? null, saveKind: save?.dataset.kind ?? null, saveText: save?.textContent ?? null,
@@ -354,18 +357,27 @@ export async function closedLoopZoom({ target, readZoom, sendWheel, readDomDelta
  * guest cleanup as cancel, so a hung renderer cannot block before the caller's
  * finally; unsettled errors propagate to the existing owned Electron cleanup.
  */
-export async function prepareFidelityGuest({ guest, guestCleanup, readySource, timeoutMs = 30_000, settleTimeoutMs = 5_000,
+export async function prepareFidelityGuest({ guest, guestCleanup, readySource, stateSource = null, timeoutMs = 30_000, settleTimeoutMs = 5_000,
   wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now() }) {
   const cancel = async () => {
     const state = await guestCleanup.remove();
     if (state.removeState !== "resolved") throw new Error(`owned guest remove ${state.removeState}`);
   };
   const deadline = now() + timeoutMs;
+  let last;
   for (;;) {
-    const ready = await boundedOwnedOperation(() => guest.execute(readySource),
+    // Never issue a probe with a sliver of budget; diagnose instead (cov-dpr2 run: "timed out after 3ms").
+    if (deadline - now() < Math.min(1_000, timeoutMs * 0.05)) {
+      let state = null;
+      if (stateSource) state = await boundedOwnedOperation(() => guest.execute(stateSource),
+        { label: "fidelity guest not-ready state", timeoutMs: 2_000, settleTimeoutMs, cancel }).catch(error => ({ unavailable: String(error?.message ?? error) }));
+      const error = new Error(`fidelity guest not ready within ${timeoutMs}ms; last readiness value ${JSON.stringify(last)}; state ${JSON.stringify(state)}`);
+      error.guestState = state;
+      throw error;
+    }
+    last = await boundedOwnedOperation(() => guest.execute(readySource),
       { label: "fidelity guest readiness probe", timeoutMs: Math.max(1, Math.ceil(deadline - now())), settleTimeoutMs, cancel });
-    if (ready === true) break;
-    if (now() >= deadline) throw new Error(`fidelity guest not ready within ${timeoutMs}ms`);
+    if (last === true) break;
     await wait(100);
   }
   const guestWebContentsId = await boundedOwnedOperation(() => guest.view.evaluate(view => view.getWebContentsId()),
@@ -610,6 +622,11 @@ export async function runDesignStudioHostFidelity(options) {
 
   const results = [], probes = [];
   const environment = await dom(DESIGN_STUDIO_PROBES.environment()).catch(() => null);
+  // Owned-Electron switches actually present (probe seam) and the display scale Electron reports.
+  if (environment && typeof environment === "object") environment.main = await guestBound("guest Main operation", () => app.evaluate(({ app: electronApp, screen }) => ({
+    switches: globalThis.__designStudioProbeSwitches ?? null,
+    forceDeviceScaleFactor: electronApp.commandLine.getSwitchValue("force-device-scale-factor") || null,
+    displays: screen.getAllDisplays().map(display => ({ id: display.id, scaleFactor: display.scaleFactor, size: display.size })) }))).catch(error => ({ error: String(error?.message ?? error) }));
   async function probeStep(id, body) {
     if (!probe) return;
     log(`design-studio fidelity probe: ${id}`);
@@ -1060,6 +1077,159 @@ export async function runDesignStudioHostFidelity(options) {
     }
     await chooseRenderer("gpu");
     return { status: worst(rows.map(row => row.status)), svg: { png: svgEvidence.summary, blockedRequests: reference.blockedRequests, rows }, zoom, hostRoutes };
+  });
+
+  // High-risk coverage: one small document, GPU vs the app's own browser (HTML/CSS) route with the
+  // same codec resources, at ~100% and fit, each moved to a .3 fractional pan. Plus the inline
+  // editor overlay against the canvas ink, and a real edit -> commit -> save -> reopen.
+  await scenario("coverage-matrix", async () => {
+    const relativePath = FIDELITY_FIXTURE_PATHS.coverage;
+    if (!fixtureById.has(relativePath)) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["coverage fixture not seeded"] };
+    await openFile(relativePath);
+    await chooseRenderer("gpu");
+    const before = await fileState(relativePath);
+    const fonts = await dom(`(() => { const faces = [...document.fonts].map(f => ({ family: f.family, weight: f.weight, style: f.style, status: f.status }));
+      const ctx = document.createElement("canvas").getContext("2d"), text = "Inter 默认 Hgx 42";
+      const measure = family => { ctx.font = "400 20px " + family; const m = ctx.measureText(text);
+        return { family, width: m.width, ascent: m.fontBoundingBoxAscent, descent: m.fontBoundingBoxDescent, inkAscent: m.actualBoundingBoxAscent }; };
+      const loaded = [...new Set(faces.filter(f => f.status === "loaded").map(f => '"' + f.family.replace(/"/g, "") + '"'))];
+      return { faces, metrics: ["Inter, ui-sans-serif, system-ui, sans-serif", "ui-sans-serif", "system-ui", "sans-serif", ...loaded].map(measure),
+        devicePixelRatio: window.devicePixelRatio, resolution: [1, 1.5, 2, 3].filter(v => matchMedia("(resolution: " + v + "dppx)").matches) }; })()`);
+    const design = await documentAt(relativePath);
+    const centre = { x: 235, y: 160 };
+    const fractional = async () => {
+      // Plain wheel pans by the delivered DOM delta (pan -= delta); aim both axes at a .3 phase.
+      await dom(DESIGN_STUDIO_PROBES.wheelInstall());
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const cam = await camera(); if (!cam) return null;
+        const phase = value => ((value % 1) + 1) % 1, need = value => phase(value) - 0.3;
+        if (Math.abs(need(cam.panX)) < 0.02 && Math.abs(need(cam.panY)) < 0.02) return cam;
+        const point = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
+        await sendInput([{ type: "mouseWheel", x: point.x, y: point.y, deltaX: -need(cam.panX), deltaY: -need(cam.panY), hasPreciseScrollingDeltas: true, canScroll: true }]);
+        await wait(300);
+      }
+      return camera();
+    };
+    const measureAll = async label => {
+      const shots = {};
+      for (const route of ["gpu", "browser"]) {
+        await chooseRenderer(route);
+        const cam = await camera(), overlays = await dom(DESIGN_STUDIO_PROBES.overlayRects());
+        shots[route] = { cam, overlays, evidence: await capture(cam, `coverage-${label}-${route}`) };
+      }
+      const cam = shots.gpu.cam;
+      const rows = COVERAGE_CASES.map(item => {
+        const crops = Object.fromEntries(Object.entries(shots).map(([route, shot]) => [route, sampleRegionCrop({
+          camera: { zoom: shot.cam.zoom, panX: shot.cam.panX, panY: shot.cam.panY, dpr: shot.cam.canvasRatio }, region: item.region,
+          capture: { width: shot.evidence.summary.width, height: shot.evidence.summary.height }, overlays: shot.overlays ?? [], labelBands: [] })]));
+        if (!crops.gpu.comparisonEligible || !crops.browser.comparisonEligible)
+          return { id: item.id, status: FIDELITY_STATUS.UNVERIFIED, reasons: ["region clipped or covered"], crops };
+        const ink = { gpu: regionInk(shots.gpu.evidence.image, crops.gpu), browser: regionInk(shots.browser.evidence.image, crops.browser) };
+        return { id: item.id, note: item.note, crop: crops.gpu, ink: { gpu: { mass: ink.gpu.mass, centroid: ink.gpu.centroid, bbox: ink.gpu.bbox },
+          browser: { mass: ink.browser.mass, centroid: ink.browser.centroid, bbox: ink.browser.bbox } }, ...compareCoverageRegion(ink.browser, ink.gpu) };
+      });
+      const sameCamera = ["zoom", "panX", "panY", "canvasRatio"].every(key => Math.abs(shots.gpu.cam[key] - shots.browser.cam[key]) < 1e-6);
+      return { label, camera: { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.dpr, canvasRatio: cam.canvasRatio, rect: cam.rect }, sameCamera,
+        png: { gpu: shots.gpu.evidence.summary, browser: shots.browser.evidence.summary }, rows, gpuShot: shots.gpu };
+    };
+    const groups = [];
+    let overlay = null;
+    for (const plan of [{ label: "100", targetZoom: 1 }, { label: "fit", targetZoom: null }]) {
+      await chooseRenderer("gpu");
+      await dom(`document.querySelector("#zoom-value")?.click(), true`);
+      await wait(400);
+      let zoom = null;
+      if (plan.targetZoom) {
+        const fitCam = await camera();
+        zoom = fitCam ? await zoomTo(plan.targetZoom, toClient(fitCam, centre.x, centre.y)) : { reached: false, reasons: ["camera not observable"] };
+        if (!zoom.reached) { groups.push({ label: plan.label, status: FIDELITY_STATUS.UNVERIFIED, reasons: ["target zoom not reached"], zoom }); continue; }
+      }
+      // No selection chrome (#selection-size label, handles) over any region: clear it before measuring.
+      for (let attempt = 0; attempt < 3 && (await selectedIds())?.length; attempt++) { await keys("Escape"); await wait(200); }
+      const selectionBefore = await selectedIds();
+      const cam = await fractional();
+      await waitToastHidden();
+      const group = await measureAll(plan.label);
+      group.selectionBefore = selectionBefore;
+      const { gpuShot, ...kept } = group;
+      groups.push({ ...kept, zoom, panPhase: cam && { x: ((cam.panX % 1) + 1) % 1, y: ((cam.panY % 1) + 1) % 1 },
+        status: !group.sameCamera ? FIDELITY_STATUS.UNVERIFIED : worst(group.rows.map(row => row.status)) });
+      if (plan.targetZoom !== 1) continue;
+      // Inline editor overlay at 100%: rendered editor ink vs the GPU canvas ink of the same region.
+      overlay = [];
+      await chooseRenderer("gpu");
+      for (const item of COVERAGE_CASES.filter(value => value.editable)) {
+        const node = design.pages[0].nodes.find(value => value.id === item.id), gpuCam = await camera();
+        const point = toClient(gpuCam, node.x + node.width / 2, node.y + node.height / 2);
+        await click(point.x, point.y); await wait(200);
+        const selected = await selectedIds();
+        if (!(selected?.length === 1 && selected[0] === item.id)) { overlay.push({ id: item.id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`selection ${JSON.stringify(selected)}`] }); continue; }
+        const canvasShot = await capture(gpuCam, `coverage-overlay-${item.id}-canvas`);
+        await keys("Enter");
+        await until(`(() => { const e = document.querySelector("#inline-text-editor"); return Boolean(e && !e.hidden && document.activeElement === e); })()`, "inline text editor");
+        await wait(300);
+        const editor = await dom(`(() => { const e = document.querySelector("#inline-text-editor"), r = e.getBoundingClientRect(), c = getComputedStyle(e);
+          return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, font: c.font, lineHeight: c.lineHeight, padding: c.padding, transform: c.transform,
+            textAlign: c.textAlign, color: c.color, background: c.backgroundColor, outline: c.outline, caretColor: c.caretColor, value: e.value,
+            selectionStart: e.selectionStart, selectionEnd: e.selectionEnd, measuredWith: "outline:none; background:transparent; color:node fill; caret hidden (capture only)" }; })()`);
+        // Glyph geometry only: collapse the selection and, for this capture, neutralise the editor chrome that
+        // is not text (focus outline, surface background, caret) and use the node fill as the text colour.
+        // None of these move glyphs; the inline overrides are removed right after the capture.
+        await dom(`(() => { const e = document.querySelector("#inline-text-editor"); e.setSelectionRange(e.value.length, e.value.length);
+          Object.assign(e.style, { caretColor: "transparent", outline: "none", background: "transparent", color: ${JSON.stringify(node.fill)} }); return true; })()`);
+        await wait(150);
+        const editorShot = await capture(gpuCam, `coverage-overlay-${item.id}-editor`);
+        await dom(`(() => { const e = document.querySelector("#inline-text-editor"); for (const key of ["caret-color", "outline", "background", "color"]) e.style.removeProperty(key); return true; })()`);
+        const crop = sampleRegionCrop({ camera: { zoom: gpuCam.zoom, panX: gpuCam.panX, panY: gpuCam.panY, dpr: gpuCam.canvasRatio }, region: item.region,
+          capture: { width: canvasShot.summary.width, height: canvasShot.summary.height }, overlays: [], labelBands: [] });
+        // Glyph pixels only: the stage selection frame/handles are drawn in both captures and are not text.
+        const canvasInk = regionInk(canvasShot.image, crop, { neutralOnly: true }), editorInk = regionInk(editorShot.image, crop, { neutralOnly: true });
+        const record = { id: item.id, editor, camera: { zoom: gpuCam.zoom, panX: gpuCam.panX, panY: gpuCam.panY, dpr: gpuCam.canvasRatio }, crop,
+          png: { canvas: canvasShot.summary, editor: editorShot.summary },
+          ink: { canvas: { mass: canvasInk.mass, centroid: canvasInk.centroid, bbox: canvasInk.bbox }, editor: { mass: editorInk.mass, centroid: editorInk.centroid, bbox: editorInk.bbox } },
+          ...compareCoverageRegion(canvasInk, editorInk) };
+        if (item.id === "cjk-center") {
+          // Real edit through the UI, commit, then save and reopen.
+          const text = "居中 Edited 文字 Hg";
+          await evaluateMain(({ webContents }, { id, value }) => { const contents = webContents.fromId(id); contents.selectAll(); contents.insertText(value); return true; },
+            { id: guestWebContentsId, value: text });
+          await keys("Enter", [process.platform === "darwin" ? "meta" : "control"]);
+          await wait(400);
+          record.edit = { text, committedEditorHidden: await dom(`document.querySelector("#inline-text-editor")?.hidden === true`) };
+        } else {
+          await keys("Escape"); await wait(300);
+          record.cancelled = await dom(`document.querySelector("#inline-text-editor")?.hidden === true`);
+        }
+        overlay.push(record);
+      }
+    }
+    // Save -> disk (installed codec) -> reopen -> the edited node and every other node.
+    const saveResult = { before };
+    await dom(`(() => { const menu = document.querySelector("#compact-actions"); if (menu && !menu.open) menu.querySelector("summary")?.click();
+      document.querySelector("#save")?.click(); return true; })()`);
+    await until(`["saved", "error"].includes(document.querySelector("#save-state")?.dataset.kind)`, "coverage save completion");
+    saveResult.saveState = await saveState();
+    saveResult.after = await fileState(relativePath);
+    const disk = await documentAt(relativePath).catch(error => ({ error: String(error?.message ?? error) }));
+    const edited = disk.pages?.[0]?.nodes?.find(node => node.id === "cjk-center");
+    const original = design.pages[0].nodes;
+    saveResult.disk = disk.error ? { error: disk.error } : {
+      editedText: edited?.text ?? null,
+      editedGeometrySame: Boolean(edited) && ["x", "y", "width", "height", "textAlign", "fontFamily"].every(key => edited[key] === original.find(node => node.id === "cjk-center")[key]),
+      othersUnchanged: original.filter(node => node.id !== "cjk-center").every(node => JSON.stringify(disk.pages[0].nodes.find(value => value.id === node.id)) === JSON.stringify(node)),
+      resources: (disk.resources ?? []).map(value => value.id) };
+    saveResult.resourcePartsUnchanged = await Promise.all(fixtureById.get(relativePath).files.filter(file => file.relativePath !== relativePath)
+      .map(async file => (await fileState(file.relativePath)).sha256 === file.sha256)).then(values => values.every(Boolean));
+    await openFile(relativePath);
+    await chooseRenderer("gpu");
+    const reopenCam = await camera();
+    const editedNode = original.find(node => node.id === "cjk-center");
+    if (reopenCam) { const point = toClient(reopenCam, editedNode.x + editedNode.width / 2, editedNode.y + editedNode.height / 2); await click(point.x, point.y); await wait(200); }
+    saveResult.reopenedText = await dom(`document.querySelector("#prop-text")?.value ?? null`);
+    const saveStatus = saveResult.saveState?.kind === "saved" && saveResult.disk.editedText === "居中 Edited 文字 Hg" && saveResult.disk.editedGeometrySame &&
+      saveResult.disk.othersUnchanged && saveResult.resourcePartsUnchanged && saveResult.reopenedText === "居中 Edited 文字 Hg" ? FIDELITY_STATUS.PASS : FIDELITY_STATUS.FAIL;
+    const statuses = [...groups.map(group => group.status), ...(overlay ?? []).map(value => value.status), saveStatus];
+    return { status: worst(statuses), fonts, groups, overlay, save: { status: saveStatus, ...saveResult } };
   });
 
   return { plan, packageModules, sampleReceipt, environment, probes, results, summary: summarizeFidelityReport(results, plan),

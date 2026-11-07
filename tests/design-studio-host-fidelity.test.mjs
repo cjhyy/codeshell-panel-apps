@@ -24,6 +24,8 @@ const studioModules = async () => ({
   codec: await import("../apps/design-studio/app/document.mjs"),
   textMetrics: await import("../apps/design-studio/app/text-metrics.mjs"),
   documentIndex: await import("../apps/design-studio/app/document-index.mjs"),
+  resourceStore: await import("../apps/design-studio/app/resource-store.mjs"),
+  readAppBytes: path => readFile(join(repository, "apps/design-studio/app", path)),
 });
 async function loadFixtures() {
   const { buildDesignStudioFidelityFixtures } = await import("../scripts/design-studio-host-fidelity.mjs");
@@ -386,7 +388,7 @@ test("report summary never declares the goal complete and keeps gaps visible", a
   const { summarizeFidelityReport, planDesignStudioFidelityScenarios, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const plan = planDesignStudioFidelityScenarios({ sample: false });
   assert.deepEqual(plan.map(value => value.id), ["low-zoom-fractional-performance", "open-without-edit", "immediate-click-after-edit",
-    "save-reopen-stable", "same-camera-visual", "svg-corner-aa-host"]);
+    "save-reopen-stable", "same-camera-visual", "svg-corner-aa-host", "coverage-matrix"]);
   for (const scenario of plan) {
     assert.ok(scenario.fixture && scenario.steps.length && scenario.observables.length, scenario.id);
   }
@@ -870,7 +872,7 @@ test("a reference evaluation that never settles is not swallowed: rest aborted a
     assert.ok(report.cleanup.unsettled.some(value => value.label === "reference window evaluation" && value.cleanup.operationSettled === false));
     assert.match(report.abortReason, /reference window evaluation timed out/, "later scenarios would be aborted");
     assert.deepEqual(report.results.map(result => [result.id, result.status]), [["svg-corner-aa-host", "UNVERIFIED"]]);
-    assert.equal(report.summary.notRun.length, 5, "filtered scenarios stay visible as not run");
+    assert.equal(report.summary.notRun.length, 6, "filtered scenarios stay visible as not run");
     assert.notEqual(report.summary.overall, "PASS");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -1290,7 +1292,7 @@ test("--design-studio-probe runs only the two diagnostic probes and never the si
     assert.deepEqual(report.results, [], "no fidelity scenario runs in probe mode");
     assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-snap-grid", "probe-raster-backend", "probe-zoom-input"]);
     assert.ok(report.probes.every(value => value.status === "UNVERIFIED"));
-    assert.equal(report.summary.notRun.length, 6);
+    assert.equal(report.summary.notRun.length, 7);
     assert.ok("environment" in report, "DPR/viewport/user agent are recorded");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -1407,8 +1409,14 @@ test("prompt strokes are anchored at their own centre and a clipped crop says so
   assert.doesNotMatch(verdict.reasons.join(), /overlaps app overlays \[\]/);
 });
 
-test("--design-studio-force-dsf is a probe-only owned-Electron switch", () => {
-  assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-force-dsf", "1"]), /requires --design-studio-probe/);
+test("--design-studio-force-dsf is an owned-Electron switch for probes and fidelity scenarios, appended at the early seam", () => {
+  const full = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-force-dsf", "1"]).designStudioFidelity;
+  assert.deepEqual(full, { samplePath: null, probe: false, forceDeviceScaleFactor: 1, disableGpuRasterization: false });
+  assert.deepEqual(designStudioProbeSwitches(full), [["force-device-scale-factor", "1"]]);
+  const host = 'import { app } from "electron";\nimport { syncBuiltinESMExports } from "node:module";\nawait import("preload");\n';
+  const patched = insertProbeSwitches(host, designStudioProbeSwitches(full));
+  assert.ok(patched.indexOf('appendSwitch("force-device-scale-factor", "1")') < patched.indexOf("await import"), "before the first await (E2 appended after it)");
+  assert.throws(() => parsePanelDesktopArguments(["/host", "--design-studio-force-dsf", "1"]), /requires --design-studio-fidelity|unexpected|fidelity/);
   assert.throws(() => parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1.5x"]), /positive number/);
   assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe", "--design-studio-force-dsf", "1"]).designStudioFidelity,
     { samplePath: null, probe: true, forceDeviceScaleFactor: 1, disableGpuRasterization: false });
@@ -1431,4 +1439,49 @@ test("--design-studio-disable-gpu-raster is a probe-only switch appended before 
   assert.match(patched, /hasSwitch\(name\)/);
   assert.throws(() => insertProbeSwitches('import { app } from "electron";\nawait import("x");\n', [["disable-gpu-rasterization"]]), /seam changed/);
   assert.throws(() => insertProbeSwitches('await import("x");\nimport { syncBuiltinESMExports } from "node:module";\n', [["disable-gpu-rasterization"]]), /await precedes/);
+});
+
+test("coverage fixture: 8 cases, bundled-Inter and PNG codec resources whose parts decode to the real bytes", async () => {
+  const { COVERAGE_CASES, COVERAGE_BUILTIN_INTER, FIDELITY_FIXTURE_PATHS, coveragePngBytes } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const codec = await import("../apps/design-studio/app/document.mjs");
+  const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.coverage);
+  assert.ok(fixture, "coverage fixture seeded");
+  const design = codec.normalizeDesignDocument(JSON.parse(fixture.logicalSource)), nodes = design.pages[0].nodes;
+  assert.deepEqual(nodes.map(node => node.id), COVERAGE_CASES.map(item => item.id));
+  assert.ok(nodes.every(node => !node.parentId), "top-level nodes: no frame-label band over any region");
+  for (const item of COVERAGE_CASES) {
+    const node = nodes.find(value => value.id === item.id), [x, y, w, h] = item.region;
+    assert.ok(node.x >= x && node.y >= y && node.x + node.width <= x + w && node.y + node.height <= y + h, `${item.id} inside its region`);
+    assert.ok(x + w <= 470, "fits a ~493 CSS px stage at 100%");
+  }
+  assert.equal(nodes.find(node => node.id === "inter-default").fontRef, undefined, "the app's default Inter stack is not bound to bytes");
+  assert.equal(nodes.find(node => node.id === "inter-bytes").fontRef, COVERAGE_BUILTIN_INTER.id);
+  assert.equal(nodes.find(node => node.id === "ranges-fill-link").textRanges.ranges.some(range => range.href), true);
+  assert.deepEqual(nodes.filter(node => node.type === "image").map(node => node.objectFit), ["cover", "contain"]);
+  const decode = descriptor => Buffer.concat(fixture.files.filter(file => file.relativePath.includes(descriptor.sha256))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath)).map(file => Buffer.from(file.bytes, "base64")));
+  const [font, image] = design.resources;
+  assert.deepEqual(decode(font), await readFile(join(repository, "apps/design-studio/app", COVERAGE_BUILTIN_INTER.file)));
+  assert.deepEqual(decode(image), coveragePngBytes());
+  assert.equal(sha256(decode(image)), image.sha256);
+});
+
+test("coverage regions use one strict contract: centroid <= 0.15 device px and ink within 3%", async () => {
+  const { regionInk, compareCoverageRegion } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { PNG } = await import("pngjs");
+  const draw = (dx, alpha) => { const image = new PNG({ width: 40, height: 20 }); image.data.fill(255);
+    for (let y = 6; y < 14; y++) for (let x = 10 + dx; x < 26 + dx; x++) { const o = (y * 40 + x) * 4; for (let c = 0; c < 3; c++) image.data[o + c] = Math.round(255 - alpha * 200); }
+    return image; };
+  const crop = { x: 0, y: 0, width: 40, height: 20 }, reference = regionInk(draw(0, 1), crop);
+  assert.equal(compareCoverageRegion(reference, regionInk(draw(0, 1), crop)).status, "PASS");
+  const shifted = compareCoverageRegion(reference, regionInk(draw(1, 1), crop));
+  assert.equal(shifted.status, "FAIL"); assert.match(shifted.reasons.join(), /centroid 1\.000/);
+  const lighter = compareCoverageRegion(reference, regionInk(draw(0, 0.965), crop));
+  assert.equal(lighter.status, "FAIL"); assert.match(lighter.reasons.join(), /ink -3\.\d\d%/);
+  assert.equal(compareCoverageRegion(reference, { mass: 0, centroid: null }).status, "UNVERIFIED");
+  // A coloured selection frame shared by both captures is excluded from glyph ink when asked.
+  const framed = draw(0, 1); for (let x = 2; x < 38; x++) for (const y of [2, 17]) { const o = (y * 40 + x) * 4; framed.data.set([66, 110, 230], o); }
+  const glyphs = regionInk(framed, crop, { neutralOnly: true }), plain = regionInk(draw(0, 1), crop);
+  assert.ok(Math.abs(glyphs.mass - plain.mass) < 1e-9 && glyphs.centroid.every((v, i) => Math.abs(v - plain.centroid[i]) < 1e-9));
+  assert.notEqual(regionInk(framed, crop).mass, plain.mass);
 });
