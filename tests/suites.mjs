@@ -161,6 +161,7 @@ export const suites = [
         "tests/apps/design-studio/svg-semantic-audit.test.mjs",
         "tests/apps/design-studio/text-origin-compatibility.test.mjs",
         "tests/apps/design-studio/text-line-box.test.mjs",
+        "tests/apps/design-studio/text-html-finite-transport.test.mjs",
         "tests/apps/design-studio/real-dsf-layout-scale.test.mjs",
         "tests/apps/design-studio/inline-editor-placement.test.mjs",
         "tests/apps/design-studio/range-text-raster.test.mjs",

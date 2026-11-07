@@ -1,7 +1,44 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
+import { textRangeTypography } from "./text-ranges.mjs";
 
 /** Imported finite offsets (including zero) retain the historical hanging origin. */
 export const textHasLineBoxOrigin = (node) => !Number.isFinite(node.layoutBaselineOffset);
+
+const LAYOUT_CONTAINERS = new Set(["frame", "group", "component"]);
+const parentLayout = parent => LAYOUT_CONTAINERS.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout) ? parent.layout : null;
+
+/**
+ * Whether HTML export carries finite (imported) text at its historical hanging
+ * origin (frontend-export finiteTextPaintOffset; the font-loaded check stays
+ * there, at runtime). Everything else with a finite offset is laid out by HTML
+ * as a plain CSS line box: provenanced coordinates, rotation, typography
+ * ranges, non-start vertical constraints and grid parents. `infiniteRoot`: an
+ * exported root on the infinite workspace is pinned to start constraints.
+ */
+export function textHtmlFiniteHangingTransport(node, { parent = null, infiniteRoot = false } = {}) {
+  if (node?.type !== "text" || textHasLineBoxOrigin(node) || node.layoutBaselineSource || Number(node.rotation) ||
+      textRangeTypography(node, false).length) return false;
+  if (!infiniteRoot && ((node.constraintVertical && node.constraintVertical !== "start") ||
+      node.constraintTop !== undefined || node.constraintBottom !== undefined)) return false;
+  return parentLayout(parent) !== "grid";
+}
+
+/**
+ * The CSS line box HTML gives finite text it does not transport: its element
+ * top is y minus the returned shift (the baseline offset for provenanced or
+ * flow-owned boxes, else 0). null: the node keeps the hanging transport or has
+ * no finite origin. Decided on the scene node (renderers may pass a local copy).
+ */
+export function textHtmlFiniteLineBoxShift(node, context = {}) {
+  if (node?.type !== "text" || textHasLineBoxOrigin(node) || textHtmlFiniteHangingTransport(node, context)) return null;
+  const flowOwned = parentLayout(context.parent) !== null && node.layoutPositioning !== "absolute";
+  return flowOwned || ["html", "native"].includes(node.layoutBaselineSource) ? Number(node.layoutBaselineOffset) || 0 : 0;
+}
+/** Render-only line-box view of `node` (the document node is never rewritten); `scene` decides. */
+export function textHtmlFiniteLineBoxNode(node, context = {}, scene = node) {
+  const shift = textHtmlFiniteLineBoxShift(scene, context);
+  return shift === null ? node : { ...node, y: node.y - shift, layoutBaselineOffset: undefined, layoutBaselineSource: undefined };
+}
 
 /**
  * CSS distributes leading around the font box, then places the alphabetic

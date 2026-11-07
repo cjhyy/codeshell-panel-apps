@@ -1,5 +1,5 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textLineBoxBaselineAt, textFiniteBaselineY } from "../text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textLineBoxBaselineAt, textFiniteBaselineY, textHtmlFiniteLineBoxNode } from "../text-line-box.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics, textDisplayLineMetrics } from "../text-metrics.mjs";
@@ -47,12 +47,15 @@ export function canvasKitResourceTextRasterEligible(node) {
  * Fill/link and typography (family, size, weight, italic) ranges can share the
  * browser same-family raster that plain text already uses: one Canvas2D shaping
  * per same-font run group, each fill clipped to its prefix-measured interval.
- * Paint stacks, strokes and range decorations keep the native paragraph path;
- * finite origins keep it when ranges change typography.
+ * Auto underline and line-through are drawn from measured HTML models. Paint
+ * stacks, strokes, custom decorations, bidi text and skip-ink underlines keep
+ * the native paragraph path; finite text HTML lays out as a plain line box
+ * arrives here already converted (textHtmlFiniteLineBoxNode).
  */
 const RANGE_CUSTOM_DECORATION_KEYS = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
 // Strong right-to-left characters: prefix-measured logical intervals would not be visual intervals.
-const STRONG_RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u200f\u202b\u202e\u2067]/u;
+// Supplementary planes: the RTL script areas U+10800-10FFF (Phoenician .. Yezidi) and U+1E800-1EFFF (Mende Kikakui, Adlam, ...).
+const STRONG_RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u200f\u202b\u202e\u2067\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
 /** Why a ranged text node stays on the native paragraph path (null: it uses the range raster). */
 export function canvasKitRangeTextRasterFallbackReason(node) {
   if (node?.type !== "text" || node.textRanges === undefined) return "no-ranges";
@@ -62,9 +65,11 @@ export function canvasKitRangeTextRasterFallbackReason(node) {
   if (!payload) return "no-ranges";
   if (STRONG_RTL.test(String(node.text))) return "bidi";
   if (payload.ranges.some(range => RANGE_CUSTOM_DECORATION_KEYS.some(key => Object.hasOwn(range, key)))) return "decoration-custom";
-  // Auto underline is modelled from measured HTML (see rangeUnderline); line-through had no fit.
-  if (node.textDecoration === "line-through" || payload.ranges.some(range => range.textDecoration === "line-through")) return "line-through-unfitted";
-  return textHasLineBoxOrigin(node) || !textRangeTypography(node, false).length ? null : "finite-typography";
+  // Auto underline and line-through are modelled from measured HTML (rangeUnderline, rangeLineThrough), per run.
+  // A node-level line-through over mixed typography would need the decorating box's metrics: not measured.
+  if (node.textDecoration === "line-through" && textRangeTypography(node, false).length) return "line-through-mixed-typography";
+  // Finite + typography: HTML lays it out as a plain line box (textHtmlFiniteHangingTransport), as does the raster.
+  return null;
 }
 export function canvasKitRangeTextRasterEligible(node) {
   return canvasKitRangeTextRasterFallbackReason(node) === null;
@@ -112,7 +117,16 @@ export async function createCanvasKitText({
     domFaces = [];
   let counters = initialCounters,
     unsupportedNode = initialUnsupportedNode;
-  let currentNodes = new Map(design.nodes.map((node) => [node.id, node]));
+  // Scene nodes as supplied (parents, rotation, constraints decide the HTML transport) and as drawn.
+  let sceneNodes = new Map(design.nodes.map((node) => [node.id, node])), canvasMode = design.canvas?.mode;
+  /** Finite text HTML does not carry at its hanging origin is drawn as the CSS line box HTML lays out. */
+  function htmlLineBox(node) {
+    if (node?.type !== "text" || textHasLineBoxOrigin(node)) return node;
+    const scene = sceneNodes.get(node.id) ?? node;
+    return textHtmlFiniteLineBoxNode(node, { parent: sceneNodes.get(scene.parentId) ?? null,
+      infiniteRoot: !scene.parentId && canvasMode === "infinite" }, scene);
+  }
+  let currentNodes = new Map(design.nodes.map((node) => [node.id, htmlLineBox(node)]));
   const rangeNativeFallbacks = new Map();
   // Document layout zoom (blinkLayoutScale), set per scene by the renderer.
   let layoutScale = 1;
@@ -616,11 +630,14 @@ export async function createCanvasKitText({
       availableFamilies.clear(); browserFontMetrics.clear(); nativeFontMetrics.clear(); finiteFontMetrics.clear(); contentBoundsCache.clear();
       resourceRasterFallbacks.clear();
     }
-    const nodes = nextDesign.pages?.length
+    const sceneList = nextDesign.pages?.length
       ? nextDesign.pages.flatMap((page) =>
           page.id === nextDesign.activePageId ? nextDesign.nodes : (page.nodes ?? []),
         )
       : nextDesign.nodes;
+    sceneNodes = new Map(sceneList.map((node) => [node.id, node]));
+    canvasMode = nextDesign.canvas?.mode;
+    const nodes = sceneList.map(htmlLineBox);
     const contentChanged = layoutChanged || nodes.some(
       (node) =>
         node.type === "text" &&
@@ -676,7 +693,8 @@ export async function createCanvasKitText({
     // A layout-scale change re-snaps every box: retained node pictures are stale too.
     return fontsChanged || layoutChanged;
   }
-  function contentBounds(node) {
+  function contentBounds(sourceNode) {
+    const node = htmlLineBox(sourceNode);
     const signature = JSON.stringify(node),
       cached = contentBoundsCache.get(node.id);
     if (cached?.signature === signature) return cached.bounds;
@@ -876,7 +894,8 @@ export async function createCanvasKitText({
     const groups = [];
     for (const run of runs) {
       const font = rangeStyleFont(node, run.style, alias), last = groups.at(-1);
-      const part = { text: run.text, fill: run.style.fill, underline: run.style.textDecoration === "underline", fontSize: run.style.fontSize, style: run.style };
+      const part = { text: run.text, fill: run.style.fill, underline: run.style.textDecoration === "underline",
+        lineThrough: run.style.textDecoration === "line-through", fontSize: run.style.fontSize, style: run.style };
       if (last && last.font === font) { last.text += run.text; last.parts.push(part); }
       else groups.push({ font, style: run.style, text: run.text, parts: [part] });
     }
@@ -891,6 +910,7 @@ export async function createCanvasKitText({
       }
       x += group.metrics.width;
     }
+    for (const group of groups) for (const part of group.parts) if (part.lineThrough) part.lineThroughBox = rangeLineThrough(node, part, alias);
     configure(node, alias);
     return { groups, width: x };
   }
@@ -918,13 +938,24 @@ export async function createCanvasKitText({
     const th = part.fontSize * layoutScale / 10;
     return { offset: Math.max(1, Math.ceil(th / 2)) / layoutScale, thickness: Math.max(1, Math.floor(th)) / layoutScale };
   }
+  /**
+   * Line-through as measured in HTML (Chromium 148 forced/emulated DSF2; Inter and Arial 13/14/16/18/20/24; 24/24 exact):
+   * with A = the font ascent at fontSize x layout scale (Canvas fontBoundingBoxAscent) and th = fontSize x layout scale / 10,
+   * top = paint baseline - A + round(2A/3 - th/2), thickness = max(1, floor(th)), in layout pixels; x and colour as underline.
+   */
+  function rangeLineThrough(node, part, alias) {
+    measure.font = rangeStyleFont(node, part.style, alias, part.fontSize * layoutScale);
+    const ascent = measure.measureText("Hg").fontBoundingBoxAscent, th = part.fontSize * layoutScale / 10;
+    if (!Number.isFinite(ascent)) throw Error("Line-through requires a measured font ascent");
+    return { offset: (Math.round(2 * ascent / 3 - th / 2) - ascent) / layoutScale, thickness: Math.max(1, Math.floor(th)) / layoutScale };
+  }
   /** Runtime reasons an eligible node still cannot use the raster (decorations): null when it can. */
   function rangeDecorationFallbackReason(node, alias) {
     for (const [index, line] of String(node.text).split("\n").entries()) {
       if (!line) continue;
       for (const group of rangeLineLayout(node, index, alias).groups) for (const part of group.parts) {
         if (!part.underline) continue;
-        if (!resolvedFont(node, part.style)) return "underline-system-font";
+        // The underline model is font-independent (measured Inter and Arial, s1/s2): system fonts raster too.
         // Skip-ink (HTML auto) is not modelled: any glyph ink reaching the underline band keeps the native path.
         measure.font = group.font; measure.textBaseline = "alphabetic";
         if (measure.measureText(part.text).actualBoundingBoxDescent > rangeUnderline(part).offset - 1e-6) return "underline-skip-ink";
@@ -941,6 +972,7 @@ export async function createCanvasKitText({
       top = Math.min(top, -group.metrics.actualBoundingBoxAscent);
       bottom = Math.max(bottom, group.metrics.actualBoundingBoxDescent);
       for (const part of group.parts) if (part.underline) { const u = rangeUnderline(part); bottom = Math.max(bottom, u.offset + u.thickness); }
+      for (const part of group.parts) if (part.lineThroughBox) top = Math.min(top, part.lineThroughBox.offset);
     }
     const padding = 3, x = rasterAlignedX(node, layout.width);
     let offsetX = left - padding, offsetY = top - padding;
@@ -993,7 +1025,16 @@ export async function createCanvasKitText({
           if (!part.underline) continue;
           const underline = rangeUnderline(part);
           ctx.fillStyle = rgba(part.fill);
-          ctx.fillRect(part.x0, underline.offset, part.x1 - part.x0, underline.thickness);
+          // Endpoints snap to raster pixels like the colour bounds (HTML ends the line on device pixels).
+          const x0 = snap(part.x0), x1 = snap(part.x1);
+          ctx.fillRect(x0, underline.offset, x1 - x0, underline.thickness);
+        }
+        // Line-through paints over the glyphs (CSS painting order), snapped like the underline.
+        for (const part of group.parts) {
+          if (!part.lineThroughBox) continue;
+          const x0 = snap(part.x0), x1 = snap(part.x1);
+          ctx.fillStyle = rgba(part.fill);
+          ctx.fillRect(x0, part.lineThroughBox.offset, x1 - x0, part.lineThroughBox.thickness);
         }
       }
       image = CK.MakeImage({ width: w, height: h, colorType: CK.ColorType.RGBA_8888, alphaType: CK.AlphaType.Unpremul, colorSpace: CK.ColorSpace.SRGB },
@@ -1035,11 +1076,16 @@ export async function createCanvasKitText({
   function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
     const baseStyle = { fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight,
       fontStyle: node.fontStyle ?? "normal", textDecoration: node.textDecoration ?? "none" };
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index];
+    // Every line is validated before any line draws: a refusal never leaves a partly drawn node.
+    const lineFragments = lines.map((line, index) => {
       const fragments = runs.filter((run) => run.lineIndex === index && run.text !== "\n");
       if (fragments.map((run) => run.text).join("") !== line)
         throw new Error("TEXT_RANGES_UNSUPPORTED: 范围显示映射不属于当前完整文字行");
+      for (const run of fragments) rangeFont(node, run.style);
+      return fragments;
+    });
+    for (let index = 0; index < lines.length; index++) {
+      const fragments = lineFragments[index];
       let builder, paragraph;
       const paints = [];
       try {
@@ -1072,7 +1118,8 @@ export async function createCanvasKitText({
     }
   }
 
-  function draw(canvas, node, nextCounters = counters, nextUnsupported = unsupportedNode) {
+  function draw(canvas, sourceNode, nextCounters = counters, nextUnsupported = unsupportedNode) {
+    const node = htmlLineBox(sourceNode);
     counters = nextCounters;
     unsupportedNode = nextUnsupported;
     missingByNode.delete(node.id);

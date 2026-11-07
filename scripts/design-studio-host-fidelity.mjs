@@ -221,7 +221,11 @@ export const COVERAGE_CASES = Object.freeze([
   { id: "underline-descender-2line", region: [16, 444, 208, 56], note: "underline range across a newline over descenders (skip-ink)", range: true, decoration: true },
   { id: "range-line-through", region: [246, 460, 208, 36], note: "line-through range", range: true, decoration: true },
   { id: "range-mixed-multiline", region: [16, 512, 208, 60], note: "two lines, 18px run on 14px (typography + multiline)", range: true },
-  { id: "range-finite-typo", region: [246, 512, 208, 40], note: "finite origin + weight range (native finite-typography)", range: true },
+  { id: "range-finite-typo", region: [246, 512, 208, 40], note: "finite origin + weight range (HTML lays it out as a plain line box)", range: true },
+  // Range-final batch.
+  { id: "finite-source-plain", region: [16, 580, 208, 40], note: "plain finite text with layoutBaselineSource html (HTML: plain line box at node.y)" },
+  { id: "node-underline-mixed", region: [246, 576, 208, 44], note: "node-level underline over an 18px run on 14px", range: true, decoration: true },
+  { id: "arial-underline", region: [16, 624, 208, 36], note: "system font (Arial, no supplied bytes) range underline", range: true, decoration: true },
 ].map(value => Object.freeze(value)));
 export const COVERAGE_BUILTIN_INTER_ITALIC = Object.freeze({ id: "builtin-inter-400-italic", family: "Inter", file: "fonts/InterVariable-Italic.woff2" });
 /** Deterministic 64x32 PNG: two colour fields and a dark diagonal, so cover/contain crops differ visibly. */
@@ -396,8 +400,11 @@ async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes
     ranged("range-line-through", 250.3, 466.3, 200, 24, "Strike this out", [{ start: 7, end: 11, textDecoration: "line-through", fill: "#175cd3" }]),
     ranged("range-mixed-multiline", 20.3, 518.3, 200, 48, "Big first\nsmall second", [{ start: 0, end: 3, fontSize: 18, fill: "#175cd3" }]),
     ranged("range-finite-typo", 250.3, 518.3, 200, 28, "Finite bold run", [{ start: 7, end: 11, fontWeight: 700 }], { layoutBaselineOffset: 3.5 }),
+    fixtureText("finite-source-plain", 20.3, 586.3, 200, 24, "Source finite Hg", { layoutBaselineOffset: 3.5, layoutBaselineSource: "html", lineHeight: 1.2 }),
+    ranged("node-underline-mixed", 250.3, 582.3, 200, 32, "Node Big under", [{ start: 5, end: 8, fontSize: 18, fill: "#175cd3" }], { textDecoration: "underline" }),
+    ranged("arial-underline", 20.3, 630.3, 200, 24, "Arial under line", [{ start: 6, end: 11, textDecoration: "underline", fill: "#175cd3" }], { fontRef: undefined, fontFamily: "Arial" }),
   ];
-  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 600, background: "#ffffff" });
+  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 680, background: "#ffffff" });
   raw.resources = [font.descriptor, image.descriptor, italic.descriptor];
   const entry = canonical(FIDELITY_FIXTURE_PATHS.coverage, "high-risk coverage: default vs bundled Inter, CJK center/right, ranges, finite multiline, PNG cover/contain, editor overlay", raw);
   entry.files.push(...[...font.parts, ...image.parts, ...italic.parts].map(part => fixtureFile(part.path, part.content)));

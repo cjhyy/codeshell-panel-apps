@@ -1111,7 +1111,7 @@ export async function runDesignStudioHostFidelity(options) {
       }
       return camera();
     };
-    const measureAll = async label => {
+    const measureAll = async (label, cases = COVERAGE_CASES) => {
       const shots = {};
       for (const route of ["gpu", "browser"]) {
         await chooseRenderer(route);
@@ -1119,7 +1119,7 @@ export async function runDesignStudioHostFidelity(options) {
         shots[route] = { cam, overlays, evidence: await capture(cam, `coverage-${label}-${route}`) };
       }
       const cam = shots.gpu.cam;
-      const rows = COVERAGE_CASES.map(item => {
+      const rows = cases.map(item => {
         const crops = Object.fromEntries(Object.entries(shots).map(([route, shot]) => [route, sampleRegionCrop({
           camera: { zoom: shot.cam.zoom, panX: shot.cam.panX, panY: shot.cam.panY, dpr: shot.cam.canvasRatio }, region: item.region,
           capture: { width: shot.evidence.summary.width, height: shot.evidence.summary.height }, overlays: shot.overlays ?? [], labelBands: [] })]));
@@ -1135,7 +1135,15 @@ export async function runDesignStudioHostFidelity(options) {
     };
     const groups = [];
     let overlay = null, editorPhases = null;
-    for (const plan of [{ label: "100", targetZoom: 1 }, { label: "fit", targetZoom: null }]) {
+    // Two 100% cameras (each centred on its own band of rows, clear of the stage status bar) and one fit camera.
+    const coveragePlans = [
+      { label: "100", targetZoom: 1, centre: { x: 235, y: 190 }, cases: COVERAGE_CASES.filter(item => item.region[1] < 330), editor: true },
+      // Rows below y 500 sat under .canvas-meta at 100% (UNVERIFIED, never PASS): a third band centres them.
+      { label: "100b", targetZoom: 1, centre: { x: 235, y: 420 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 330 && item.region[1] < 505) },
+      { label: "100c", targetZoom: 1, centre: { x: 235, y: 590 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 505) },
+      { label: "fit", targetZoom: null, cases: COVERAGE_CASES },
+    ];
+    for (const plan of coveragePlans) {
       await chooseRenderer("gpu");
       await dom(`document.querySelector("#zoom-value")?.click(), true`);
       await wait(400);
@@ -1144,18 +1152,27 @@ export async function runDesignStudioHostFidelity(options) {
         const fitCam = await camera();
         zoom = fitCam ? await zoomTo(plan.targetZoom, toClient(fitCam, centre.x, centre.y)) : { reached: false, reasons: ["camera not observable"] };
         if (!zoom.reached) { groups.push({ label: plan.label, status: FIDELITY_STATUS.UNVERIFIED, reasons: ["target zoom not reached"], zoom }); continue; }
+        // Put this plan's world centre at the stage centre with real wheel pans (measured DOM deltas).
+        const zoomed = await camera();
+        if (zoomed) {
+          const stageCentre = { x: zoomed.rect.x + zoomed.rect.width / 2, y: zoomed.rect.y + zoomed.rect.height / 2 };
+          await dom(DESIGN_STUDIO_PROBES.wheelInstall());
+          plan.pan = await closedLoopPan({ target: stageCentre, wait, readPoint: async () => { const value = await camera(); return value && toClient(value, plan.centre.x, plan.centre.y); },
+            readDomDeltas: async () => (await dom(DESIGN_STUDIO_PROBES.wheelRead())) ?? [],
+            sendWheel: (deltaX, deltaY) => sendInput([{ type: "mouseWheel", x: Math.round(stageCentre.x), y: Math.round(stageCentre.y), deltaX, deltaY, hasPreciseScrollingDeltas: true, canScroll: true }]) });
+        }
       }
       // No selection chrome (#selection-size label, handles) over any region: clear it before measuring.
       for (let attempt = 0; attempt < 3 && (await selectedIds())?.length; attempt++) { await keys("Escape"); await wait(200); }
       const selectionBefore = await selectedIds();
       const cam = await fractional();
       await waitToastHidden();
-      const group = await measureAll(plan.label);
+      const group = await measureAll(plan.label, plan.cases);
       group.selectionBefore = selectionBefore;
       const { gpuShot, ...kept } = group;
       groups.push({ ...kept, zoom, panPhase: cam && { x: ((cam.panX % 1) + 1) % 1, y: ((cam.panY % 1) + 1) % 1 },
         status: !group.sameCamera ? FIDELITY_STATUS.UNVERIFIED : worst(group.rows.map(row => row.status)) });
-      if (plan.targetZoom !== 1) continue;
+      if (!plan.editor) continue;
       // Inline editor overlay at 100%: rendered editor ink vs the GPU canvas ink of the same region.
       overlay = [];
       await chooseRenderer("gpu");

@@ -1441,7 +1441,7 @@ test("--design-studio-disable-gpu-raster is a probe-only switch appended before 
   assert.throws(() => insertProbeSwitches('await import("x");\nimport { syncBuiltinESMExports } from "node:module";\n', [["disable-gpu-rasterization"]]), /await precedes/);
 });
 
-test("coverage fixture: 19 cases, bundled-Inter (normal + italic) and PNG codec resources whose parts decode to the real bytes", async () => {
+test("coverage fixture: 22 cases, bundled-Inter (normal + italic) and PNG codec resources whose parts decode to the real bytes", async () => {
   const { COVERAGE_CASES, COVERAGE_BUILTIN_INTER, FIDELITY_FIXTURE_PATHS, coveragePngBytes } = await import("../scripts/design-studio-host-fidelity.mjs");
   const codec = await import("../apps/design-studio/app/document.mjs");
   const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.coverage);
@@ -1460,7 +1460,9 @@ test("coverage fixture: 19 cases, bundled-Inter (normal + italic) and PNG codec 
   assert.deepEqual(nodes.filter(node => node.type === "image").map(node => [node.objectFit, node.cornerRadius]), [["cover", 0], ["contain", 0], ["cover", 8]]);
   // Range cases: every ranged node validates; CJK sits inside an Inter range; one node carries the supplied italic face.
   assert.deepEqual(COVERAGE_CASES.filter(item => item.range).map(item => item.id), ["range-cjk-missing", "range-typography", "range-underline", "range-multiline", "range-finite",
-    "node-underline-color", "underline-descender-2line", "range-line-through", "range-mixed-multiline", "range-finite-typo"]);
+    "node-underline-color", "underline-descender-2line", "range-line-through", "range-mixed-multiline", "range-finite-typo",
+    "node-underline-mixed", "arial-underline"]);
+  assert.equal(nodes.find(node => node.id === "finite-source-plain").layoutBaselineSource, "html");
   assert.equal(nodes.find(node => node.id === "node-underline-color").textDecoration, "underline");
   assert.match(nodes.find(node => node.id === "underline-descender-2line").text, /\n/u);
   assert.match(nodes.find(node => node.id === "range-cjk-missing").text, /中文/u);
@@ -1499,7 +1501,7 @@ test("every coverage-matrix artifact label is accepted by the held-output sink (
   const runner = await readFile(join(repository, "scripts/design-studio-host-fidelity-runner.mjs"), "utf8");
   const templates = [...runner.matchAll(/`(coverage-[^`]*)`/gu)].map(match => match[1]);
   assert.ok(templates.length >= 5);
-  const values = { label: ["100", "fit"], route: ["gpu", "browser"], "item.id": COVERAGE_CASES.filter(item => item.editable).map(item => item.id),
+  const values = { label: ["100", "100b", "100c", "fit"], route: ["gpu", "browser"], "item.id": COVERAGE_CASES.filter(item => item.editable).map(item => item.id),
     "Math.round(phaseX * 100)": [0, 25, 50, 75].map(String) };
   for (const template of templates) {
     const slots = [...template.matchAll(/\$\{([^}]+)\}/gu)].map(match => match[1]);

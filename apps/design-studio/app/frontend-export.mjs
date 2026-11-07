@@ -11,8 +11,8 @@ import {
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
-import { mapTextDisplay, projectTextRanges, validateTextRanges, textRangeTypography } from "./text-ranges.mjs";
-import { textLineBoxAlphabeticOffset } from "./text-line-box.mjs";
+import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
+import { textLineBoxAlphabeticOffset, textHtmlFiniteHangingTransport } from "./text-line-box.mjs";
 import { hasDesignStroke, designStrokeSides, designStrokeOutset, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss, designRuntimeFontFamilyCss } from "./font-css.mjs";
@@ -444,11 +444,9 @@ function finiteTextPaintOffset(node, parent, parentUsesLayout, fontFamilyOverrid
   // Unprovenanced finite offsets retain the historical GPU/SVG hanging origin.
   // Browser-only font metrics transport that paint into CSS without rewriting
   // the saved coordinates. Node exports remain an unmeasured diagnostic.
-  if (node.type !== "text" || !Number.isFinite(node.layoutBaselineOffset) ||
-      node.layoutBaselineSource || Number(node.rotation) || textRangeTypography(node, false).length ||
-      (node.constraintVertical && node.constraintVertical !== "start") ||
-      node.constraintTop !== undefined || node.constraintBottom !== undefined ||
-      (parentUsesLayout && !["horizontal", "vertical"].includes(parent.layout)) ||
+  // Static eligibility is shared with the GPU renderer (textHtmlFiniteHangingTransport); `node`
+  // already carries the start constraints nodeStyle pins on an infinite-workspace root.
+  if (!textHtmlFiniteHangingTransport(node, { parent: parentUsesLayout ? parent : null }) ||
       !globalThis.document?.createElement) return 0;
   const measure = context.textPaintMeasure ??= globalThis.document.createElement("canvas").getContext("2d");
   if (!measure) return 0;

@@ -9,20 +9,28 @@ import { textRangeSourceSignature } from "../../../apps/design-studio/app/text-r
 
 /* Range-decoration batch. HTML (Chromium 148 forced/emulated DSF2, Inter bytes, sizes 13/14/18/24) draws an auto
  * underline at paint baseline + max(1, ceil(th/2)) with thickness max(1, floor(th)), th = fontSize x layout scale / 10,
- * across the run's advance interval in the run's colour (also under a node-level underline). Line-through has no
- * fit (ascent/x-height/strikeout metrics all miss by > .25 device px) and stays native; skip-ink is not modelled. */
+ * across the run's advance interval in the run's colour (also under a node-level underline). Range-final batch:
+ * line-through fits P - A + round(2A/3 - th/2) (A = ascent at the layout size, unfloored th; Inter + Arial, 24/24
+ * exact); system fonts underline on the raster; skip-ink is still not modelled (best fit p90 .66, worst 3.2 device px). */
 const app = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const node = (text, ranges, extra = {}) => ({ id: extra.id ?? "copy", name: "copy", type: "text", x: 20.3, y: 20.3, width: 600, height: 80, text,
   fill: "#000000", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0, fontFamily: "Inter", fontRef: "inter", fontSize: 24,
   fontWeight: 400, lineHeight: 1.25, textAlign: "left", ...extra,
   ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
 
-test("decoration and bidi fallback reasons: underline is raster-eligible, line-through/custom/RTL stay native with a reason", () => {
+test("decoration and bidi fallback reasons: underline and line-through are raster-eligible; custom/RTL/mixed-typography line-through stay native with a reason", () => {
   assert.equal(canvasKitRangeTextRasterFallbackReason(node("Under line", [{ start: 6, end: 10, textDecoration: "underline" }])), null);
   assert.equal(canvasKitRangeTextRasterFallbackReason(node("Node line", [{ start: 5, end: 9, fill: "#b42318" }], { textDecoration: "underline" })), null);
-  assert.equal(canvasKitRangeTextRasterFallbackReason(node("Strike this", [{ start: 7, end: 11, textDecoration: "line-through" }])), "line-through-unfitted");
+  assert.equal(canvasKitRangeTextRasterFallbackReason(node("Strike this", [{ start: 7, end: 11, textDecoration: "line-through" }])), null, "range-final: line-through fitted");
+  assert.equal(canvasKitRangeTextRasterFallbackReason(node("Strike this", [{ start: 7, end: 11, fontWeight: 700 }], { textDecoration: "line-through" })), "line-through-mixed-typography");
   assert.equal(canvasKitRangeTextRasterFallbackReason(node("Under line", [{ start: 6, end: 10, textDecoration: "underline", textUnderlineOffset: { unit: "em", value: 0.2 } }])), "decoration-custom");
   assert.equal(canvasKitRangeTextRasterFallbackReason(node("שלום world", [{ start: 5, end: 10, fill: "#b42318" }])), "bidi");
+  // Range-final batch: strong RTL letters outside the BMP (Adlam U+1E900, Phoenician U+10900) are bidi too.
+  assert.equal(canvasKitRangeTextRasterFallbackReason(node("\u{1E900}\u{1E901} world", [{ start: 5, end: 10, fill: "#b42318" }])), "bidi");
+  assert.equal(canvasKitRangeTextRasterFallbackReason(node("\u{10900} world", [{ start: 3, end: 8, fill: "#b42318" }])), "bidi");
+  // Negative controls: supplementary LTR/neutral characters (emoji, CJK Ext-B, Brahmi U+11005) are not.
+  for (const text of ["\u{1F600} world", "\u{20000} world", "\u{11005} world"])
+    assert.equal(canvasKitRangeTextRasterFallbackReason(node(text, [{ start: 3, end: 8, fill: "#b42318" }])), null, text);
 });
 
 async function page(t) {
@@ -143,4 +151,66 @@ test("M1 and underline: a refusal on line 2 draws nothing of the node; a descend
   let blackUnderline = 0, blueUnderline = 0;
   for (let y = 30; y < 60; y++) for (let x = 100; x < 200; x++) { const [rr, gg, bb, aa] = rgbAt(d, x, y); if (aa > 200 && rr < 40 && gg < 40 && bb < 40) blackUnderline++; if (aa > 200 && bb > 150 && rr < 80) blueUnderline++; }
   assert.ok(blueUnderline > 0, "the native fallback decoration uses the run colour");
+});
+
+test("range-final: a system-font (Arial) underline rasters like a supplied font; underline endpoints land on raster pixels", async t => {
+  const { page: browserPage, errors } = await page(t);
+  // Record every underline fillRect in raster device space (transform a*x + e) before the renderer runs.
+  await browserPage.evaluate(() => {
+    window.__underlineRects = [];
+    const fillRect = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function (x, y, w, h) {
+      const m = this.getTransform();
+      window.__underlineRects.push({ fill: String(this.fillStyle), x0: m.a * x + m.e, x1: m.a * (x + w) + m.e });
+      return fillRect.call(this, x, y, w, h);
+    };
+  });
+  const arial = node("Arial under line", [{ start: 6, end: 11, textDecoration: "underline", fill: "#175cd3" }], { id: "arial", fontRef: undefined, fontFamily: "Arial" });
+  const inter = node("Inter under line", [{ start: 6, end: 11, textDecoration: "underline", fill: "#175cd3" }], { id: "inter", x: 20.37 });
+  const result = await browserPage.evaluate(`(${drawSource})(${JSON.stringify({ nodes: [arial, inter] })})`);
+  const rects = await browserPage.evaluate(() => window.__underlineRects);
+  assert.deepEqual(errors, []);
+  const [a, i] = result.draws;
+  assert.equal(a.threw, null);
+  assert.equal(a.counters.rangeRasterNodes, 1, "the Arial underline node uses the range raster (was: underline-system-font, then refused by the native path)");
+  assert.equal(result.stats.rangeTextNativeFallbacks.find(entry => entry.nodeId === "arial"), undefined);
+  let blue = 0;
+  for (let p = 0; p < a.rgba.length; p += 4) if (a.rgba[p + 3] > 200 && a.rgba[p + 2] > 150 && a.rgba[p] < 80) blue++;
+  assert.ok(blue > 20, "the Arial run and its underline are drawn in the run colour");
+  assert.equal(i.counters.rangeRasterNodes, 1);
+  assert.ok(rects.length >= 2, "both underlines are drawn on the raster");
+  for (const rect of rects) for (const edge of [rect.x0, rect.x1])
+    assert.ok(Math.abs(edge - Math.round(edge)) < 1e-6, `underline edge ${edge} is on a raster pixel`);
+});
+
+test("range-final: line-through rasters at the fitted rows (P - A + round(2A/3 - th/2), thickness floor(th)) in the run colour", async t => {
+  const { page: browserPage, errors } = await page(t);
+  // Integer origin: the master raster rows land on surface rows. Same text, underline vs line-through on one run.
+  const under = node("Strike this out", [{ start: 7, end: 11, textDecoration: "underline", fill: "#175cd3" }], { id: "under", x: 20, y: 20 });
+  const strike = node("Strike this out", [{ start: 7, end: 11, textDecoration: "line-through", fill: "#175cd3" }], { id: "strike", x: 20, y: 20 });
+  const plain = node("Strike this out", [{ start: 7, end: 11, fill: "#175cd3" }], { id: "plain", x: 20, y: 20 });
+  const result = await browserPage.evaluate(`(${drawSource})(${JSON.stringify({ nodes: [under, strike, plain] })})`);
+  const metrics = await browserPage.evaluate(async () => {
+    // The renderer registers Inter under an alias: load the same bytes under a test family for the oracle metrics.
+    const face = new FontFace("OracleInter", await (await fetch("/fonts/InterVariable.woff2")).arrayBuffer(), { weight: "100 900" });
+    await face.load(); document.fonts.add(face);
+    const ctx = document.createElement("canvas").getContext("2d"); ctx.font = '400 24px "OracleInter"'; ctx.fontKerning = "normal";
+    return { A: ctx.measureText("Hg").fontBoundingBoxAscent, x0: ctx.measureText("Strike ").width, x1: ctx.measureText("Strike this").width }; });
+  assert.deepEqual(errors, []);
+  const [u, s, p] = result.draws;
+  for (const draw of [u, s]) assert.equal(draw.counters.rangeRasterNodes, 1);
+  assert.deepEqual(result.stats.rangeTextNativeFallbacks, []);
+  // Rows a decoration adds over the undecorated node, inside the run interval (alpha gain > 128).
+  const added = draw => { const rows = new Set(); let outside = 0;
+    for (let y = 0; y < 120; y++) for (let x = 0; x < 760; x++) { const o = (y * 760 + x) * 4;
+      if (draw.rgba[o + 3] - p.rgba[o + 3] > 128) { if (x > 20 + metrics.x0 + 1 && x < 20 + metrics.x1 - 1) rows.add(y); else if (x < 20 + metrics.x0 - 2 || x > 20 + metrics.x1 + 2) outside++; } }
+    return { rows: [...rows].sort((a, b) => a - b), outside }; };
+  const ur = added(u), sr = added(s);
+  assert.equal(sr.outside, 0, "the line-through stops at the run interval");
+  assert.equal(sr.rows.length, 2, `thickness floor(2.4) = 2 rows, got ${sr.rows}`);
+  // Underline top = P + max(1, ceil(th/2)) = P + 2; line-through top = P - A + round(2A/3 - th/2).
+  const expected = (Math.round(2 * metrics.A / 3 - 1.2) - metrics.A) - 2;
+  assert.equal(sr.rows[0] - ur.rows[0], expected, `line-through ${sr.rows} vs underline ${ur.rows}, A ${metrics.A}`);
+  const o = (sr.rows[0] * 760 + Math.round(20 + (metrics.x0 + metrics.x1) / 2)) * 4;
+  assert.ok(Math.hypot(s.rgba[o] - 0x17, s.rgba[o + 1] - 0x5c, s.rgba[o + 2] - 0xd3) <= 16, "the run colour");
 });

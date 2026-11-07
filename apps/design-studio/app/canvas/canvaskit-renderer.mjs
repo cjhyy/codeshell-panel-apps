@@ -638,7 +638,9 @@ export async function createRenderer({
             delete local.shadow;
             delete local.name;
             delete local.locked;
-            const originPhase = node.type === "text" && !Number.isFinite(node.layoutBaselineOffset)
+            // Finite text snaps its paint origin too (hanging transport or, when HTML does not transport it,
+            // the line box): every text picture is keyed by its world origin phase.
+            const originPhase = node.type === "text"
               ? [sampledNode.y - Math.floor(sampledNode.y), sampledNode.y < 0,
                   node.textAlign === "center" ? Math.trunc(sampledNode.x * 64) / 64 - sampledNode.x : null] : null;
             const signature = JSON.stringify([local, originPhase, text.rasterScaleForNode?.(sampledNode) ?? 2, text.rasterSamplingForNode?.(sampledNode)]);

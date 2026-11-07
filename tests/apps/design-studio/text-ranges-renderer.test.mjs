@@ -225,13 +225,15 @@ test("software CanvasKit supplied Paragraph preserves AV/fi/combining shaping ac
       text, fill: "#123456", stroke: "transparent", strokeWidth: 0, fontFamily: "Inter", fontRef: "inter", fontSize: 24,
       // Keep this shaping oracle on the historical native path for both inputs;
       // ordinary no-offset resource text has its separate browser-raster oracle.
-      fontWeight: 400, lineHeight: 1.25, textAlign: "left", layoutBaselineOffset: 0,
+      // Range-final batch: finite typography and line-through now follow HTML onto the range raster; a node-level
+      // line-through over a (base-equal) typography range is unmeasured (line-through-mixed-typography) and stays native.
+      fontWeight: 400, lineHeight: 1.25, textAlign: "left", layoutBaselineOffset: 0, textDecoration: "line-through",
       ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
     const rows = [];
     for (const [text, start, end] of [["AVATAR", 1, 2], ["office", 2, 3], ["e\u0301lan", 1, 2], ["A\u00a0V\nExplicit LF", 2, 5]]) {
-      // Finite fill-only ranges now use the browser range raster (HTML parity). A typography override equal
-      // to the base weight keeps this native-paragraph shaping oracle on the native path (finite-typography).
-      const nodes = [make(text), make(text, [{ start, end, fill: "#123456", fontWeight: 400 }]), make(text, [{ start, end, fill: "#991122", fontWeight: 400 }])];
+      // The reference is one whole-text run (no paint boundary) on the same native range paragraph.
+      const nodes = [make(text, [{ start: 0, end: text.length, fill: "#123456", fontWeight: 400 }]), make(text, [{ start, end, fill: "#123456", fontWeight: 400 }]),
+        make(text, [{ start, end, fill: "#991122", fontWeight: 400 }])];
       const design = { nodes: [nodes[0]], resources: [{ id: "inter", kind: "font", family: "Inter" }] }, before = JSON.stringify(design);
       const resources = new Map([["inter", { bytes, mimeType: "font/woff2", descriptor: design.resources[0] }]]);
       const counters = { textLines: 0, rasterTextNodes: 0, nativeTextNodes: 0, gradientPaints: 0 }, warnings = [];
