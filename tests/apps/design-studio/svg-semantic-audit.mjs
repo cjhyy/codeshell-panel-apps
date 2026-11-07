@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {mkdir, readFile, writeFile} from "node:fs/promises";
 import {join, resolve} from "node:path";
+import {pathToFileURL} from "node:url";
 import {PNG} from "pngjs";
 import {normalizeDesignDocument} from "../../../apps/design-studio/app/document.mjs";
 import {
@@ -20,7 +21,7 @@ const parseRgb = value => /^#[a-f\d]{6}$/iu.test(value ?? "") ? [1, 3, 5].map(i 
 const transparent = value => value === undefined || value === null || value === "transparent" || value === "none";
 const counts = (items, key) => Object.fromEntries([...new Set(items.map(key))].sort().map(value => [value, items.filter(item => key(item) === value).length]));
 
-function ancestorsOf(node, index) {
+export function ancestorsOf(node, index) {
   const chain = [];
   for (let parent = index.get(node.parentId), seen = new Set(); parent && !seen.has(parent.id); parent = index.get(parent.parentId)) {
     seen.add(parent.id); chain.push(parent);
@@ -29,7 +30,7 @@ function ancestorsOf(node, index) {
 }
 
 /** Device-space oracle spec; unsupported page semantics are reported, never approximated. */
-function specFor(row, node, ancestors, canvas) {
+export function specFor(row, node, ancestors, canvas) {
   const device = (box, radius = 0) => ({x: (box.x - row.tile.x) * row.scale, y: (box.y - row.tile.y) * row.scale,
     width: box.width * row.scale, height: box.height * row.scale, radius: radius * row.scale});
   const reasons = [];
@@ -57,16 +58,22 @@ function ownerCovers(owner, window) {
     [window.left + window.width, window.top + window.height]].every(([x, y]) => signedDistance(inner, x, y) <= 0);
 }
 
-function strokeSummary(result) {
-  const probes = result.probes.filter(probe => probe.error);
-  const pick = (field, key) => probes.length ? Math.max(...probes.map(probe => Math.abs(probe[key][field]))) : null;
+const maxAbsFinite = values => { const finite = values.filter(Number.isFinite).map(Math.abs); return finite.length ? Math.max(...finite) : null; };
+
+export function strokeSummary(result) {
+  // Each field is summarised over the probes where it exists and is finite;
+  // a missing centroid (no ink) is excluded, not read as 0. FAIL is kept by status.
+  const pick = (field, key) => maxAbsFinite(result.probes.map(probe => probe[key]?.[field]));
   return {statusCounts: result.counts, maxAbsErrorDevicePx: {centroid: pick("centroid", "error"), width: pick("width", "error")},
     maxAbsNominalDevicePx: {centroid: pick("centroid", "nominal"), width: pick("width", "nominal")},
     maxAbsOperatorBiasDevicePx: {centroid: pick("centroid", "operatorBias"), width: pick("width", "operatorBias")}};
 }
 
-/** Controls on the real SVG raster: each must be rejected for the row to keep a pass. */
-function realControls(row, result, region) {
+/** Coverage-synthetic controls: the real SVG raster's coverage is pixel-shifted,
+ * or has (oracle(changed) - oracle(authored)) added. These are not independent
+ * SVG inputs; real markup controls live in svg-semantic-markup-controls.mjs.
+ * Each must be rejected for the row to keep a pass. */
+function syntheticCoverageControls(row, result, region) {
   const {actual, oracle} = result.rasters, outcomes = {};
   const judge = candidate => (region.paint === "stroke" ? compareStroke({actual: candidate, oracle, region}) : compareFill({actual: candidate, oracle, region})).status;
   outcomes.shiftX1 = judge(shiftCoverage(actual, 1, 0));
@@ -82,43 +89,23 @@ function realControls(row, result, region) {
   return {outcomes, allRejected: Object.values(outcomes).every(status => status === S.FAIL)};
 }
 
-const [oldArg, outputArg, realArg, r009Arg] = process.argv.slice(2);
-assert(oldArg && outputArg && realArg, "usage: node svg-semantic-audit.mjs R008_EVIDENCE OUTPUT REAL_BACKUP [R009_SVG_SUMMARY]");
-const old = resolve(oldArg), output = resolve(outputArg), realPath = resolve(realArg), startedUtc = new Date().toISOString();
-assert(!output.startsWith(old + "/") && output !== old, "old raw is read-only");
-const sourcePath = join(old, "final-real-rows.json"), sourceBytes = await readFile(sourcePath), realBytes = await readFile(realPath);
-const r009Bytes = r009Arg ? await readFile(resolve(r009Arg)) : null;
-const selected = JSON.parse(sourceBytes).filter(row => row.offline?.blockerClass === "SVG_PRECISE_UNEXPLAINED_STROKE");
-assert.equal(selected.length, 235, "R008 denominator must remain exact");
-assert.equal(new Set(selected.map(row => JSON.stringify([row.page, row.id, row.route, row.matrix]))).size, 235, "unique source rows");
-const design = normalizeDesignDocument(JSON.parse(realBytes).document);
-const pages = new Map(design.pages.map(page => [page.id, new Map(page.nodes.map(node => [node.id, node]))]));
-const results = [], pngHashes = new Map();
-const loadPng = async path => { const bytes = await readFile(path); pngHashes.set(path, sha(bytes)); return PNG.sync.read(bytes); };
-
-for (const row of selected) {
-  assert.equal(row.route, "svg");
-  const index = pages.get(row.page), node = index?.get(row.id);
-  assert(node, `authored node ${row.page}/${row.id}`);
-  for (const field of ["x", "y", "width", "height"]) assert.equal(node[field], row.geometry[field], `capture geometry of ${row.id} must equal the authored document`);
-  const ancestors = ancestorsOf(node, index), plan = specFor(row, node, ancestors, design.canvas);
+/** One audited row from its R008 record, authored node and loaded PNGs. */
+export function auditRow({row, node, ancestors, canvas, svg, html}) {
+  const plan = specFor(row, node, ancestors, canvas);
   const oldStroke = Boolean(row.value.strokeDeltas?.length);
   const entry = {page: row.page, id: row.id, matrix: row.matrix, scale: row.scale, tile: row.tile, kind: plan.spec.paint,
     oldKind: oldStroke ? "stroke-probes" : "fill-without-stroke-probes", authoredCss: {x: node.x, y: node.y, width: node.width, height: node.height,
       cornerRadius: node.cornerRadius ?? 0, strokeWidth: node.strokeWidth ?? 0, stroke: node.stroke, fill: node.fill},
     spec: plan.spec, foreground: plan.foreground, background: plan.background, backgroundOwner: plan.backgroundOwner.id,
     paths: {svg: row.paths.svg, html: row.paths.html}, oldGateFailures: row.value.gateFailures, oldGeometryFailures: row.value.geometryFailures};
-  results.push(entry);
-  if (plan.reasons.length) { Object.assign(entry, {status: S.UNSUPPORTED, reason: plan.reasons.join("; ")}); continue; }
-  let svg, html;
-  try { svg = await loadPng(row.paths.svg); html = await loadPng(row.paths.html); }
-  catch (error) { Object.assign(entry, {status: S.MISSING, reason: String(error)}); continue; }
+  if (plan.reasons.length) { Object.assign(entry, {status: S.UNSUPPORTED, reason: plan.reasons.join("; ")}); return entry; }
+  if (!svg || !html) return Object.assign(entry, {status: S.MISSING, reason: "capture PNG missing"});
   const result = compareSvgSemantics(svg, plan.spec, {foreground: plan.foreground, background: plan.background});
   entry.status = result.status; entry.reason = result.reason ?? null; entry.window = result.window ?? null;
   if (result.window && plan.backgroundOwner.box && !ownerCovers(plan.backgroundOwner, result.window)) {
-    Object.assign(entry, {status: S.UNSUPPORTED, reason: "background owner does not cover the measurement window"}); continue;
+    Object.assign(entry, {status: S.UNSUPPORTED, reason: "background owner does not cover the measurement window"}); return entry;
   }
-  if (!result.rasters) continue;
+  if (!result.rasters) return entry;
   const region = paintRegion(plan.spec);
   if (result.kind === "stroke") {
     Object.assign(entry, strokeSummary(result));
@@ -138,58 +125,93 @@ for (const row of selected) {
       centroid: Math.hypot(result.oracle.centroidX - result.nominal.centroidX, result.oracle.centroidY - result.nominal.centroidY)};
     entry.oldSvgMinusHtmlDevice = row.value.delta;
   }
-  entry.controls = realControls({spec: plan.spec}, result, region);
-  if (entry.status === S.PASS && !entry.controls.allRejected) Object.assign(entry, {status: S.UNOBSERVABLE, reason: "a real-raster negative control was not rejected"});
+  entry.syntheticCoverageControls = syntheticCoverageControls({spec: plan.spec}, result, region);
+  if (entry.status === S.PASS && !entry.syntheticCoverageControls.allRejected) Object.assign(entry, {status: S.UNOBSERVABLE, reason: "a coverage-synthetic negative control was not rejected"});
   const reference = compareSvgSemantics(html, plan.spec, {foreground: plan.foreground, background: plan.background});
   entry.htmlVsAuthoredDescriptive = {status: reference.status, ...(reference.kind === "stroke" ? strokeSummary(reference) : {error: reference.error ?? null})};
+  return entry;
 }
 
-const stroke = results.filter(row => row.kind === "stroke"), fill = results.filter(row => row.kind === "fill");
-const probes = stroke.flatMap(row => (row.probes ?? []).map(probe => ({...probe, row})));
-const scored = probes.filter(probe => probe.error);
-const top = (items, value) => { const best = [...items].sort((a, b) => value(b) - value(a))[0]; return best ?? null; };
-const describeProbe = (probe, field) => probe && {page: probe.row.page, id: probe.row.id, matrix: probe.row.matrix, index: probe.index, fraction: probe.fraction,
-  errorDevicePx: probe.error[field], oracle: probe.oracle, actual: probe.actual, svgPng: probe.row.paths.svg};
-const fillScored = fill.filter(row => row.error);
-const describeFill = (row, field) => row && {page: row.page, id: row.id, matrix: row.matrix, errorDevicePx: row.error[field], oracle: row.oracle, actual: row.actual, svgPng: row.paths.svg};
-const htmlStroke = stroke.filter(row => row.htmlVsAuthoredDescriptive?.maxAbsErrorDevicePx);
-const summary = {
-  rows: results.length, sourceNodes: new Set(results.map(row => row.id)).size,
-  strokeRows: stroke.length, strokeSourceNodes: new Set(stroke.map(row => row.id)).size,
-  fillRows: fill.length, fillSourceNodes: new Set(fill.map(row => row.id)).size,
-  statusCounts: counts(results, row => row.status),
-  byKind: {stroke: counts(stroke, row => row.status), fill: counts(fill, row => row.status)},
-  byMatrix: Object.fromEntries([...new Set(results.map(row => row.matrix))].sort().map(matrix => [matrix, counts(results.filter(row => row.matrix === matrix), row => row.status)])),
-  validDenominator: results.filter(row => [S.PASS, S.FAIL].includes(row.status)).length,
-  sourceNodesAllPass: [...new Set(results.map(row => row.id))].filter(id => results.filter(row => row.id === id).every(row => row.status === S.PASS)).length,
-  strokeProbes: {total: probes.length, statusCounts: counts(probes, probe => probe.status)},
-  maxima: {
-    strokeCentroid: describeProbe(top(scored, probe => Math.abs(probe.error.centroid)), "centroid"),
-    strokeWidth: describeProbe(top(scored, probe => Math.abs(probe.error.width)), "width"),
-    fillCentroid: describeFill(top(fillScored, row => row.error.centroid), "centroid"),
-    fillWidth: describeFill(top(fillScored.filter(row => row.error.width !== null), row => Math.abs(row.error.width)), "width"),
-    fillHeight: describeFill(top(fillScored.filter(row => row.error.height !== null), row => Math.abs(row.error.height)), "height"),
-    strokeOperatorBias: {centroid: Math.max(...scored.map(probe => Math.abs(probe.oracle.centroid))), width: Math.max(...stroke.filter(row => row.maxAbsOperatorBiasDevicePx).map(row => row.maxAbsOperatorBiasDevicePx.width))},
-    strokeNominal: {centroid: Math.max(...scored.map(probe => Math.abs(probe.actual.centroid))), width: Math.max(...stroke.filter(row => row.maxAbsNominalDevicePx).map(row => row.maxAbsNominalDevicePx.width))},
-    fillOperatorBias: {centroid: Math.max(...fill.filter(row => row.operatorBias).map(row => row.operatorBias.centroid)),
-      width: Math.max(...fill.filter(row => row.operatorBias?.width !== null && row.operatorBias).map(row => Math.abs(row.operatorBias.width))),
-      height: Math.max(...fill.filter(row => row.operatorBias?.height !== null && row.operatorBias).map(row => Math.abs(row.operatorBias.height)))},
-  },
-  controls: {rows: results.filter(row => row.controls).length, allRejectedRows: results.filter(row => row.controls?.allRejected).length,
-    outcomes: Object.fromEntries([...new Set(results.flatMap(row => Object.keys(row.controls?.outcomes ?? {})))].map(name => [name, counts(results.filter(row => row.controls?.outcomes[name]), row => row.controls.outcomes[name])]))},
-  oldSvgProbeConsistency: {rows: stroke.filter(row => row.oldSvgProbeConsistency).length,
-    maxAbsCentroid: Math.max(...stroke.filter(row => row.oldSvgProbeConsistency).map(row => row.oldSvgProbeConsistency.maxAbsCentroid)),
-    maxAbsWidth: Math.max(...stroke.filter(row => row.oldSvgProbeConsistency).map(row => row.oldSvgProbeConsistency.maxAbsWidth))},
-  descriptiveHtml: {
-    oldSvgMinusHtmlMaxCss: {strokeCentroid: Math.max(...stroke.map(row => row.oldSvgMinusHtmlCss?.centroid ?? 0)), strokeWidth: Math.max(...stroke.map(row => row.oldSvgMinusHtmlCss?.width ?? 0))},
-    htmlVsAuthoredStatus: counts(results.filter(row => row.htmlVsAuthoredDescriptive), row => row.htmlVsAuthoredDescriptive.status),
-    htmlVsAuthoredMaxDevice: {strokeCentroid: Math.max(...htmlStroke.map(row => row.htmlVsAuthoredDescriptive.maxAbsErrorDevicePx.centroid ?? 0)),
-      strokeWidth: Math.max(...htmlStroke.map(row => row.htmlVsAuthoredDescriptive.maxAbsErrorDevicePx.width ?? 0)),
-      fillCentroid: Math.max(...fill.map(row => row.htmlVsAuthoredDescriptive?.error?.centroid ?? 0)),
-      fillWidth: Math.max(...fill.map(row => Math.abs(row.htmlVsAuthoredDescriptive?.error?.width ?? 0))),
-      fillHeight: Math.max(...fill.map(row => Math.abs(row.htmlVsAuthoredDescriptive?.error?.height ?? 0)))},
-  },
-};
+export function summarizeAudit(results) {
+  const stroke = results.filter(row => row.kind === "stroke"), fill = results.filter(row => row.kind === "fill");
+  const probes = stroke.flatMap(row => (row.probes ?? []).map(probe => ({...probe, row})));
+  const scored = probes.filter(probe => probe.error);
+  const finiteField = field => scored.filter(probe => Number.isFinite(probe.error[field]));
+  const top = (items, value) => { const best = [...items].sort((a, b) => value(b) - value(a))[0]; return best ?? null; };
+  const describeProbe = (probe, field) => probe && {page: probe.row.page, id: probe.row.id, matrix: probe.row.matrix, index: probe.index, fraction: probe.fraction,
+    errorDevicePx: probe.error[field], oracle: probe.oracle, actual: probe.actual, svgPng: probe.row.paths.svg};
+  const fillScored = fill.filter(row => row.error);
+  const describeFill = (row, field) => row && {page: row.page, id: row.id, matrix: row.matrix, errorDevicePx: row.error[field], oracle: row.oracle, actual: row.actual, svgPng: row.paths.svg};
+  const htmlStroke = stroke.filter(row => row.htmlVsAuthoredDescriptive?.maxAbsErrorDevicePx);
+  const summary = {
+    rows: results.length, sourceNodes: new Set(results.map(row => row.id)).size,
+    strokeRows: stroke.length, strokeSourceNodes: new Set(stroke.map(row => row.id)).size,
+    fillRows: fill.length, fillSourceNodes: new Set(fill.map(row => row.id)).size,
+    statusCounts: counts(results, row => row.status),
+    byKind: {stroke: counts(stroke, row => row.status), fill: counts(fill, row => row.status)},
+    byMatrix: Object.fromEntries([...new Set(results.map(row => row.matrix))].sort().map(matrix => [matrix, counts(results.filter(row => row.matrix === matrix), row => row.status)])),
+    validDenominator: results.filter(row => [S.PASS, S.FAIL].includes(row.status)).length,
+    sourceNodesAllPass: [...new Set(results.map(row => row.id))].filter(id => results.filter(row => row.id === id).every(row => row.status === S.PASS)).length,
+    strokeProbes: {total: probes.length, statusCounts: counts(probes, probe => probe.status)},
+    maxima: {
+      strokeCentroid: describeProbe(top(finiteField("centroid"), probe => Math.abs(probe.error.centroid)), "centroid"),
+      strokeWidth: describeProbe(top(finiteField("width"), probe => Math.abs(probe.error.width)), "width"),
+      fillCentroid: describeFill(top(fillScored, row => row.error.centroid), "centroid"),
+      fillWidth: describeFill(top(fillScored.filter(row => row.error.width !== null), row => Math.abs(row.error.width)), "width"),
+      fillHeight: describeFill(top(fillScored.filter(row => row.error.height !== null), row => Math.abs(row.error.height)), "height"),
+      strokeOperatorBias: {centroid: maxAbsFinite(scored.map(probe => probe.oracle?.centroid)), width: maxAbsFinite(stroke.map(row => row.maxAbsOperatorBiasDevicePx?.width))},
+      strokeNominal: {centroid: maxAbsFinite(scored.map(probe => probe.actual?.centroid)), width: maxAbsFinite(stroke.map(row => row.maxAbsNominalDevicePx?.width))},
+      fillOperatorBias: {centroid: Math.max(...fill.filter(row => row.operatorBias).map(row => row.operatorBias.centroid)),
+        width: Math.max(...fill.filter(row => row.operatorBias?.width !== null && row.operatorBias).map(row => Math.abs(row.operatorBias.width))),
+        height: Math.max(...fill.filter(row => row.operatorBias?.height !== null && row.operatorBias).map(row => Math.abs(row.operatorBias.height)))},
+    },
+    syntheticCoverageControls: {rows: results.filter(row => row.syntheticCoverageControls).length, allRejectedRows: results.filter(row => row.syntheticCoverageControls?.allRejected).length,
+      outcomes: Object.fromEntries([...new Set(results.flatMap(row => Object.keys(row.syntheticCoverageControls?.outcomes ?? {})))].map(name => [name, counts(results.filter(row => row.syntheticCoverageControls?.outcomes[name]), row => row.syntheticCoverageControls.outcomes[name])]))},
+    oldSvgProbeConsistency: {rows: stroke.filter(row => row.oldSvgProbeConsistency).length,
+      maxAbsCentroid: Math.max(...stroke.filter(row => row.oldSvgProbeConsistency).map(row => row.oldSvgProbeConsistency.maxAbsCentroid)),
+      maxAbsWidth: Math.max(...stroke.filter(row => row.oldSvgProbeConsistency).map(row => row.oldSvgProbeConsistency.maxAbsWidth))},
+    descriptiveHtml: {
+      oldSvgMinusHtmlMaxCss: {strokeCentroid: Math.max(...stroke.map(row => row.oldSvgMinusHtmlCss?.centroid ?? 0)), strokeWidth: Math.max(...stroke.map(row => row.oldSvgMinusHtmlCss?.width ?? 0))},
+      htmlVsAuthoredStatus: counts(results.filter(row => row.htmlVsAuthoredDescriptive), row => row.htmlVsAuthoredDescriptive.status),
+      htmlVsAuthoredMaxDevice: {strokeCentroid: Math.max(...htmlStroke.map(row => row.htmlVsAuthoredDescriptive.maxAbsErrorDevicePx.centroid ?? 0)),
+        strokeWidth: Math.max(...htmlStroke.map(row => row.htmlVsAuthoredDescriptive.maxAbsErrorDevicePx.width ?? 0)),
+        fillCentroid: Math.max(...fill.map(row => row.htmlVsAuthoredDescriptive?.error?.centroid ?? 0)),
+        fillWidth: Math.max(...fill.map(row => Math.abs(row.htmlVsAuthoredDescriptive?.error?.width ?? 0))),
+        fillHeight: Math.max(...fill.map(row => Math.abs(row.htmlVsAuthoredDescriptive?.error?.height ?? 0)))},
+    },
+  };
+  return summary;
+}
+
+async function main() {
+const [oldArg, outputArg, realArg, r009Arg] = process.argv.slice(2);
+assert(oldArg && outputArg && realArg, "usage: node svg-semantic-audit.mjs R008_EVIDENCE OUTPUT REAL_BACKUP [R009_SVG_SUMMARY]");
+const old = resolve(oldArg), output = resolve(outputArg), realPath = resolve(realArg), startedUtc = new Date().toISOString();
+assert(!output.startsWith(old + "/") && output !== old, "old raw is read-only");
+const sourcePath = join(old, "final-real-rows.json"), sourceBytes = await readFile(sourcePath), realBytes = await readFile(realPath);
+const r009Bytes = r009Arg ? await readFile(resolve(r009Arg)) : null;
+const selected = JSON.parse(sourceBytes).filter(row => row.offline?.blockerClass === "SVG_PRECISE_UNEXPLAINED_STROKE");
+assert.equal(selected.length, 235, "R008 denominator must remain exact");
+assert.equal(new Set(selected.map(row => JSON.stringify([row.page, row.id, row.route, row.matrix]))).size, 235, "unique source rows");
+const design = normalizeDesignDocument(JSON.parse(realBytes).document);
+const pages = new Map(design.pages.map(page => [page.id, new Map(page.nodes.map(node => [node.id, node]))]));
+const results = [], pngHashes = new Map();
+const loadPng = async path => { const bytes = await readFile(path); pngHashes.set(path, sha(bytes)); return PNG.sync.read(bytes); };
+
+for (const row of selected) {
+  assert.equal(row.route, "svg");
+  const index = pages.get(row.page), node = index?.get(row.id);
+  assert(node, `authored node ${row.page}/${row.id}`);
+  for (const field of ["x", "y", "width", "height"]) assert.equal(node[field], row.geometry[field], `capture geometry of ${row.id} must equal the authored document`);
+  const ancestors = ancestorsOf(node, index);
+  let svg = null, html = null, missing = null;
+  try { svg = await loadPng(row.paths.svg); html = await loadPng(row.paths.html); } catch (error) { missing = String(error); }
+  const entry = auditRow({row, node, ancestors, canvas: design.canvas, svg, html});
+  if (missing && entry.status === S.MISSING) entry.reason = missing;
+  results.push(entry);
+}
+
+const summary = summarizeAudit(results);
 const receipt = {createdUtc: new Date().toISOString(), startedUtc, argv: process.argv, derivedOffline: true, rawCapturesChanged: false,
   contract: {tolerances: T, gate: "measure(SVG raster) - measure(exact-area raster of authored geometry), identical linear coverage operator"},
   oldRuleRetained: r009Bytes ? {path: resolve(r009Arg), sha256: sha(r009Bytes), summary: JSON.parse(r009Bytes).summary} : null,
@@ -202,3 +224,6 @@ await writeFile(join(output, "summary.json"), JSON.stringify({...receipt, rows: 
 assert.equal(sha(await readFile(sourcePath)), receipt.source.sha256, "old raw changed");
 assert.equal(sha(await readFile(realPath)), receipt.sourceDocument.sha256, "user source changed");
 console.log(JSON.stringify(summary, null, 2));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();

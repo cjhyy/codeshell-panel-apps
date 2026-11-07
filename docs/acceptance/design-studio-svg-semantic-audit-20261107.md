@@ -1,6 +1,6 @@
 # Design Studio SVG 精确矢量语义审计（2026-11-07）
 
-**状态：SVG 语义验证未全部通过。235 行中 231 PASS、4 FAIL，没有不可观测、数据缺失、采样污染或不支持的行。** 156 行 stroke（41 个 source node）全部通过，4,992 个 probe 全部通过；79 行 fill（32 个 source node）中 75 PASS、4 FAIL。4 个 FAIL 都是 DPR1/z1 下小于 2 device px 宽的方角细条 fill，导出的 SVG 几何与作者一致。用不含 Design Studio 代码的手写 SVG `<rect>` 在同一 Chromium 148 + SwiftShader 参数下，能复现审计测到的覆盖量偏差（误差 ≤0.002 px²）；关掉 GPU 后，`<rect>` 每个像素与精确面积的差都 ≤0.0061。`<path>` 改写也没有稳定消除偏差。所以根因是 Chromium GPU 栅格化对矩形角像素的 AA 近似，不是 Design Studio SVG 模块的 bug。**没有修改任何 production 文件。** 旧规则的结果（0/235）照原样保留，没有改成 pass。真实 Host 隔离验收仍未获许可，**不宣告 Goal complete**。
+**状态：SVG 语义验证未全部通过。235 行中 231 PASS、4 FAIL，没有不可观测、数据缺失、采样污染或不支持的行。** 156 行 stroke（41 个 source node）全部通过，4,992 个 probe 全部通过；79 行 fill（32 个 source node）中 75 PASS、4 FAIL。4 个 FAIL 都是 DPR1/z1 下小于 2 device px 宽的方角细条 fill，导出的 SVG 几何与作者一致。在与原采集一致的页面条件下重渲（只省略了 font-face CSS），4 行的 PNG 逐字节复现；不含 Design Studio 代码的手写 `<rect>` 也能复现同样的覆盖偏差（web-chat-107 差约 0.0022 px²，实际 0.00218237）；同一页面改用 `--disable-gpu` 参数后，这 4 行全部 PASS。**证据强烈支持：主要原因是该采集配置下 Chromium 栅格化的角像素 AA，而不是 SVG 导出几何。** 但本轮没有取到实际的栅格后端（chrome://gpu 不可访问，参数本身不能证明后端），也没有确定精确的实现，所以不声称“确定是 GPU 或 CPU”。**没有修改任何 production 文件。** 返修补了真实修改 SVG markup 的负控（10 个浏览器栅格，在一致的采集条件下全部按预期拒绝或通过）。旧规则的结果（0/235）照原样保留，没有改成 pass。真实 Host 隔离验收仍未获许可，**不宣告 Goal complete**。
 
 分支 `codex/design-studio/render-fidelity-svg-audit-20261107`，base `34f77a958be78e87d557a8e2d4455079d05b4f26`。已读 CODESHELL.md 与 CONTRIBUTING.md（npm）。本轮只新增 tests/docs，并在 `tests/suites.mjs` 的 Design Studio 套件里登记一行。没有改 Host、其他 Panel、lock、安装包、用户稿或协调账本；没有 push、merge、PR、发布或安装；没有启动 Electron、构建 Host 或打开任何窗口。只用了一个专属 headless Chromium 做下文的独立复现：离线运行，只允许 `data:` 请求，不碰用户 tab。依赖用 `npm ci --cache .tmp/npm-cache --prefer-offline` 安装，exit 0，node_modules 不是 symlink。全部证据放在本 cwd 的 `.tmp/svg-audit/final/`，不提交。
 
@@ -38,15 +38,17 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 
 门禁量 = measure(SVG 栅格) − measure(作者几何的精确面积栅格)，两边用同一个算子。
 
+**适用范围需要收窄。** 只有 coverage 积分（stroke width、fill mass、整行或整列积分）对 coverage 是线性的。centroid 是两个线性量的比值；fill 的 integral 尺寸取 max 后，在单向可测时还要除以 mass，两者都不是线性的；oracle 的圆弧部分又是 64 子行的数值积分，本身有离散误差。因此下面说的“两边相同、差值抵消”，只对线性的积分量严格成立，对 centroid 和 integral 尺寸只是近似。另外，门禁只看 probe 的 centroid/width 和 fill 的 centroid/W/H，**并不验证完整轮廓**。Codex 给出的反例：作者是 20×20、r=5 的 fill，实际渲染成 r=0。本轮复算，面积多出约 21.46 px²（本次相位为 21.457），但三个门禁量都 PASS（`final-r2/counterexample.log`）。这是现有合同的覆盖边界，本轮按要求没有为了它新增指标或改动阈值。
+
 - **blur**：对于直边，任何对称、归一化的模糊核卷积都会保留沿法线的覆盖积分（零阶矩）和质心（一阶矩），前提是积分窗口完整覆盖模糊支撑。box filter 加 bilinear 重建相当于先后做 box 卷积和 tent 卷积，所以 AA 带来的模糊不会让 width 或 centroid 产生偏差。单测用 [1,2,1]⊗[1,2,1]/16 模糊验证，直边上的误差约为 0；只有在角附近，窗口会被 medial axis 截断，误差 ≤0.08。
-- **曲线**：在弧上，像素足印沿切向的方差约为 1/4 device px²，会让径向质心产生约 1/(8R) 的二阶偏差，R 是曲率半径。这个偏差只取决于几何和算子，与被测栅格无关，所以在两边相同并在差值里抵消。为了透明，算子自身的偏差单独报告：stroke 的 oracle centroid 与解析值 0 最多相差 0.219，width 与 sw 最多相差 0.147（device px，出现在小半径弧上）。如果不做 oracle 校正，直接拿 SVG 和解析值 0 / sw 比，stroke 最大误差是 centroid 0.206、width 0.218，也在 0.35 以内。fill 的“整行积分”在圆角处小于 w，最多小 0.351；所以 fill 门禁必须和 oracle 比，不能和名义 w 比。
+- **曲线**：在弧上，像素足印沿切向的方差约为 1/4 device px²，会让径向质心产生约 1/(8R) 的二阶偏差，R 是曲率半径。这个偏差只取决于几何和算子，与被测栅格无关，所以对线性积分量来说两边相同、在差值里抵消；对 centroid 这类比值量只是近似抵消。为了透明，算子自身的偏差单独报告：stroke 的 oracle centroid 与解析值 0 最多相差 0.219，width 与 sw 最多相差 0.147（device px，出现在小半径弧上）。如果不做 oracle 校正，直接拿 SVG 和解析值 0 / sw 比，stroke 最大误差是 centroid 0.206、width 0.218，也在 0.35 以内。fill 的“整行积分”在圆角处小于 w，最多小 0.351；所以 fill 门禁必须和 oracle 比，不能和名义 w 比。
 - 单个 probe 的分辨率：直边约 ±0.01；在半径 ≤3 px 的紧弧上，真实的 ±0.5 线宽变化会被测成 0.43–0.62，因为两种几何下算子偏差不同。这仍然高于 0.35，负控仍然被拒绝。
 
 ### 状态分类
 
 | 状态 | 含义 | 是否计入 pass |
 | --- | --- | --- |
-| `PASS` | 所有可观测字段都在合同内；stroke 至少 16/32 个 probe 通过，且没有 probe fail；该行的真实栅格负控全部被拒绝 | 是 |
+| `PASS` | 所有可观测字段都在合同内；stroke 至少 16/32 个 probe 通过，且没有 probe fail；该行的 coverage 合成扰动负控全部被拒绝 | 是 |
 | `FAIL_SVG_GEOMETRY` | 有可观测字段超出合同 | 否 |
 | `SAMPLE_CONTAMINATED` | 外来颜色导致可用 probe 不足 | 否 |
 | `DATA_MISSING` | 测量窗口超出 capture，或 PNG 缺失 | 否 |
@@ -62,9 +64,18 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 - 精确面积；弧上和平边上的 medial depth。
 - 正控：作者栅格 → 8-bit RGBA → PASS，32/32 probe 通过，误差 <0.02；对称 AA 模糊仍然 PASS。
 - **负控**：整体位移 1 device px（x、y、−y）必须拒绝；单边移动 1 px 必须拒绝；stroke 宽 ±0.5 必须拒绝（实测 0.43–0.62）；fill 宽 ±1、高 +1、平移 1 必须拒绝；0.25 位移必须仍然 PASS，证明门禁不是一律拒绝。
-- 真实栅格风格的负控：整像素平移；在实际 coverage 上叠加解析的 +0.5 线宽带、+1 宽/高带。
+- coverage 合成扰动负控（不是独立的 SVG 输入）：对 coverage 做整像素平移；在 coverage 上叠加解析的 +0.5 线宽带、+1 宽/高带。
 - 外来颜色记为 contaminated，不计入 pass，也不计入 fail；前景等于背景、前景色缺失、被 clip 掉、超出 capture、椭圆、旋转、inside stroke，都返回显式的非 pass 状态。
 - 祖先 clip 是 oracle 的一部分：clip 掉一半的环如果按未 clip 的作者几何去测，必须 FAIL。
+
+返修新增了 `tests/apps/design-studio/svg-semantic-audit.test.mjs`，也登记进了套件。它在内存里构造一个真实形状的行（android-chat-11 尺寸），SVG 完全没有墨迹，然后走完整的 `auditRow → summarizeAudit` 流程。修复前这个测试是红的：32 个 probe 都是 FAIL 之后，汇总阶段抛出 `TypeError: Cannot read properties of undefined (reading 'centroid')`（`final-r2/zero-red.log`）。修复后测试变绿，验证了以下几点：
+
+- 该行仍然是 FAIL，32/32 probe 都是 FAIL；
+- 缺失的 centroid 记为 null，被排除在汇总之外，而不是被当成 0；
+- width 作为有限的失败字段，会进入最大误差统计；
+- 汇总中 FAIL 和 PASS 的计数都正确。
+
+修法是每个字段只在“存在且是有限数”的 probe 上分别汇总。
 
 **红→绿证据**（`mutation-red.log`）：放宽 tolerance 到 2 px，6 项测试变红；把 stroke centroid 恒置 0，3 项变红；去掉 fill height 检查，1 项变红；去掉 stroke 污染检查，1 项变红。每次突变之后都恢复原文件，并用 `cmp` 确认逐字节相同。需要说明的是，metrics 模块的初稿写在测试之前；红灯是用上述突变证明的，不是先写失败测试再实现。
 
@@ -80,7 +91,7 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 
 - 有效分母（PASS + FAIL）为 235/235。73 个 source node 中有 69 个在所有出现的 matrix 下都通过；未全过的是 `web-chat-107`、`web-panels-110`、`web-chat-138`、`web-panels-141`。
 - 旧规则统计到 4,982 个已匹配 probe 和 10 条不可用射线；新算子对 156 行 × 32 个法线全部测到，共 4,992 个，全部 PASS。新算子不再要求“最近的连续区段”，向内用 medial depth 截断，所以没有不可用射线。与旧数据里存的 SVG 自身 probe 值对比（同样 32 个等弧长点、同样的索引），差值最多为 centroid 0.054、width 0.029。两套实现的步长和分段方式不同，这个一致性只作描述。
-- **真实栅格负控**：在 235 行实际 SVG coverage 上，x 平移 1 px 和 y 平移 1 px 各 235/235 被拒绝；156 行 stroke 的 +0.5 宽和单边 +1 各 156/156 被拒绝；79 行 fill 的宽 +1 和高 +1 各 79/79 被拒绝。没有任何一行因为负控失效而被降级。
+- **coverage 合成扰动负控**：这一组的做法是对真实 SVG 的 coverage 做整像素平移，或叠加 `oracle(changed)−oracle(authored)`，属于合成扰动，不是独立的真实 SVG 输入；真实输入负控见下一节。结果：在 235 行实际 SVG coverage 上，x 平移 1 px 和 y 平移 1 px 各 235/235 被拒绝；156 行 stroke 的 +0.5 宽和单边 +1 各 156/156 被拒绝；79 行 fill 的宽 +1 和高 +1 各 79/79 被拒绝。没有任何一行因为负控失效而被降级。
 - **最大误差**（device px，均为 SVG 减 oracle）：
   - stroke centroid 0.0777：`web-panels-13` DPR1/z2，fraction 0.75，`/Users/admin/.codex/worktrees/panels-design-render-fidelity-r007/.tmp/render-fidelity-r007/real-shard-2/dpr1-zoom2-web-panels-isolation-web-panels-13/svg.png`。
   - stroke width 0.1030：`android-panels-47` DPR1/z1，fraction 0.59375，`.../real-shard-3/dpr1-zoom1-android-panels-isolation-android-panels-47/svg.png`。
@@ -98,8 +109,8 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 原始路径分别在 `/Users/admin/.codex/worktrees/panels-design-render-fidelity-r007/.tmp/render-fidelity-r007/real-shard-{1,2}/dpr1-zoom1-{web-chat,web-panels}-isolation-<id>/svg.png`。
 
 1. **导出的几何是精确的。** `exportDesignSvg` 对这些节点输出 `<rect data-node-id="web-chat-138" x="28.3" y="303.4" width="1.26" height="7.2" rx="0" fill="#686e67" …/>`。查看这段输出只是为了定位根因，oracle 并不调用它。
-2. **偏差只出现在角像素。** 内部像素和直边像素与精确面积一致：web-chat-138 的列覆盖分别是 0.69/0.70 和 0.56/0.56；width、centroid 与作者几何一致。偏差只在 x、y 两个方向都只部分覆盖的角像素上：覆盖值等于 min(xcov, ycov)，而不是精确面积 xcov·ycov。对全部 57 行方角 fill 逐像素拟合，min 模型的最大偏差是 0.104（4 个失败行 ≤0.030），乘积模型的最大偏差是 0.264（`corner-aa-mechanism.json/.log`）。细条的短边不足 2 px，长轴两端的每个像素都是“角像素”，于是长轴的覆盖积分被放大：mass 多出 0.81–1.00 px²，除以短边后表现为 integral 增大 0.68–0.70。
-3. **用独立手写 SVG 复现**（`repro-chromium.json/.log`，Chromium 148.0.7778.96，headless，只走 `data:`）。每个 case 使用审计行精确的 device 坐标、填充色和背景色：
+2. **偏差只出现在角像素。** 内部像素和直边像素与精确面积一致：web-chat-138 的列覆盖分别是 0.69/0.70 和 0.56/0.56；width、centroid 与作者几何一致。偏差只在 x、y 两个方向都只部分覆盖的角像素上：覆盖值接近 min(xcov, ycov)，明显偏离精确面积 xcov·ycov。对全部 57 行方角 fill 逐像素拟合，min 模型的最大偏差是 0.104（4 个失败行仍有约 0.0235 和 0.0300 的像素残差），乘积模型的最大偏差是 0.264。**min 模型只是一个拟合，不是精确机制**（`corner-aa-mechanism.json/.log`）。细条的短边不足 2 px，长轴两端的每个像素都是“角像素”，于是长轴的覆盖积分被放大：mass 多出 0.81–1.00 px²，除以短边后表现为 integral 增大 0.68–0.70。
+3. **用独立手写 SVG 做简化复现**（`repro-chromium.json/.log`，Chromium 148.0.7778.96，headless，只走 `data:`）。每个 case 使用审计行精确的 device 坐标、填充色和背景色。**注意：这组复现的条件与真实采集不同**，是 40×40 viewport、偏移 0、`<svg>` 直接放在 body 里；与原采集一致条件下的复现见下一节。
 
 | 配置 | case | 元素 | mass − 精确面积 | 与精确面积的最大像素差 | 与角 min 模型的最大像素差 |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -110,11 +121,36 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 | `--disable-gpu` | web-chat-138 / web-chat-107 / android-chat-35 | rect | +0.0452 / +0.0446 / +0.0402 | **0.0035 / 0.0032 / 0.0061** | 0.22 / 0.19 / 0.14 |
 | `--disable-gpu` | web-chat-138 / web-chat-107 / android-chat-35 | path | −0.2378 / +0.6072 / +0.0103 | 0.0626 / 0.0500 / 0.0028 | 0.28 / 0.17 / 0.14 |
 
-在旧采集的 GPU 栅格配置下，不含任何 Design Studio 代码的手写 `<rect>` 复现出审计测到的覆盖量偏差，误差 ≤0.002 px²，逐像素符合角 min 模型。改用 CPU 栅格后，`<rect>` 的每个像素与精确面积的差都 ≤0.0061。改写成 `<path>` 不是修复：GPU 下 web-chat-107 仍多出 0.54，CPU 下 path 分别是 −0.24、+0.61、+0.01，结果随配置和形状变化，其中两个 case 偏离精确面积比 CPU `<rect>` 更大。
+在旧采集参数下，不含任何 Design Studio 代码的手写 `<rect>` 复现出审计测到的覆盖量偏差：web-chat-138 为 0.8124，web-chat-107 差约 0.0022 px²（实际 0.00218237），android-chat-35 为 0.3580。像素与角 min 模型的残差为 0.0235 / 0.0300 / 0.0807。使用 `--disable-gpu` 参数时，`<rect>` 每个像素与精确面积的差都 ≤0.0061。参数名不能证明实际后端，所以本文只说“该参数配置”，不说“CPU 栅格”。改写成 `<path>` 不是修复：GPU 下 web-chat-107 仍多出 0.54，CPU 下 path 分别是 −0.24、+0.61、+0.01，结果随配置和形状变化，其中两个 case 偏离精确面积比 CPU `<rect>` 更大。
 
-**分类：** 这是栅格化后的 SVG 真实偏离了作者 coverage，所以保持 FAIL，不改写成 pass，也不加宽阈值。但它不是 SVG 模块的 bug：几何完全精确，偏差可以用纯 Chromium 复现，而且只取决于 GPU 和 CPU 栅格配置。按照禁止条件，不能为了让 SVG 达标去改 HTML 或 GPU，也不应该改采集参数；同时 SVG 模块里没有可以做的最小修复：改写成 `<path>` 结果不稳定，GPU 下 web-chat-107 仍多出 0.54，而且还会丢掉 `<rect>` 在下游编辑器里的语义。因此没有改 production。如果产品上要消除这个偏差，需要由主代理决定以下方向之一：要求导出/预览走 CPU 栅格，或者为亚 2px 细条另立 AA 合同。这两个都超出本次的有界任务。同样的角 AA 模型也影响前面提到的余量很小的通过行（0.30–0.44）。
+**分类：** 这是栅格化后的 SVG 真实偏离了作者 coverage，所以保持 FAIL，不改写成 pass，也不加宽阈值。证据强烈支持主要原因是该配置下 Chromium 栅格化的角像素 AA，而不是 SVG 模块：导出几何精确；纯 Chromium 能复现；同页面同 markup 换一组启动参数，结果就从 FAIL 变成 PASS。但本轮**没有确定**实际后端是 GPU 还是 CPU，也没有确定精确的 AA 实现。按照禁止条件，不能为了让 SVG 达标去改 HTML 或 GPU，也不应该改采集参数；同时 SVG 模块里没有可以做的最小修复：改写成 `<path>` 结果不稳定，GPU 下 web-chat-107 仍多出 0.54，而且还会丢掉 `<rect>` 在下游编辑器里的语义。因此没有改 production。如果产品上要消除这个偏差，需要由主代理决定以下方向之一：调查并约束导出/预览的栅格配置，或者为亚 2px 细条另立 AA 合同。这两个都超出本次的有界任务。同样的角 AA 模型也影响前面提到的余量很小的通过行（0.30–0.44）。
 
-四类根因计数：SVG 模块真实错误 0；渲染器 AA 模型 4（全部 FAIL）；采样污染 0；数据缺失 0。另有不可观测 0、不支持 0。
+四类根因计数：SVG 模块真实错误 0；该配置下的渲染器 AA（证据强烈支持，后端未确认）4（全部 FAIL）；采样污染 0；数据缺失 0。另有不可观测 0、不支持 0。
+
+## 返修：真实 SVG markup 负控与一致条件复现
+
+脚本是 `tests/apps/design-studio/svg-semantic-markup-controls.mjs`。它复用 R007 采集的做法：对同一个 per-page design 先做 `isolateFidelityDesign`，再用 `exportDesignSvg` 导出；页面是 1600×1000 viewport、DPR1，`#export-world` 放在 left/top 32px，变换为 `scale(zoom) translate(-tile)`，`<svg>` 放在 `designPageBounds` 位置；截图 clip 为 32,32 加 tile 尺寸；启动参数与原 report 相同，即 `--enable-webgl --enable-unsafe-swiftshader --use-angle=swiftshader`。唯一的省略是 font-face CSS（只影响文字，被测对象是矩形）。为了证明条件一致：**8 个未修改的重渲 PNG 都与旧 `svg.png` 逐字节相同**，SHA 相同，差异字节数为 0。
+
+然后真的去改目标元素的 SVG markup，交给 Chromium 栅格化，再用**未修改的作者 oracle** 判定。oracle 不参与生成这些输入：
+
+| Row (DPR1/z1) | 改动后的 markup | 状态 | 误差（device px） |
+| --- | --- | --- | --- |
+| android-chat-11 | 原样 | PASS | max\|Δc\| .051，max\|Δw\| .052 |
+| android-chat-11 | `stroke-width="1.5"` | **FAIL** 32/32 probe | max\|Δw\| .511 |
+| android-chat-92（5.4 圆环） | 原样 | PASS | .057 / .054 |
+| android-chat-92 | `stroke-width="1.5"` | **FAIL** 32/32 | max\|Δw\| .628 |
+| android-chat-35（4.8×1.12） | 原样 | PASS | W .302 |
+| android-chat-35 | `width="5.8"` | **FAIL** | W 1.302，c .566 |
+| android-chat-35 | `height="2.12"` | **FAIL** | H 1.004 |
+| android-chat-93（7.2×2.7 r.9） | 原样 | PASS | W .070 |
+| android-chat-93 | `width="8.2"` | **FAIL** | W 1.074 |
+| android-chat-93 | `height="3.7"` | **FAIL** | H .987 |
+
+4 个 FAIL 行在一致条件下的重渲结果：PNG 与旧 capture 逐字节相同，判定仍是 FAIL，误差与审计完全一致（web-chat-138/web-panels-141 的 H +.6966；web-chat-107/web-panels-110 的 W +.6787）。同一页面、同一 markup，只把启动参数换成 `--disable-gpu`（视为参数变体，后端未验证），这 4 行 **PASS**：H 或 W 误差 ≤.0063，mass 差约 .045。
+
+后端证据：WebGL 的 unmasked renderer 是 `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)`，这只说明 WebGL 走 SwiftShader，**不能证明页面合成或栅格的后端**。`chrome://gpu` 在 headless 中返回 `net::ERR_FAILED`，**未取到**。
+
+结果：`.tmp/svg-audit/final-r2/markup/markup-controls.json`（SHA-256 `929711938a0ece76f5185213b8cc2e8b1b4eefa893773a8d7688620bc00ec250`）以及每张 PNG。这里只为 DPR1/z1 的少数行做了真实 markup 负控，没有覆盖全部 235 行。
 
 ## 与 HTML 的描述性差异（非门禁）
 
@@ -125,7 +161,8 @@ oracle 不调用 `exportDesignSvg`、frontend-export、browser paint boxes 或�
 
 - 235 行里没有旋转圆角或椭圆，所以 oracle 对它们显式返回 UNSUPPORTED，不计入 pass。R008 中 SVG rotation 的 224 条 unique 残留和 synthetic 的 23 条残留，本轮都没有重新验收。
 - 系统字体 NodeSVG central fallback、原生 range、stroked text、SVG shadow、image-fit、opacity<1 组、渐变 paint、per-corner/per-side、inside/outside stroke：本轮都没有覆盖，也没有扩展字体解析。
-- 没有重新拍摄任何矩阵，只复用旧 raw。本轮唯一新的浏览器运行是上面那个独立的最小复现。
+- 没有重新拍摄任何矩阵，只复用旧 raw。新的浏览器运行只有两类：上面的最小复现（条件不同），以及返修中一致条件下的 14 张截图（8 张原样、6 张改过 markup）加 4 张 `--disable-gpu` 变体。
+- 470 张 PNG 实际位于 `/Users/admin/.codex/worktrees/panels-design-render-fidelity-r007/.tmp/render-fidelity-r007/`，经 R008 rows 的路径引用。“采样污染 0”是本审计脚本算出的结果，独立 review 没有重算像素。
 - 真实 Host 隔离窗口验收没有获得许可，未执行。整体样本的视觉验收仍然是 BLOCKED。安装版仍是 0.23.0。
 
 ## 实际命令与日志
@@ -141,10 +178,23 @@ node --max-old-space-size=4096 tests/apps/design-studio/svg-semantic-audit.mjs \
   /Users/admin/.codex/worktrees/panels-design-render-fidelity-r009/.tmp/render-fidelity-r009/svg/summary.json   # exit 0
 node .tmp/svg-audit/repro-chromium.mjs .tmp/svg-audit/final/repro-chromium.json   # exit 0（独立复现，不提交）
 node .tmp/svg-audit/final/minmodel.mjs                                # exit 0（角 AA 机制拟合，不提交）
+# 返修
+node --test tests/apps/design-studio/svg-semantic-audit.test.mjs     # 修复前 exit 1：TypeError（zero-red.log）；修复后与 metrics 一起 15/15
+node --max-old-space-size=4096 tests/apps/design-studio/svg-semantic-audit.mjs \
+  /Users/admin/.codex/worktrees/panels-design-render-fidelity-r008/.tmp/render-fidelity-r008 .tmp/svg-audit/final-r2/replay \
+  /Users/admin/.codex/worktrees/codeshell-cross-platform-design-20261106/designs/codeshell-web-refined.backup.json \
+  /Users/admin/.codex/worktrees/panels-design-render-fidelity-r009/.tmp/render-fidelity-r009/svg/summary.json   # exit 0
+node tests/apps/design-studio/svg-semantic-markup-controls.mjs \
+  /Users/admin/.codex/worktrees/panels-design-render-fidelity-r008/.tmp/render-fidelity-r008 \
+  /Users/admin/.codex/worktrees/codeshell-cross-platform-design-20261106/designs/codeshell-web-refined.backup.json .tmp/svg-audit/markup   # exit 0
+node .tmp/svg-audit/final-r2/counterexample.mjs                       # Codex 反例复算，exit 0
+```
 
 套件与 validate 的结果见文末“验证运行”一节。
 
-完整的 235 行逐 probe 记录（含 oracle 与实际的 centroid/width、残差、负控结果、旧值一致性、HTML 描述、PNG SHA-256）保存在 `.tmp/svg-audit/final/replay/svg-semantic-audit.json`（SHA-256 `a82d771e42e4729eb3dc666b18f0a8633bd5f495a77bb45569fe9f8d7ca4bc85`），汇总在 `summary.json`（`058527e5b1d731a4d92424ac45afcc4d0f9a56bd2003134f325f2048e126bc5a`）。命令的 argv、UTC 时间与 exit 记录在 `command-receipt.json`；其中失败过的尝试（zsh 没有拆分命令字符串导致 exit 127；复制脚本后相对 import 层级错误；repro 首版的 web-chat-107 坐标手误）都已注明，并记录了重跑结果。输入未被改动：R008 `final-real-rows.json` 的 SHA-256 是 `ddd8971939b771a6423f53cb67c58d4de632806a2add7825749ae9a4b3ec37a9`，真实稿的 SHA-256 在运行前后都是 `91d877f8dbb28dce4c698b850c0db7455be2471c9d052f5cdf138c35f47dfc24`（由脚本断言）。共读取 470 张 PNG（235 张 SVG + 235 张 HTML），只读。
+返修后重跑的 replay 与原结果相比，235 行的 status 和误差数值完全相同（0 行有差异）；变化只有改名（`syntheticCoverageControls`）和 zero-coverage 分支的字段。新的输出是 `.tmp/svg-audit/final-r2/replay/svg-semantic-audit.json`（SHA-256 `14bf2d91e0be5fea4386f34b6b9958c404a175a1e754b78269b4cb0fed2a6689`），summary 是 `5849a7d51292dd39b5036c2f5a7a95b31c1270303f3edad632ea16a6b9d8b202`。
+
+首轮完整的 235 行逐 probe 记录（含 oracle 与实际的 centroid/width、残差、负控结果、旧值一致性、HTML 描述、PNG SHA-256）保存在 `.tmp/svg-audit/final/replay/svg-semantic-audit.json`（SHA-256 `a82d771e42e4729eb3dc666b18f0a8633bd5f495a77bb45569fe9f8d7ca4bc85`），汇总在 `summary.json`（`058527e5b1d731a4d92424ac45afcc4d0f9a56bd2003134f325f2048e126bc5a`）。命令的 argv、UTC 时间与 exit 记录在 `command-receipt.json`；其中失败过的尝试（zsh 没有拆分命令字符串导致 exit 127；复制脚本后相对 import 层级错误；repro 首版的 web-chat-107 坐标手误）都已注明，并记录了重跑结果。输入未被改动：R008 `final-real-rows.json` 的 SHA-256 是 `ddd8971939b771a6423f53cb67c58d4de632806a2add7825749ae9a4b3ec37a9`，真实稿的 SHA-256 在运行前后都是 `91d877f8dbb28dce4c698b850c0db7455be2471c9d052f5cdf138c35f47dfc24`（由脚本断言）。共读取 470 张 PNG（235 张 SVG + 235 张 HTML），只读。
 
 ## 73 source nodes × 四矩阵逐项结果
 
@@ -237,3 +287,15 @@ npm run validate                    # exit 0；UTC 2026-11-07T01:11:27Z..01:11:3
 - `validate.log` 的 SHA-256 是 `194ac30cc931eedfada05c36180fa9b47a3f61e2cc96254f50830a356295b291`。
 - 两条命令都继承主机默认的 `TMPDIR=/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/`，位于仓库之外。
 - 本轮只改 tests/docs，production 零改动，**没有运行完整的 `npm run check`**，不声称跑过。
+
+### 返修后的验证运行
+
+```sh
+npm test -- --suite design-studio   # exit 0；UTC 2026-11-07T01:28:07Z..01:36:28Z
+npm run validate                    # exit 0；UTC 2026-11-07T01:36:28Z..01:36:31Z
+```
+
+- 两个命令组分别是 1256 / 1255 pass / 1 skip 和 253 / 249 pass / 4 skip，合计 **1509 / 1504 pass / 0 fail / 5 skip**，比上轮多出新增的 zero-coverage 回归 1 项。
+- 日志：`.tmp/svg-audit/final-r2/suite.log`，SHA-256 `8cd667685dcd327ae954f56466ae761a84881474f09e86944dae0e599a08a2ed`；`validate.log` 的 SHA-256 是 `194ac30cc931eedfada05c36180fa9b47a3f61e2cc96254f50830a356295b291`。
+- `TMPDIR` 是仓库外的 `/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/`。
+- 本轮只改 tests/docs，**没有运行完整的 `npm run check`**。

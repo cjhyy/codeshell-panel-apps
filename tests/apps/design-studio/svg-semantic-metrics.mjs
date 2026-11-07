@@ -168,7 +168,7 @@ export function rgbaFromCoverage(raster, {foreground, background, imageWidth, im
   return {width: imageWidth, height: imageHeight, data};
 }
 
-/** Pixel shift of a coverage raster (real-raster negative control). */
+/** Pixel shift of a coverage raster (coverage-synthetic control, not an SVG input). */
 export function shiftCoverage(raster, dx, dy) {
   const alpha = new Float64Array(raster.alpha.length), residual = new Float64Array(raster.residual.length);
   for (let j = 0; j < raster.height; j++) for (let i = 0; i < raster.width; i++) {
@@ -293,10 +293,15 @@ export function compareStroke({actual, oracle, region, tolerances = SVG_SEMANTIC
     // Visible-ring requirement: an authored band clipped away is unobservable.
     if (!(reference.width >= strokeWidth / 2)) { entry.status = SVG_SEMANTIC_STATUS.UNOBSERVABLE; continue; }
     if (observed.residual > tolerances.residual) { entry.status = SVG_SEMANTIC_STATUS.CONTAMINATED; continue; }
-    if (observed.centroid === null) { entry.status = SVG_SEMANTIC_STATUS.FAIL; entry.reason = "no stroke coverage"; entry.error = {centroid: null, width: -reference.width}; continue; }
+    entry.operatorBias = {centroid: reference.centroid, width: reference.width - strokeWidth};
+    if (observed.centroid === null) {
+      // No ink: width is a finite failing field; centroid is undefined (null), never zero.
+      Object.assign(entry, {status: SVG_SEMANTIC_STATUS.FAIL, reason: "no stroke coverage", error: {centroid: null, width: observed.width - reference.width},
+        nominal: {centroid: null, width: observed.width - strokeWidth}});
+      continue;
+    }
     entry.error = {centroid: observed.centroid - reference.centroid, width: observed.width - reference.width};
     entry.nominal = {centroid: observed.centroid, width: observed.width - strokeWidth};
-    entry.operatorBias = {centroid: reference.centroid, width: reference.width - strokeWidth};
     entry.status = within(entry.error.centroid, tolerances.strokeCentroid) && within(entry.error.width, tolerances.strokeWidth) ? SVG_SEMANTIC_STATUS.PASS : SVG_SEMANTIC_STATUS.FAIL;
   }
   const counts = Object.fromEntries(Object.values(SVG_SEMANTIC_STATUS).map(status => [status, probes.filter(probe => probe.status === status).length]));

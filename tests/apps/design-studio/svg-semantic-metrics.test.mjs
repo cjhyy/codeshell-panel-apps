@@ -119,7 +119,7 @@ test("thin fills derive width from mass only through a direct whole-column heigh
   assert.equal(unknown.error.width, null);
 });
 
-test("real-raster style controls: pixel shift and analytic band deltas are rejected", () => {
+test("coverage-synthetic controls (not SVG inputs): pixel shift and analytic band deltas are rejected", () => {
   const region = paintRegion(ringA), window = measurementWindow(region), image = render(ringA, stroke);
   const actual = coverageFromRgba(image, {foreground: stroke, background: white, window}), oracle = oracleCoverage(region, actual);
   assert.equal(compareStroke({actual, oracle, region}).status, S.PASS);

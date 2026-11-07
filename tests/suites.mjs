@@ -158,6 +158,7 @@ export const suites = [
         "tests/apps/design-studio/rotation-moment-roi.test.mjs",
         "tests/apps/design-studio/canvaskit-shape-raster.test.mjs",
         "tests/apps/design-studio/svg-semantic-metrics.test.mjs",
+        "tests/apps/design-studio/svg-semantic-audit.test.mjs",
         "tests/apps/design-studio/text-origin-compatibility.test.mjs",
         "tests/apps/design-studio/text-line-box.test.mjs",
         "tests/apps/design-studio/svg-preview-font-context.test.mjs",
