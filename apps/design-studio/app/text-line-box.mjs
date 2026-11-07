@@ -26,13 +26,30 @@ export function textHtmlFiniteHangingTransport(node, { parent = null, infiniteRo
 /**
  * The CSS line box HTML gives finite text it does not transport: its element
  * top is y minus the returned shift (the baseline offset for provenanced or
- * flow-owned boxes, else 0). null: the node keeps the hanging transport or has
- * no finite origin. Decided on the scene node (renderers may pass a local copy).
+ * flow-owned boxes, else 0). null: the renderers keep the hanging transport or
+ * there is no finite origin. Decided on the scene node (renderers may pass a
+ * local copy).
+ *
+ * Provenanced text (layoutBaselineSource html/native, also with typography
+ * ranges) keeps the transport: the import accepted that provenance only when
+ * the browser-measured line-box offset reproduced y exactly, so y + the hanging
+ * offset (plus the receipt's measured line offsets) is the DOM baseline.
+ * Recomputing the line box from Canvas font metrics is 1 px off where those
+ * metrics differ from Blink's line box (Times New Roman 12px); the measured
+ * offset is exact (native line box and mixed-typography SVG pixel oracles).
  */
 export function textHtmlFiniteLineBoxShift(node, context = {}) {
   if (node?.type !== "text" || textHasLineBoxOrigin(node) || textHtmlFiniteHangingTransport(node, context)) return null;
+  if (["html", "native"].includes(node.layoutBaselineSource)) return null;
   const flowOwned = parentLayout(context.parent) !== null && node.layoutPositioning !== "absolute";
   return flowOwned || ["html", "native"].includes(node.layoutBaselineSource) ? Number(node.layoutBaselineOffset) || 0 : 0;
+}
+/** The parent/infinite-root context of a node in a flattened node list (array or id Map). */
+export function textHtmlFiniteContextIn(nodes, node, canvasMode) {
+  const parentId = node?.parentId;
+  const parent = parentId === undefined ? null
+    : (typeof nodes?.get === "function" ? nodes.get(parentId) : nodes?.find?.(candidate => candidate.id === parentId)) ?? null;
+  return { parent, infiniteRoot: parentId === undefined && canvasMode === "infinite" };
 }
 /** Render-only line-box view of `node` (the document node is never rewritten); `scene` decides. */
 export function textHtmlFiniteLineBoxNode(node, context = {}, scene = node) {

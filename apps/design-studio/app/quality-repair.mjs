@@ -13,6 +13,7 @@ import {
   pointFromNodeSpace,
 } from "./geometry.mjs";
 import { measuredTextInkBounds } from "./text-metrics.mjs";
+import { textHtmlFiniteContextIn } from "./text-line-box.mjs";
 
 const round = (value) => Math.round(value * 10000) / 10000;
 const mix = (color, target, amount) =>
@@ -47,7 +48,7 @@ function descendantsOf(parent, childrenById) {
 
 function visibleEffectBounds(view, node, byId) {
   if (node.type === "group") return null;
-  const ink = measuredTextInkBounds(node);
+  const ink = measuredTextInkBounds(node, textHtmlFiniteContextIn(byId, node, view.canvas?.mode));
   const stroke =
     !["group", "instance"].includes(node.type)
       ? designStrokeOutset(node)

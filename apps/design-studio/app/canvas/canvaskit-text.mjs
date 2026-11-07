@@ -324,7 +324,8 @@ export async function createCanvasKitText({
     return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale });
   }
   // Imported finite origin (also for finite text carrying fill/link ranges on the range raster).
-  function finiteBaseline(node, index, alias) {
+  // lineOffset: a measured line top (mixed typography) moves the transported origin before the paint rounding.
+  function finiteBaseline(node, index, alias, lineOffset = null) {
     {
       configure(node, alias);
       const key = measure.font;
@@ -344,7 +345,10 @@ export async function createCanvasKitText({
         finiteFontMetrics.set(key, metrics);
         configure(node, alias);
       }
-      return textFiniteBaselineY(node, index, metrics, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale,
+      const originY = currentNodes.get(node.id)?.y ?? node.y;
+      if (lineOffset !== null) return textFiniteBaselineY({ ...node, y: node.y + lineOffset }, 0, metrics, { originY: originY + lineOffset, layoutScale,
+        layoutMetrics: metrics.layoutMetrics ?? null });
+      return textFiniteBaselineY(node, index, metrics, { originY, layoutScale,
         layoutMetrics: metrics.layoutMetrics ?? null });
     }
   }
@@ -894,6 +898,8 @@ export async function createCanvasKitText({
     const groups = [];
     for (const run of runs) {
       const font = rangeStyleFont(node, run.style, alias), last = groups.at(-1);
+      // HTML export gives every run span its own text-decoration-line (the node's is "none"): each run is its own
+      // decorating box, so offset, thickness and the skip-ink band follow the run's own font size.
       const part = { text: run.text, fill: run.style.fill, underline: run.style.textDecoration === "underline",
         lineThrough: run.style.textDecoration === "line-through", fontSize: run.style.fontSize, style: run.style };
       if (last && last.font === font) { last.text += run.text; last.parts.push(part); }
@@ -916,7 +922,13 @@ export async function createCanvasKitText({
   }
   /** Measured line box: the baseline sits below the line top by the largest inline box's half-leading ascent, at fontSize x layout scale. */
   function rangeBaseline(node, index, alias) {
-    if (!textHasLineBoxOrigin(node)) return finiteBaseline(node, index, alias);
+    if (!textHasLineBoxOrigin(node)) {
+      if (!textRangeTypography(node, false).length) return finiteBaseline(node, index, alias);
+      // Provenanced finite typography (still finite here): the transported first line plus the measured line offsets,
+      // as the SVG typography geometry (receipt line offsets from the transported origin).
+      const offsets = textDisplayLineMetrics(node).offsets;
+      return finiteBaseline(node, 0, alias, offsets[index] - offsets[0]);
+    }
     const originY = currentNodes.get(node.id)?.y ?? node.y, strut = rasterBaseline(node, alias);
     if (!textRangeTypography(node, false).length) return textLineBoxBaselineY(node, index, strut, { originY, layoutScale });
     let alpha = strut;
@@ -949,20 +961,53 @@ export async function createCanvasKitText({
     if (!Number.isFinite(ascent)) throw Error("Line-through requires a measured font ascent");
     return { offset: (Math.round(2 * ascent / 3 - th / 2) - ascent) / layoutScale, thickness: Math.max(1, Math.floor(th)) / layoutScale };
   }
-  /** Runtime reasons an eligible node still cannot use the raster (decorations): null when it can. */
-  function rangeDecorationFallbackReason(node, alias) {
-    for (const [index, line] of String(node.text).split("\n").entries()) {
-      if (!line) continue;
-      for (const group of rangeLineLayout(node, index, alias).groups) for (const part of group.parts) {
-        if (!part.underline) continue;
-        // The underline model is font-independent (measured Inter and Arial, s1/s2): system fonts raster too.
-        // Skip-ink (HTML auto) is not modelled: any glyph ink reaching the underline band keeps the native path.
-        measure.font = group.font; measure.textBaseline = "alphabetic";
-        if (measure.measureText(part.text).actualBoundingBoxDescent > rangeUnderline(part).offset - 1e-6) return "underline-skip-ink";
+  let skipInkCanvas = null;
+  // HTML never skips ink around CJK characters (measured: Han, Hiragana, Hangul, fullwidth Latin and CJK
+  // punctuation never open a gap, also in a CJK font; Latin descenders do, also in PingFang SC).
+  const SKIP_INK_EXEMPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}\u3000-\u303f\u31f0-\u31ff\uff00-\uffef]/u;
+  /**
+   * Skip-ink (HTML auto) on the raster, from the part's own glyph alpha. Fitted on clean Chromium 148 probes
+   * (Inter + Arial, 13/14/18/24, three texts, forced and emulated DSF2: 392/496 gap edges exact, worst 1 px):
+   * ink = columns where the part's glyphs (alone, same font and origin) have alpha > 0.02 inside the intercept band
+   * [underline top, + th) with th = fontSize / 10 unfloored (last row weighted by its share), with fractional edges;
+   * each ink run is dilated by th on both sides and rounded to raster pixels. Returns raster-pixel intervals.
+   */
+  function rangeSkipInkGaps(part, font, underline, scale, offsetX, offsetY, width, letterSpacing) {
+    const th = part.fontSize / 10, band = th * scale, rows = Math.max(1, Math.ceil(band - 1e-9));
+    const rowTop = Math.round((underline.offset - offsetY) * scale);
+    skipInkCanvas ??= document.createElement("canvas");
+    if (skipInkCanvas.width !== width || skipInkCanvas.height !== rows) { skipInkCanvas.width = width; skipInkCanvas.height = rows; }
+    const ctx = skipInkCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, rows);
+    ctx.setTransform(scale, 0, 0, scale, -offsetX * scale, -offsetY * scale - rowTop);
+    ctx.textBaseline = "alphabetic";
+    if ("fontKerning" in ctx) ctx.fontKerning = "normal";
+    if ("letterSpacing" in ctx) ctx.letterSpacing = letterSpacing;
+    ctx.font = font;
+    ctx.fillStyle = "#000";
+    // Only non-CJK segments contribute ink, each at its prefix-measured position within the part.
+    const chars = [...part.text];
+    for (let i = 0, offset = 0; i < chars.length;) {
+      if (SKIP_INK_EXEMPT.test(chars[i])) { offset += chars[i].length; i++; continue; }
+      let j = i, segment = "";
+      while (j < chars.length && !SKIP_INK_EXEMPT.test(chars[j])) segment += chars[j++];
+      ctx.fillText(segment, part.x0 + (offset ? ctx.measureText(part.text.slice(0, offset)).width : 0), 0);
+      offset += segment.length; i = j;
+    }
+    const data = ctx.getImageData(0, 0, width, rows).data, gaps = [], D = th * scale;
+    let run = null;
+    for (let x = 0; x <= width; x++) {
+      let alpha = 0;
+      if (x < width) for (let row = 0; row < rows; row++) alpha = Math.max(alpha, data[(row * width + x) * 4 + 3] / 255 * Math.min(1, band - row));
+      if (alpha > 0.02) { if (run) { run.right = x + alpha; } else run = { left: x + 1 - alpha, right: x + alpha }; }
+      else if (run) {
+        const gap = [Math.round(run.left - D), Math.round(run.right + D)], last = gaps.at(-1);
+        if (last && gap[0] <= last[1]) last[1] = Math.max(last[1], gap[1]); else gaps.push(gap);
+        run = null;
       }
     }
-    configure(node, alias);
-    return null;
+    return gaps;
   }
   function rangeLineGeometry(node, index, y, scale, alias, origin) {
     const layout = rangeLineLayout(node, index, alias);
@@ -1025,9 +1070,17 @@ export async function createCanvasKitText({
           if (!part.underline) continue;
           const underline = rangeUnderline(part);
           ctx.fillStyle = rgba(part.fill);
-          // Endpoints snap to raster pixels like the colour bounds (HTML ends the line on device pixels).
-          const x0 = snap(part.x0), x1 = snap(part.x1);
-          ctx.fillRect(x0, underline.offset, x1 - x0, underline.thickness);
+          // Endpoints snap to raster pixels like the colour bounds (HTML ends the line on device pixels);
+          // the segments between skip-ink gaps are whole raster pixels too.
+          let from = Math.round((part.x0 - offsetX) * scale);
+          const to = Math.round((part.x1 - offsetX) * scale);
+          const gaps = rangeSkipInkGaps(part, group.font, underline, scale, offsetX, offsetY, w, ctx.letterSpacing ?? "0px");
+          for (const [gapFrom, gapTo] of [...gaps, [Infinity, Infinity]]) {
+            const end = Math.min(to, gapFrom);
+            if (end > from) ctx.fillRect(offsetX + from / scale, underline.offset, (end - from) / scale, underline.thickness);
+            from = Math.max(from, gapTo);
+            if (from >= to) break;
+          }
         }
         // Line-through paints over the glyphs (CSS painting order), snapped like the underline.
         for (const part of group.parts) {
@@ -1055,8 +1108,7 @@ export async function createCanvasKitText({
     // Every line's layout and faces are validated (and may refuse the node) before any line is drawn.
     const baselines = lines.map((line, index) => line ? rangeBaseline(node, index, alias) : null);
     for (const [index, line] of lines.entries()) if (line) rangeLineLayout(node, index, alias);
-    const decorationReason = rangeDecorationFallbackReason(node, alias);
-    if (decorationReason) { rangeNativeFallbacks.set(node.id, { nodeId: node.id, reason: decorationReason }); return false; }
+    configure(node, alias);
     try {
       const plan = prepareRasterPlan(node, alias);
       const masterPixels = [...rasterPlans.values()].reduce((sum, item) => sum + item.pixels, 0);
@@ -1073,7 +1125,7 @@ export async function createCanvasKitText({
     return true;
   }
 
-  function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
+  function drawTextRanges(canvas, node, alias, lines, runs, metrics) {
     const baseStyle = { fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight,
       fontStyle: node.fontStyle ?? "normal", textDecoration: node.textDecoration ?? "none" };
     // Every line is validated before any line draws: a refusal never leaves a partly drawn node.
@@ -1084,6 +1136,9 @@ export async function createCanvasKitText({
       for (const run of fragments) rangeFont(node, run.style);
       return fragments;
     });
+    // Paint baselines from the measured line box (mixed sizes included), as HTML and the range raster place them.
+    const baselines = lines.map((_, index) => rangeBaseline(node, index, alias));
+    configure(node, alias);
     for (let index = 0; index < lines.length; index++) {
       const fragments = lineFragments[index];
       let builder, paragraph;
@@ -1109,7 +1164,7 @@ export async function createCanvasKitText({
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[index]));
         canvas.drawParagraph(paragraph, alignedX(node, width),
-          paintBaseline(node, index, baseline) - paragraph.getAlphabeticBaseline());
+          baselines[index] - paragraph.getAlphabeticBaseline());
       } finally {
         paragraph?.delete();
         builder?.delete();
@@ -1238,7 +1293,7 @@ export async function createCanvasKitText({
     counters.nativeTextNodes++;
     const baseline = paragraphBaseline(node, entry);
     if (rangeRuns) {
-      drawTextRanges(canvas, node, entry.alias, lines, rangeRuns, baseline, metrics);
+      drawTextRanges(canvas, node, entry.alias, lines, rangeRuns, metrics);
       return;
     }
     lines.forEach((line, i) => {

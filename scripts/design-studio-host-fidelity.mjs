@@ -223,9 +223,13 @@ export const COVERAGE_CASES = Object.freeze([
   { id: "range-mixed-multiline", region: [16, 512, 208, 60], note: "two lines, 18px run on 14px (typography + multiline)", range: true },
   { id: "range-finite-typo", region: [246, 512, 208, 40], note: "finite origin + weight range (HTML lays it out as a plain line box)", range: true },
   // Range-final batch.
-  { id: "finite-source-plain", region: [16, 580, 208, 40], note: "plain finite text with layoutBaselineSource html (HTML: plain line box at node.y)" },
+  { id: "finite-source-plain", region: [16, 580, 208, 40], note: "provenanced plain finite text: the import-contract offset (2.5938 = measured line-box offset, Arial 14/1.2)" },
   { id: "node-underline-mixed", region: [246, 576, 208, 44], note: "node-level underline over an 18px run on 14px", range: true, decoration: true },
   { id: "arial-underline", region: [16, 624, 208, 36], note: "system font (Arial, no supplied bytes) range underline", range: true, decoration: true },
+  // Skip-ink batch (review I2): flow-owned finite text in a vertical frame: a provenanced two-line child (contract offset)
+  // and a non-provenanced finite typography child (HTML: line box at y - offset).
+  // Region starts at the frame top: a frame label (drawn above the frame) never enters the crop.
+  { id: "flow-finite", region: [246, 630, 208, 70], note: "vertical frame: provenanced 2-line finite + flow finite typography", range: true },
 ].map(value => Object.freeze(value)));
 export const COVERAGE_BUILTIN_INTER_ITALIC = Object.freeze({ id: "builtin-inter-400-italic", family: "Inter", file: "fonts/InterVariable-Italic.woff2" });
 /** Deterministic 64x32 PNG: two colour fields and a dark diagonal, so cover/contain crops differ visibly. */
@@ -400,11 +404,18 @@ async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes
     ranged("range-line-through", 250.3, 466.3, 200, 24, "Strike this out", [{ start: 7, end: 11, textDecoration: "line-through", fill: "#175cd3" }]),
     ranged("range-mixed-multiline", 20.3, 518.3, 200, 48, "Big first\nsmall second", [{ start: 0, end: 3, fontSize: 18, fill: "#175cd3" }]),
     ranged("range-finite-typo", 250.3, 518.3, 200, 28, "Finite bold run", [{ start: 7, end: 11, fontWeight: 700 }], { layoutBaselineOffset: 3.5 }),
-    fixtureText("finite-source-plain", 20.3, 586.3, 200, 24, "Source finite Hg", { layoutBaselineOffset: 3.5, layoutBaselineSource: "html", lineHeight: 1.2 }),
+    // Contract-valid provenance: html-import accepts layoutBaselineSource only when the measured line-box offset
+    // reproduces y (Arial 14/1.2: 2.59375, Chromium 148 DSF1/DSF2); the previous 3.5 was not a valid provenance.
+    fixtureText("finite-source-plain", 20.3, 586.3, 200, 24, "Source finite Hg", { layoutBaselineOffset: 2.5938, layoutBaselineSource: "html", lineHeight: 1.2 }),
     ranged("node-underline-mixed", 250.3, 582.3, 200, 32, "Node Big under", [{ start: 5, end: 8, fontSize: 18, fill: "#175cd3" }], { textDecoration: "underline" }),
     ranged("arial-underline", 20.3, 630.3, 200, 24, "Arial under line", [{ start: 6, end: 11, textDecoration: "underline", fill: "#175cd3" }], { fontRef: undefined, fontFamily: "Arial" }),
+    // Flow: frame top 630, padding 4, gap 4. Child tops 634 and 634 + 36.4 + 4; y = top + offset for both.
+    fixtureNode("flow-finite", "frame", 250, 630, 200, 66.6, { fill: "#ffffff", layout: "vertical", padding: 4, gap: 4, children: [
+      fixtureText("flow-finite-source", 254, 636.7969, 192, 36.4, "Flow first Hg\nsecond line", { ...bound, lineHeight: 1.3, layoutBaselineOffset: 2.7969, layoutBaselineSource: "html" }),
+      ranged("flow-finite-typo", 254, 677.9, 192, 18.2, "Flow bold run", [{ start: 5, end: 9, fontWeight: 700 }], { layoutBaselineOffset: 3.5 }),
+    ] }),
   ];
-  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 680, background: "#ffffff" });
+  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 720, background: "#ffffff" });
   raw.resources = [font.descriptor, image.descriptor, italic.descriptor];
   const entry = canonical(FIDELITY_FIXTURE_PATHS.coverage, "high-risk coverage: default vs bundled Inter, CJK center/right, ranges, finite multiline, PNG cover/contain, editor overlay", raw);
   entry.files.push(...[...font.parts, ...image.parts, ...italic.parts].map(part => fixtureFile(part.path, part.content)));

@@ -1441,14 +1441,18 @@ test("--design-studio-disable-gpu-raster is a probe-only switch appended before 
   assert.throws(() => insertProbeSwitches('await import("x");\nimport { syncBuiltinESMExports } from "node:module";\n', [["disable-gpu-rasterization"]]), /await precedes/);
 });
 
-test("coverage fixture: 22 cases, bundled-Inter (normal + italic) and PNG codec resources whose parts decode to the real bytes", async () => {
+test("coverage fixture: 23 cases (one a vertical flow frame), bundled-Inter (normal + italic) and PNG codec resources whose parts decode to the real bytes", async () => {
   const { COVERAGE_CASES, COVERAGE_BUILTIN_INTER, FIDELITY_FIXTURE_PATHS, coveragePngBytes } = await import("../scripts/design-studio-host-fidelity.mjs");
   const codec = await import("../apps/design-studio/app/document.mjs");
   const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.coverage);
   assert.ok(fixture, "coverage fixture seeded");
   const design = codec.normalizeDesignDocument(JSON.parse(fixture.logicalSource)), nodes = design.pages[0].nodes;
-  assert.deepEqual(nodes.map(node => node.id), COVERAGE_CASES.map(item => item.id));
-  assert.ok(nodes.every(node => !node.parentId), "top-level nodes: no frame-label band over any region");
+  assert.deepEqual(nodes.filter(node => !node.parentId).map(node => node.id), COVERAGE_CASES.map(item => item.id));
+  // Skip-ink batch: the only frame is the flow case; its region starts at the frame top (label band outside).
+  assert.deepEqual(nodes.filter(node => node.parentId).map(node => [node.id, node.parentId]), [["flow-finite-source", "flow-finite"], ["flow-finite-typo", "flow-finite"]]);
+  const flow = nodes.find(node => node.id === "flow-finite");
+  assert.equal(flow.layout, "vertical");
+  assert.equal(COVERAGE_CASES.find(item => item.id === "flow-finite").region[1], flow.y);
   for (const item of COVERAGE_CASES) {
     const node = nodes.find(value => value.id === item.id), [x, y, w, h] = item.region;
     assert.ok(node.x >= x && node.y >= y && node.x + node.width <= x + w && node.y + node.height <= y + h, `${item.id} inside its region`);
@@ -1461,8 +1465,11 @@ test("coverage fixture: 22 cases, bundled-Inter (normal + italic) and PNG codec 
   // Range cases: every ranged node validates; CJK sits inside an Inter range; one node carries the supplied italic face.
   assert.deepEqual(COVERAGE_CASES.filter(item => item.range).map(item => item.id), ["range-cjk-missing", "range-typography", "range-underline", "range-multiline", "range-finite",
     "node-underline-color", "underline-descender-2line", "range-line-through", "range-mixed-multiline", "range-finite-typo",
-    "node-underline-mixed", "arial-underline"]);
+    "node-underline-mixed", "arial-underline", "flow-finite"]);
   assert.equal(nodes.find(node => node.id === "finite-source-plain").layoutBaselineSource, "html");
+  assert.equal(nodes.find(node => node.id === "finite-source-plain").layoutBaselineOffset, 2.5938, "a contract-valid provenance offset (measured line-box offset, Arial 14/1.2)");
+  assert.equal(nodes.find(node => node.id === "flow-finite-source").layoutBaselineSource, "html");
+  assert.equal(nodes.find(node => node.id === "flow-finite-typo").layoutBaselineSource, undefined);
   assert.equal(nodes.find(node => node.id === "node-underline-color").textDecoration, "underline");
   assert.match(nodes.find(node => node.id === "underline-descender-2line").text, /\n/u);
   assert.match(nodes.find(node => node.id === "range-cjk-missing").text, /中文/u);

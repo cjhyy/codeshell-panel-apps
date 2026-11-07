@@ -1,5 +1,5 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY } from "./text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textHtmlFiniteLineBoxShift } from "./text-line-box.mjs";
 import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
@@ -79,9 +79,20 @@ export function validTextMetrics(metrics) {
   );
 }
 
-export function measuredTextInkBounds(node) {
+/**
+ * Derived painted ink extent relative to the node origin. `context` ({ parent, infiniteRoot }) decides whether HTML
+ * lays finite text out as a plain line box (textHtmlFiniteLineBoxShift); receipts themselves are never rewritten:
+ * - transported and provenanced receipts keep their hanging origin (for provenance the import proved the measured
+ *   line-box offset reproduces it: see textHtmlFiniteLineBoxShift);
+ * - typography receipts keep the SVG typography geometry (measured line offsets), which the SVG export also keeps;
+ * - other non-transported plain finite receipts (rotation, constraints, grid, flow) are hanging-relative without
+ *   line-box metrics: their painted origin is unknown here, so no measured bound is certified (callers estimate).
+ */
+export function measuredTextInkBounds(node, context = {}) {
   const metrics = currentTextMetrics(node);
   if (!metrics) return null;
+  if (textHtmlFiniteLineBoxShift(node, context) !== null && !textRangeTypography(node, false).length) return null;
+  const shift = 0;
   const lineOffsets = textDisplayLineMetrics(node).offsets;
   const snapped = textHasLineBoxOrigin(node) && Number.isFinite(metrics.alphabeticBaseline) && !textRangeTypography(node, false).length;
   const boxes = metrics.lineInkBounds
@@ -96,7 +107,7 @@ export function measuredTextInkBounds(node) {
         x: box.x + offset,
         // Receipts stay in the logical line box. Consumers of this derived
         // union (SVG page bounds and explicit repair) need the painted extent.
-        y: box.y + (snapped
+        y: box.y - shift + (snapped
           ? textLineBoxBaselineY(node, index, metrics.alphabeticBaseline) - node.y - metrics.alphabeticBaseline
           : lineOffsets[index]),
         width: box.width,
