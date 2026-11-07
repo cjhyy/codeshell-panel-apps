@@ -15,7 +15,7 @@ import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./pan
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
 import { runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
-import { HASHED_HOST_BUILD_FILES, assertFidelityOutputsAbsent, buildDesignStudioFidelityFixtures, copyDesignStudioSample,
+import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, claimFidelityOutputs, copyDesignStudioSample,
   parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,7 +38,9 @@ if (!hostPreflight.ok) {
   process.exit(2);
 }
 for (const warning of hostPreflight.warnings) console.warn(`Host preflight warning: ${warning}`);
-const fidelityOutputs = designStudioFidelity ? await assertFidelityOutputsAbsent(reportArgument) : null;
+// Real-parent containment, lstat refusal of existing/dangling entries and an exclusive,
+// owned artifacts directory; claimed before any temporary HOME is created.
+const fidelityOutputs = designStudioFidelity ? await claimFidelityOutputs(reportArgument) : null;
 const appDir = join(hostRoot, "packages/desktop");
 const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -133,16 +135,18 @@ app.on("session-created", session => {
     stage = "design-studio fidelity: seed synthetic fixtures";
     // Same source bytes that the reviewed install below copies from apps/design-studio.
     const studioApp = join(repository, "apps/design-studio/app");
-    const fixtures = buildDesignStudioFidelityFixtures({
+    const fixtures = await buildDesignStudioFidelityFixtures({
       codec: await import(pathToFileURL(join(studioApp, "document.mjs")).href),
-      textMetrics: await import(pathToFileURL(join(studioApp, "text-metrics.mjs")).href) });
+      textMetrics: await import(pathToFileURL(join(studioApp, "text-metrics.mjs")).href),
+      documentIndex: await import(pathToFileURL(join(studioApp, "document-index.mjs")).href) });
     const seededStates = {};
-    for (const fixture of fixtures) {
-      const path = join(fidelityProject, fixture.relativePath);
+    // Every file (single documents, index manifests and page parts) fits one Host readText.
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      const path = join(fidelityProject, file.relativePath);
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, fixture.bytes, { flag: "wx" });
+      await writeFile(path, file.bytes, { flag: "wx" });
       const value = await stat(path);
-      seededStates[fixture.relativePath] = { sha256: fixture.sha256, mtimeMs: value.mtimeMs, size: value.size };
+      seededStates[file.relativePath] = { sha256: file.sha256, mtimeMs: value.mtimeMs, size: value.size };
     }
     const sampleReceipt = designStudioFidelity.samplePath
       ? await copyDesignStudioSample({ samplePath: designStudioFidelity.samplePath, projectDirectory: fidelityProject }) : null;
@@ -769,11 +773,11 @@ app.on("session-created", session => {
 }
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
-if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+if (reportArgument) await writeFile(fidelityOutputs?.reportPath ?? resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 console.log(`PASS: ${results.length}/${cases.length} selected real installed Panel Desktop IPC scenarios${selectedApp ? ` (${selectedApp} only)` : " (all six packages)"}; owned Electron exit and HOME cleanup verified`);
 if (designStudioFidelity) {
   // Not goal completion: FAIL exits 1; any UNVERIFIED/EVIDENCE_ONLY/not-run exits 3.
   const overall = fidelityReport?.summary?.overall ?? "NOT_RUN";
-  console.log(`Design Studio real-Host fidelity: ${overall} (goalComplete=false); see ${resolve(reportArgument)}`);
+  console.log(`Design Studio real-Host fidelity: ${overall} (goalComplete=false); see ${fidelityOutputs.reportPath}`);
   if (overall !== "PASS") process.exitCode = overall === "FAIL" ? 1 : 3;
 }

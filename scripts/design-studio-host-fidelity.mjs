@@ -9,9 +9,9 @@
  * window; that approval must be obtained separately before anyone runs the command.
  */
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
@@ -199,10 +199,29 @@ function legacySignature(textMetrics, node) {
   return JSON.stringify(value);
 }
 
-export function buildDesignStudioFidelityFixtures({ codec, textMetrics }) {
+/** Real Host workspace.readText limit (CodeShell server, 480 KiB per text file). */
+export const HOST_READ_TEXT_MAX_BYTES = 480 * 1024;
+const byteLength = value => Buffer.byteLength(value, "utf8");
+const fixtureFile = (relativePath, bytes) => {
+  if (byteLength(bytes) > HOST_READ_TEXT_MAX_BYTES) throw new Error(`${relativePath} exceeds the Host readText budget`);
+  return { relativePath, bytes, sha256: sha256(bytes) };
+};
+
+export async function buildDesignStudioFidelityFixtures({ codec, textMetrics, documentIndex }) {
   const canonical = (relativePath, purpose, raw) => {
     const bytes = codec.serializeDesignDocument(codec.normalizeDesignDocument(raw));
-    return { relativePath, purpose, bytes, sha256: sha256(bytes) };
+    return { relativePath, purpose, storage: "single", bytes, sha256: sha256(bytes), logicalSource: bytes, logicalSha256: sha256(bytes),
+      files: [fixtureFile(relativePath, bytes)] };
+  };
+  // A document larger than one Host readText is stored exactly as the app saves it:
+  // the installed index codec writes a manifest plus digest-named page parts.
+  const indexed = async (relativePath, purpose, raw) => {
+    const document = codec.normalizeDesignDocument(raw);
+    const logicalSource = codec.serializeDesignDocument(document);
+    const plan = await documentIndex.createDesignIndexPersistencePlan({ document, sha256: async value => sha256(value) });
+    const files = [fixtureFile(relativePath, plan.primarySource), ...plan.parts.map(part => fixtureFile(part.path, part.content))];
+    return { relativePath, purpose, storage: "indexed", bytes: plan.primarySource, sha256: sha256(plan.primarySource),
+      logicalSource, logicalSha256: sha256(logicalSource), logicalBytes: byteLength(logicalSource), files };
   };
   const withLegacy = node => ({ ...node, textMetrics: receiptFor(node, legacySignature(textMetrics, node)) });
   const withCurrent = node => ({ ...node, textMetrics: receiptFor(node, textMetrics.textMetricsSignature(node)) });
@@ -218,9 +237,11 @@ export function buildDesignStudioFidelityFixtures({ codec, textMetrics }) {
       children: [withLegacy(fixtureText("hug-label", 348.5, 190.5, 96, 20, "Hug 文字 label", { layoutSizingHorizontal: "hug" }))] }),
     fixtureText("unmeasured-line-box", 40.25, 260.25, 260, 24, "No receipt line box"),
   ];
+  // Paint/hit order is children order; hitTestCanvasNode walks it last-to-first, so
+  // move-target must follow underlay to be the top-most node where they overlap.
   const interactionChildren = [
-    fixtureNode("move-target", "rectangle", 120, 140, 120, 80, { fill: "#2f6fb2", cornerRadius: 6 }),
     fixtureNode("underlay", "rectangle", 400, 140, 160, 120, { fill: "#d9dde3" }),
+    fixtureNode("move-target", "rectangle", 120, 140, 120, 80, { fill: "#2f6fb2", cornerRadius: 6 }),
     fixtureText("edit-target", 120, 320, 220, 24, "Edit me HMI"),
   ];
   const rotationChildren = [
@@ -260,9 +281,64 @@ export function buildDesignStudioFidelityFixtures({ codec, textMetrics }) {
       fixtureDocument("Host fidelity rotation strips", rotationChildren, { width: 600, height: 120, background: "#ffffff" })),
     canonical(FIDELITY_FIXTURE_PATHS.svgCornerAa, "real-Host original-size captures for the four DPR1 SVG corner-AA FAIL geometries",
       fixtureDocument("Host fidelity SVG corner AA", [svgSurface("chat", 0), svgSurface("panels", 120)], { width: 400, height: 400 })),
-    canonical(FIDELITY_FIXTURE_PATHS.largeText, "1000+ real text nodes at fractional low zoom/pan for device sampling and tile bypass",
+    await indexed(FIDELITY_FIXTURE_PATHS.largeText, "1000+ real text nodes at fractional low zoom/pan for device sampling and tile bypass",
       fixtureDocument("Host fidelity large text", largeChildren, { width: 4000, height: 1240 })),
   ];
+}
+
+/** Read a seeded/saved design exactly as the app does: single file or real index + parts. */
+export async function readFixtureDocument({ projectDirectory, relativePath, codec, documentIndex }) {
+  const project = resolve(projectDirectory);
+  const read = async path => {
+    if (typeof path !== "string" || !path.startsWith("designs/") || path.split("/").includes("..")) throw new Error(`unsafe design path: ${path}`);
+    return readFile(join(project, path), "utf8");
+  };
+  const primary = await read(relativePath);
+  if (!documentIndex.parseDesignIndexSource(primary)) return codec.normalizeDesignDocument(JSON.parse(primary));
+  const resolved = await documentIndex.resolveDesignIndexDocument({ primarySource: primary, readText: read, sha256: async value => sha256(value) });
+  return codec.normalizeDesignDocument(resolved.document);
+}
+
+/* ---------------------------------------------------------------------------
+ * Interaction plan. World coordinates are checked offline against the real
+ * hitTestCanvasNode on the canonical fixture (tests), and every edit is only
+ * performed after the DOM selection and inspector geometry match the plan.
+ * ------------------------------------------------------------------------- */
+export const INTERACTION_PLAN = Object.freeze([
+  { operation: "drag", targetId: "move-target", before: { x: 120, y: 140 }, selectAt: { x: 180, y: 180 },
+    grab: { x: 180, y: 180 }, drop: { x: 440, y: 180 }, after: { x: 380, y: 140 }, tolerance: 20,
+    clicks: [{ label: "new-position", world: { x: 440, y: 180 }, expected: ["move-target"] },
+      { label: "old-position", world: { x: 180, y: 180 }, expected: [] },
+      { label: "underlay-only", world: { x: 545, y: 250 }, expected: ["underlay"] }] },
+  { operation: "inspector-x", targetId: "move-target", before: { x: 380, y: 140 }, beforeTolerance: 20, selectAt: { x: 440, y: 180 },
+    set: { x: 200 }, after: { x: 200, y: 140 }, tolerance: 0,
+    clicks: [{ label: "new-position", world: { x: 260, y: 180 }, expected: ["move-target"] },
+      { label: "old-position", world: { x: 470, y: 180 }, expected: ["underlay"] }] },
+  { operation: "text-edit", targetId: "edit-target", before: { x: 120, y: 320 }, selectAt: { x: 160, y: 332 },
+    text: "Edited HMI 已编辑", after: { x: 120, y: 320 }, tolerance: 0,
+    clicks: [{ label: "new-position", world: { x: 160, y: 332 }, expected: ["edit-target"] },
+      { label: "old-position", world: { x: 160, y: 420 }, expected: [] }] },
+].map(step => Object.freeze(step)));
+const INSPECTOR_PRECISION = 0.01;
+const near = (value, expected, tolerance) => finite(value) && Math.abs(value - expected) <= Math.max(tolerance ?? 0, INSPECTOR_PRECISION);
+
+/** Reasons not to edit: the DOM must select exactly the planned target at its planned geometry. */
+export function guardPreEdit(step, { selectedIds, geometry } = {}) {
+  const reasons = [];
+  if (!Array.isArray(selectedIds)) reasons.push("DOM selection not observed");
+  else if (selectedIds.length !== 1 || selectedIds[0] !== step.targetId)
+    reasons.push(`selected ${JSON.stringify(selectedIds)} instead of ${step.targetId}`);
+  if (!geometry || !near(geometry.x, step.before.x, step.beforeTolerance) || !near(geometry.y, step.before.y, step.beforeTolerance))
+    reasons.push(`inspector geometry ${JSON.stringify(geometry ?? null)} is not the planned ${JSON.stringify(step.before)}`);
+  return reasons;
+}
+
+/** Node state expected on disk and in the DOM after every planned edit succeeded. */
+export function expectedStateAfterEdits() {
+  const state = new Map();
+  for (const step of INTERACTION_PLAN)
+    state.set(step.targetId, { ...(state.get(step.targetId) ?? { id: step.targetId }), x: step.after.x, y: step.after.y, ...(step.text ? { text: step.text } : {}) });
+  return [...state.values()];
 }
 
 /* ---------------------------------------------------------------------------
@@ -304,9 +380,15 @@ export function judgeOpenWithoutEdit(observation) {
 export function judgeImmediateClick(observation) {
   if (!observation || !Array.isArray(observation.clicks)) return verdict(FIDELITY_STATUS.UNVERIFIED, ["no click observations"]);
   const reasons = [];
+  const step = INTERACTION_PLAN.find(value => value.operation === observation.operation && value.targetId === observation.targetId);
+  if (!step) return verdict(FIDELITY_STATUS.UNVERIFIED, [`operation ${observation.operation} is not in the interaction plan`]);
+  if (!observation.preEdit) reasons.push("pre-edit DOM selection/geometry was not verified");
+  else reasons.push(...guardPreEdit(step, observation.preEdit).map(reason => `pre-edit: ${reason}`));
   const before = observation.geometryBefore, after = observation.geometryAfter;
   if (!before || !after || ![before.x, before.y, after.x, after.y].every(finite)) reasons.push("missing committed geometry before/after");
   else if (observation.operation !== "text-edit" && before.x === after.x && before.y === after.y) reasons.push("the edit did not change geometry");
+  else if (!near(after.x, step.after.x, step.tolerance) || !near(after.y, step.after.y, step.tolerance))
+    reasons.push(`committed geometry ${JSON.stringify(after)} is outside the planned ${JSON.stringify(step.after)} ±${step.tolerance}; the click oracle no longer applies`);
   const labels = new Set(observation.clicks.map(click => click?.label));
   for (const label of ["new-position", "old-position"]) if (!labels.has(label)) reasons.push(`missing ${label} click`);
   for (const click of observation.clicks) {
@@ -344,21 +426,60 @@ export function judgeLowZoomPerformance(observation) {
   return verdict(FIDELITY_STATUS.EVIDENCE_ONLY, ["no approved performance budget; recorded for review"], { evidence });
 }
 
+const nodeMatches = (actual, expected) => Boolean(actual) && near(actual.x, expected.x, 0) && near(actual.y, expected.y, 0) &&
+  (expected.text === undefined || actual.text === expected.text);
 export function judgeSaveReopen(observation) {
   if (!observation || typeof observation !== "object") return verdict(FIDELITY_STATUS.UNVERIFIED, ["no observation"]);
-  const missing = ["saved", "resaved", "reopened"].filter(key => !validFileState(observation[key]));
-  if (!isSha(observation.canonicalSha256)) missing.push("canonicalSha256");
-  if (!Array.isArray(observation.layerIdsBefore) || !Array.isArray(observation.layerIdsAfterReopen)) missing.push("layer ids");
-  if (typeof observation.saveStateAfterSave !== "string" || typeof observation.dirtyAfterReopen !== "string") missing.push("save states");
+  const o = observation, plannedOperations = INTERACTION_PLAN.map(step => step.operation);
+  // Preconditions: every planned edit verified, and the edited document is still the open one.
+  const edits = o.editsVerified;
+  if (!edits || !Array.isArray(edits.operations) || !Array.isArray(edits.statuses) ||
+      edits.operations.join() !== plannedOperations.join() || edits.statuses.some(status => status !== FIDELITY_STATUS.PASS))
+    return verdict(FIDELITY_STATUS.UNVERIFIED, ["the planned edits were not all verified (PASS) before saving"]);
+  if (typeof o.path !== "string" || o.pathBeforeSave !== o.path)
+    return verdict(FIDELITY_STATUS.UNVERIFIED, [`the edited document was not the open document before save (${o.pathBeforeSave})`]);
+  const missing = [], failures = [];
+  const expected = Array.isArray(o.expected) && o.expected.length ? o.expected : null;
+  if (!expected) missing.push("expected nodes");
+  if (!Array.isArray(o.baselineNodes) || !o.baselineNodes.length) missing.push("baseline nodes");
+  const saveObserved = save => save && typeof save.kind === "string" && validFileState(save.file);
+  if (!saveObserved(o.firstSave)) missing.push("first save state and file");
+  else if (o.firstSave.kind !== "saved") failures.push(`first save ended as ${o.firstSave.kind}`);
+  if (!Array.isArray(o.diskNodesAfterFirstSave)) missing.push("disk nodes after first save");
+  else if (expected && Array.isArray(o.baselineNodes)) {
+    const disk = new Map(o.diskNodesAfterFirstSave.map(node => [node.id, node]));
+    for (const node of expected) {
+      if (!disk.has(node.id)) missing.push(`disk node ${node.id}`);
+      else if (!nodeMatches(disk.get(node.id), node)) failures.push(`disk ${node.id} ${JSON.stringify(disk.get(node.id))} is not the expected ${JSON.stringify(node)}`);
+    }
+    for (const node of o.baselineNodes.filter(value => !expected.some(target => target.id === value.id))) {
+      if (!disk.has(node.id)) missing.push(`disk node ${node.id}`);
+      else if (!nodeMatches(disk.get(node.id), node)) failures.push(`non-target ${node.id} changed on disk: ${JSON.stringify(disk.get(node.id))}`);
+    }
+  }
+  if (!Array.isArray(o.domAfterReload)) missing.push("reloaded DOM nodes");
+  else if (expected) {
+    const dom = new Map(o.domAfterReload.map(node => [node.id, node]));
+    for (const node of expected) {
+      if (!dom.has(node.id)) missing.push(`reloaded DOM node ${node.id}`);
+      else if (!nodeMatches(dom.get(node.id), node)) failures.push(`reloaded DOM ${node.id} ${JSON.stringify(dom.get(node.id))} is not the expected ${JSON.stringify(node)}`);
+    }
+  }
+  if (!Array.isArray(o.layerIdsBefore) || !Array.isArray(o.layerIdsAfterReopen)) missing.push("layer ids");
+  else if (JSON.stringify(o.layerIdsBefore) !== JSON.stringify(o.layerIdsAfterReopen)) failures.push("layer identity/order changed after reopen");
+  if (typeof o.dirtyAfterReopen !== "string") missing.push("save state after reopen");
+  else if (["dirty", "error"].includes(o.dirtyAfterReopen)) failures.push(`reopened document is ${o.dirtyAfterReopen}`);
+  if (!saveObserved(o.secondSave)) missing.push("second save state and file");
+  else {
+    if (o.secondSave.kind !== "saved") failures.push(`second save ended as ${o.secondSave.kind}`);
+    if (saveObserved(o.firstSave) && o.secondSave.file.sha256 !== o.firstSave.file.sha256) failures.push("second save changed bytes");
+  }
+  if (!isSha(o.canonicalSha256)) missing.push("canonical sha256");
+  else if (saveObserved(o.firstSave) && o.canonicalSha256 !== o.firstSave.file.sha256)
+    failures.push("saved bytes are not the installed codec's canonical serialization");
+  if (failures.length) return verdict(FIDELITY_STATUS.FAIL, failures);
   if (missing.length) return verdict(FIDELITY_STATUS.UNVERIFIED, [`missing ${missing.join(", ")}`]);
-  const failures = [];
-  if (observation.saveStateAfterSave !== "saved") failures.push(`save ended as ${observation.saveStateAfterSave}`);
-  if (observation.resaved.sha256 !== observation.saved.sha256) failures.push("second save changed bytes");
-  if (!sameFileState(observation.reopened, observation.resaved)) failures.push("reopen rewrote the saved file");
-  if (observation.canonicalSha256 !== observation.saved.sha256) failures.push("saved bytes are not the installed codec's canonical serialization");
-  if (JSON.stringify(observation.layerIdsBefore) !== JSON.stringify(observation.layerIdsAfterReopen)) failures.push("layer identity/order changed after reopen");
-  if (["dirty", "error"].includes(observation.dirtyAfterReopen)) failures.push(`reopened document is ${observation.dirtyAfterReopen}`);
-  return failures.length ? verdict(FIDELITY_STATUS.FAIL, failures) : verdict(FIDELITY_STATUS.PASS);
+  return verdict(FIDELITY_STATUS.PASS);
 }
 
 const REQUIRED_VISUAL_ROUTES = ["gpu", "browser", "html"];
@@ -395,17 +516,20 @@ export function planDesignStudioFidelityScenarios({ sample = false } = {}) {
       observables: ["file sha256/mtime/size (Node, temp project)", "#save-state[data-kind] + text", "#path value"],
       knownGaps: ["Host storage writes for lastPath/recent/recovery are not design bytes and are not gated here"] },
     { id: "immediate-click-after-edit", fixture: P.interaction, fixtures: [P.interaction],
-      steps: ["real drag via webContents.sendInputEvent", "immediate click at new and old geometry", "inspector #prop-x edit then immediate click",
+      steps: ["before each edit: DOM selection and inspector geometry must equal INTERACTION_PLAN", "real drag via webContents.sendInputEvent", "immediate click at new and old geometry", "inspector #prop-x edit then immediate click",
         "inline text edit (Enter, type, Cmd/Ctrl+Enter) then immediate click"],
       observables: ["#layers-list .layer-row[aria-selected=true][data-id]", "#prop-x/#prop-y", "#stage 2D transform (camera)"],
       knownGaps: ["hitTest is synchronous on cached scene geometry; the GPU scene rebuild timing itself is not exposed"] },
+    { id: "save-reopen-stable", fixture: P.interaction, fixtures: [P.interaction],
+      steps: ["directly after the verified edits (same open document): explicit #save and confirm saved",
+        "read disk with the installed codec: expected node id/text/x/y, non-targets unchanged", "reload the guest (lastPath reopen) and read the same nodes from the DOM inspector",
+        "second #save confirmed saved; bytes stable and canonical"],
+      observables: ["file sha256/mtime/size", "installed codec read of disk", "#prop-x/#prop-y/#prop-text after reload", "layer ids/order", "#save-state"],
+      knownGaps: ["whether webview reload keeps the Host binding is unverified; a failed reload is UNVERIFIED"] },
     { id: "low-zoom-fractional-performance", fixture: P.largeText, fixtures: [P.largeText],
       steps: ["Ctrl+wheel to a non-integer zoom < 1", "fractional wheel pans", "record rAF frame intervals and CDP Performance.getMetrics deltas"],
       observables: ["requestAnimationFrame intervals in the guest", "CDP Performance.getMetrics ScriptDuration/TaskDuration/LayoutDuration"],
       knownGaps: ["CanvasKit renderer stats() (deviceTextSamplingBuilds, tile builds/hits, renderMode, lastRenderSubmitMs) are not exposed to DOM/window in the installed app; device sampling misses and tile bypass remain UNVERIFIED without a reviewed read-only surface"] },
-    { id: "save-reopen-stable", fixture: P.interaction, fixtures: [P.interaction],
-      steps: ["after the edit scenario, explicit #save", "second #save", "reload the guest (lastPath reopen)", "wait and re-read bytes"],
-      observables: ["file sha256/mtime/size", "installed codec canonical serialization", "layer ids/order", "#save-state"], knownGaps: [] },
     { id: "same-camera-visual", fixture: P.rotationStrips, fixtures: [P.rotationStrips],
       steps: ["GPU and browser renderer captures at ~100%, ~200% (Ctrl+wheel) and fit", "HTML reference from installed frontend-export in an owned hidden BrowserWindow of the same Electron"],
       observables: ["capturePage PNG + sha256", "#stage transform for every route"],
@@ -433,13 +557,40 @@ export function summarizeFidelityReport(results, plan = planDesignStudioFidelity
 }
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-/** The report and PNG artifacts are create-only and live outside this repository. */
-export async function assertFidelityOutputsAbsent(reportPath) {
-  const report = resolve(reportPath), artifactsDirectory = `${report}.artifacts`;
-  if (inside(REPOSITORY_ROOT, report)) throw new Error(`fidelity report must be outside the repository: ${report}`);
+const entryExists = path => lstat(path).then(() => true, error => {
+  if (error.code === "ENOENT") return false;
+  throw error;
+});
+/**
+ * Claim create-only outputs outside the repository. The real parent (all symlinks
+ * resolved) must be outside the real repository; existing entries, including
+ * dangling symlinks, are refused; the artifacts directory is created exclusively
+ * (non-recursive mkdir) and returned as owned. Nothing else is ever removed.
+ */
+export async function claimFidelityOutputs(reportPath, { beforeCreate } = {}) {
+  const requested = resolve(reportPath);
+  let realParent;
+  try { realParent = await realpath(dirname(requested)); }
+  catch (error) { throw new Error(`fidelity report parent must already exist: ${dirname(requested)} (${error.code})`); }
+  if (inside(await realpath(REPOSITORY_ROOT), realParent))
+    throw new Error(`fidelity report must be outside the repository: ${requested} resolves to ${realParent}`);
+  const report = join(realParent, basename(requested)), artifactsDirectory = `${report}.artifacts`;
   for (const path of [report, artifactsDirectory])
-    if (await stat(path).then(() => true, () => false)) throw new Error(`fidelity output already exists: ${path}`);
-  return { reportPath: report, artifactsDirectory };
+    if (await entryExists(path)) throw new Error(`fidelity output already exists: ${path}`);
+  if (beforeCreate) await beforeCreate();
+  try { await mkdir(artifactsDirectory, { mode: 0o700 }); }
+  catch (error) {
+    if (error.code === "EEXIST") throw new Error(`fidelity output already exists (EEXIST): ${artifactsDirectory}`);
+    throw error;
+  }
+  const owned = await lstat(artifactsDirectory);
+  if (!owned.isDirectory() || owned.isSymbolicLink() || await realpath(artifactsDirectory) !== artifactsDirectory)
+    throw new Error(`claimed artifacts directory is not a plain owned directory: ${artifactsDirectory}`);
+  return { reportPath: report, artifactsDirectory, ownedArtifactsDirectory: { path: artifactsDirectory, dev: owned.dev, ino: owned.ino } };
+}
+/** O_CREAT|O_EXCL write: refuses existing files and (dangling) symlinks. */
+export function writeCreateOnly(path, content) {
+  return writeFile(path, content, { flag: "wx", mode: 0o600 });
 }
 
 /** Map authored world geometry into the exported SVG's original-size device pixels. */

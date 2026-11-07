@@ -9,12 +9,12 @@
  * Anything the installed app does not expose is reported UNVERIFIED.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import {
-  FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, OPEN_WAIT_MIN_MS,
+  FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, expectedStateAfterEdits, guardPreEdit, readFixtureDocument,
   judgeImmediateClick, judgeLowZoomPerformance, judgeOpenWithoutEdit, judgeSaveReopen, judgeSvgCornerProbe,
   judgeVisualCaptureGroup, planDesignStudioFidelityScenarios, summarizeFidelityReport, svgReferenceGeometry,
 } from "./design-studio-host-fidelity.mjs";
@@ -25,12 +25,43 @@ const worst = statuses => statuses.reduce((a, b) => (SEVERITY.indexOf(b) > SEVER
 const REFERENCE_PROTOCOLS = ["data:", "blob:", "about:"];
 
 /**
- * Render static HTML in an owned hidden BrowserWindow of the same Electron/Chromium,
- * with JavaScript disabled and every non data/blob/about request cancelled. The
- * window is destroyed in finally, including after a capture failure.
+ * Run one owned operation with a local deadline. On timeout the caller's cancel()
+ * terminates the owned resource (guest webview / reference window) so the pending
+ * operation can settle; we then wait a bounded time for that settlement. If it
+ * still has not settled the error is marked `unsettled` and the caller must stop
+ * using that resource. Never signals processes other than the owned resource.
  */
-export async function captureReferenceHtml(app, { html, width, height }) {
-  return app.evaluate(async ({ BrowserWindow, session }, { html, width, height, allowed, partition }) => {
+export async function boundedOwnedOperation(operation, { label, timeoutMs, settleTimeoutMs, cancel }) {
+  let settled = false, timer;
+  const pending = Promise.resolve().then(operation).finally(() => { settled = true; });
+  const deadline = new Promise(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs); });
+  try {
+    const first = await Promise.race([pending, deadline]);
+    if (first !== TIMED_OUT) return first;
+  } finally { clearTimeout(timer); }
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.timedOut = true;
+  try { await cancel?.(); } catch (cancelError) { error.cancelError = String(cancelError?.message ?? cancelError); }
+  let settleTimer;
+  await Promise.race([pending.catch(() => {}), new Promise(resolve => { settleTimer = setTimeout(resolve, settleTimeoutMs); })]);
+  clearTimeout(settleTimer);
+  error.unsettled = !settled;
+  if (error.unsettled) error.message += `; the cancelled operation did not settle within ${settleTimeoutMs}ms`;
+  throw error;
+}
+const TIMED_OUT = Symbol("timed-out");
+
+/**
+ * Render static HTML in an owned hidden BrowserWindow of the same Electron/Chromium,
+ * with JavaScript disabled and every non data/blob/about request cancelled. Load and
+ * capture have a local deadline inside Main: on timeout the owned window is destroyed
+ * (which settles its pending load/capture) and settlement is awaited for a bounded
+ * time. The window is destroyed in finally in every case.
+ */
+export async function captureReferenceHtml(app, { html, width, height, timeoutMs = 15_000, settleTimeoutMs = 5_000 }) {
+  const argument = { html, width, height, timeoutMs, settleTimeoutMs, allowed: REFERENCE_PROTOCOLS,
+    partition: `ds-fidelity-reference-${Date.now()}-${Math.random().toString(16).slice(2)}` };
+  return boundedOwnedOperation(() => app.evaluate(async ({ BrowserWindow, session }, { html, width, height, timeoutMs, settleTimeoutMs, allowed, partition }) => {
     const blockedRequests = [];
     const reference = session.fromPartition(partition);
     reference.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, done) => {
@@ -43,17 +74,38 @@ export async function captureReferenceHtml(app, { html, width, height }) {
     const window = new BrowserWindow({ show: false, width, height, useContentSize: true, frame: false,
       webPreferences: { partition, sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false,
         paintWhenInitiallyHidden: true, backgroundThrottling: false } });
+    const step = async (label, operation) => {
+      let timer, settled = false;
+      const pending = Promise.resolve().then(operation).finally(() => { settled = true; });
+      const outcome = await Promise.race([pending.then(value => ({ value })), new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); })]);
+      clearTimeout(timer);
+      if (outcome) return outcome.value;
+      if (!window.isDestroyed()) window.destroy();
+      await Promise.race([pending.catch(() => {}), new Promise(resolve => setTimeout(resolve, settleTimeoutMs))]);
+      throw new Error(`reference ${label} timed out after ${timeoutMs}ms; owned window destroyed; pending ${settled ? "settled" : "unsettled"}`);
+    };
     try {
-      const loaded = new Promise(resolve => window.webContents.once("did-finish-load", resolve));
-      await window.webContents.loadURL(`data:text/html;charset=utf-8;base64,${Buffer.from(html, "utf8").toString("base64")}`);
-      await loaded;
+      await step("load", () => {
+        const loaded = new Promise(resolve => window.webContents.once("did-finish-load", resolve));
+        return Promise.all([window.webContents.loadURL(`data:text/html;charset=utf-8;base64,${Buffer.from(html, "utf8").toString("base64")}`), loaded]);
+      });
       await new Promise(resolve => setTimeout(resolve, 300));
-      const image = await window.webContents.capturePage();
+      const image = await step("capture", () => window.webContents.capturePage());
       return { pngBase64: image.toPNG().toString("base64"), size: image.getSize(), blockedRequests };
     } finally {
       if (!window.isDestroyed()) window.destroy();
     }
-  }, { html, width, height, allowed: REFERENCE_PROTOCOLS, partition: `ds-fidelity-reference-${Date.now()}-${Math.random().toString(16).slice(2)}` });
+  }, argument), { label: "reference window evaluation", timeoutMs: 2 * timeoutMs + settleTimeoutMs + 2_000, settleTimeoutMs, cancel: async () => {} });
+}
+
+/** Create-only PNG artifact inside the owned, already-claimed artifacts directory. */
+export async function writeArtifactPng(artifactsDirectory, label, buffer) {
+  if (typeof label !== "string" || !/^[a-z0-9][a-z0-9-]{0,80}$/u.test(label)) throw new Error(`invalid artifact label: ${label}`);
+  const evidence = pngEvidence(buffer);
+  const path = join(artifactsDirectory, `${label}.png`);
+  await writeFile(path, buffer, { flag: "wx", mode: 0o600 });
+  evidence.summary.path = path;
+  return evidence;
 }
 
 function pngEvidence(buffer) {
@@ -72,23 +124,40 @@ export async function runDesignStudioHostFidelity(options) {
   const wait = options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const now = options.now ?? (() => performance.now());
   const timeoutMs = options.timeoutMs ?? 30_000;
+  const settleTimeoutMs = options.settleTimeoutMs ?? 5_000;
   const plan = planDesignStudioFidelityScenarios({ sample: Boolean(sampleReceipt) });
   const module = path => import(pathToFileURL(join(packageDirectory, "app", path)).href);
   const codec = await module("document.mjs");
   const textMetrics = await module("text-metrics.mjs");
+  const documentIndex = await module("document-index.mjs");
   const frontend = await module("frontend-export.mjs");
   const svgMetrics = await import(new URL("../tests/apps/design-studio/svg-semantic-metrics.mjs", import.meta.url).href);
   const packageModules = {};
-  for (const path of ["document.mjs", "text-metrics.mjs", "frontend-export.mjs"])
+  for (const path of ["document.mjs", "text-metrics.mjs", "document-index.mjs", "frontend-export.mjs"])
     packageModules[path] = sha256(await readFile(join(packageDirectory, "app", path)));
 
-  const dom = source => guest.execute(source);
+  // Every guest-bound call has a local deadline. Timeout terminates only the owned
+  // fidelity guest (guest.remove()), awaits settlement, then aborts later scenarios.
+  let guestTerminated = false, abortReason = null;
+  const terminateGuest = async () => {
+    if (guestTerminated) return;
+    guestTerminated = true;
+    await guest.remove?.();
+  };
+  const guestBound = (label, operation) => {
+    if (abortReason) return Promise.reject(new Error(`aborted: ${abortReason}`));
+    return boundedOwnedOperation(operation, { label, timeoutMs, settleTimeoutMs, cancel: terminateGuest }).catch(error => {
+      if (error.timedOut) abortReason = `${error.message}; owned fidelity guest terminated`;
+      throw error;
+    });
+  };
+  const dom = source => guestBound("guest DOM probe", () => guest.execute(source));
   const fileState = async relativePath => {
     const path = join(projectDirectory, relativePath);
     const [bytes, value] = await Promise.all([readFile(path), stat(path)]);
     return { sha256: sha256(bytes), mtimeMs: value.mtimeMs, size: value.size };
   };
-  const evaluateMain = (fn, argument) => app.evaluate(fn, argument);
+  const evaluateMain = (fn, argument) => guestBound("guest Main operation", () => app.evaluate(fn, argument));
   const sendInput = events => evaluateMain(({ webContents }, { id, events }) => {
     const contents = webContents.fromId(id);
     for (const event of events) contents.sendInputEvent(event);
@@ -155,17 +224,11 @@ export async function runDesignStudioHostFidelity(options) {
     }, { id: guestWebContentsId, rect: { x: Math.round(cam.rect.x), y: Math.round(cam.rect.y), width: Math.round(cam.rect.width), height: Math.round(cam.rect.height) } });
     return saveArtifact(label, Buffer.from(result.pngBase64, "base64"));
   };
-  const saveArtifact = async (label, buffer) => {
-    const evidence = pngEvidence(buffer);
-    if (artifactsDirectory) {
-      await mkdir(artifactsDirectory, { recursive: true });
-      const path = join(artifactsDirectory, `${label}.png`);
-      await writeFile(path, buffer, { flag: "wx", mode: 0o600 });
-      evidence.summary.path = path;
-    }
-    return evidence;
-  };
-  const documentAt = async relativePath => codec.normalizeDesignDocument(JSON.parse(await readFile(join(projectDirectory, relativePath), "utf8")));
+  const saveArtifact = async (label, buffer) => artifactsDirectory ? writeArtifactPng(artifactsDirectory, label, buffer) : pngEvidence(buffer);
+  const documentAt = relativePath => readFixtureDocument({ projectDirectory, relativePath, codec, documentIndex });
+  const nodeSummary = node => ({ id: node.id, x: node.x, y: node.y, ...(node.type === "text" ? { text: node.text } : {}) });
+  const fixtureById = new Map(fixtures.map(fixture => [fixture.relativePath, fixture]));
+  const documentFromFixture = async relativePath => codec.normalizeDesignDocument(JSON.parse(fixtureById.get(relativePath).logicalSource));
   const referenceHtml = (design, cam) => {
     const css = frontend.designFrontendCss(design, { preserveWorldOrigin: true });
     const body = frontend.renderDesignFrontendPage(design, { preserveWorldOrigin: true });
@@ -177,6 +240,7 @@ export async function runDesignStudioHostFidelity(options) {
   const results = [];
   async function scenario(id, body) {
     log(`design-studio fidelity: ${id}`);
+    if (abortReason) { results.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`aborted: ${abortReason}`] }); return; }
     try { results.push({ id, ...(await body()) }); }
     catch (error) { results.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`harness step failed: ${error?.message ?? error}`] }); }
   }
@@ -210,7 +274,7 @@ export async function runDesignStudioHostFidelity(options) {
   });
 
   const P = FIDELITY_FIXTURE_PATHS.interaction;
-  let interactionEdited = false;
+  let editResult = null;
   await scenario("immediate-click-after-edit", async () => {
     await openFile(P);
     await chooseRenderer("gpu");
@@ -218,58 +282,103 @@ export async function runDesignStudioHostFidelity(options) {
     await wait(400);
     const cam = await camera();
     if (!cam) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["#stage camera transform not observable"] };
-    const centre = (x, y) => toClient(cam, x, y);
+    const centre = point => toClient(cam, point.x, point.y);
     const operations = [];
-    const clickAndRead = async (label, point, expectedSelectedIds, committedAt) => {
-      const sentAt = now();
+    const clickAndRead = async (label, world, expectedSelectedIds, committedAt) => {
+      const point = centre(world), sentAt = now();
       await click(point.x, point.y);
       const actualSelectedIds = await selectedIds();
-      return { label, point, expectedSelectedIds, actualSelectedIds, elapsedSinceCommitMs: Math.round(sentAt - committedAt) };
+      return { label, world, point, expectedSelectedIds, actualSelectedIds, elapsedSinceCommitMs: Math.round(sentAt - committedAt) };
     };
-    // 1. Real drag: select, then drag +260 world px (onto the underlay; target is on top).
-    const start = centre(180, 180);
-    await click(start.x, start.y);
-    const geometryBefore = await inspectorXY();
-    const end = centre(440, 180), steps = 8, moves = [];
-    for (let step = 1; step <= steps; step++)
-      moves.push({ type: "mouseMove", x: Math.round(start.x + (end.x - start.x) * step / steps), y: Math.round(start.y), button: "left", modifiers: [] });
-    await sendInput([{ type: "mouseDown", x: Math.round(start.x), y: Math.round(start.y), button: "left", clickCount: 1, modifiers: [] }, ...moves,
-      { type: "mouseUp", x: Math.round(end.x), y: Math.round(end.y), button: "left", clickCount: 1, modifiers: [] }]);
-    let committedAt = now();
-    const dragClicks = [await clickAndRead("new-position", end, ["move-target"], committedAt),
-      await clickAndRead("old-position", start, [], committedAt)];
-    await click(end.x, end.y);
-    const geometryAfter = await inspectorXY();
-    dragClicks.push(await clickAndRead("underlay-only", centre(545, 250), ["underlay"], committedAt));
-    operations.push({ operation: "drag", targetId: "move-target", geometryBefore, geometryAfter, clicks: dragClicks });
-    // 2. Inspector x edit back to 120, then immediate clicks.
-    await click(end.x, end.y);
-    const inspectorBefore = await inspectorXY();
-    await dom(`(() => { const input = document.querySelector("#prop-x"); if (!input) return false; input.value = "120";
-      input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
-    committedAt = now();
-    const inspectorClicks = [await clickAndRead("new-position", centre(180, 180), ["move-target"], committedAt),
-      await clickAndRead("old-position", centre(480, 180), ["underlay"], committedAt)];
-    await click(centre(180, 180).x, centre(180, 180).y);
-    operations.push({ operation: "inspector-x", targetId: "move-target", geometryBefore: inspectorBefore, geometryAfter: await inspectorXY(), clicks: inspectorClicks });
-    // 3. Inline text edit: Enter opens the editor, insertText, Cmd/Ctrl+Enter commits.
-    const text = centre(160, 332);
-    await click(text.x, text.y);
-    const textBefore = await inspectorXY();
-    await keys("Enter");
-    await until(`(() => { const e = document.querySelector("#inline-text-editor"); return Boolean(e && !e.hidden && document.activeElement === e); })()`, "inline text editor");
-    await evaluateMain(({ webContents }, { id }) => { const contents = webContents.fromId(id); contents.selectAll(); contents.insertText("Edited HMI 已编辑"); return true; }, { id: guestWebContentsId });
-    await keys("Enter", [process.platform === "darwin" ? "meta" : "control"]);
-    committedAt = now();
-    const textClicks = [await clickAndRead("new-position", text, ["edit-target"], committedAt),
-      await clickAndRead("old-position", centre(160, 420), [], committedAt)];
-    await click(text.x, text.y);
-    const committedText = await dom(`document.querySelector("#prop-text")?.value ?? null`);
-    operations.push({ operation: "text-edit", targetId: "edit-target", geometryBefore: textBefore, geometryAfter: await inspectorXY(), clicks: textClicks, committedText });
-    interactionEdited = true;
-    const verdicts = operations.map(operation => ({ ...operation, ...judgeImmediateClick(operation) }));
-    if (committedText !== "Edited HMI 已编辑") verdicts.at(-1).status = worst([verdicts.at(-1).status, FIDELITY_STATUS.UNVERIFIED]);
-    return { status: worst(verdicts.map(value => value.status)), camera: cam, operations: verdicts };
+    for (const step of INTERACTION_PLAN) {
+      // Select through the UI, then verify the DOM selection and geometry before editing.
+      const select = centre(step.selectAt);
+      await click(select.x, select.y);
+      const preEdit = { selectedIds: await selectedIds(), geometry: await inspectorXY() };
+      const guard = guardPreEdit(step, preEdit);
+      if (guard.length) {
+        operations.push({ operation: step.operation, targetId: step.targetId, preEdit, status: FIDELITY_STATUS.UNVERIFIED,
+          reasons: guard.map(reason => `pre-edit: ${reason}; edit not performed`) });
+        break; // the remaining plan depends on this edit
+      }
+      let committedText;
+      if (step.operation === "drag") {
+        const start = centre(step.grab), end = centre(step.drop), moves = [];
+        for (let index = 1; index <= 8; index++)
+          moves.push({ type: "mouseMove", x: Math.round(start.x + (end.x - start.x) * index / 8), y: Math.round(start.y + (end.y - start.y) * index / 8), button: "left", modifiers: [] });
+        await sendInput([{ type: "mouseDown", x: Math.round(start.x), y: Math.round(start.y), button: "left", clickCount: 1, modifiers: [] }, ...moves,
+          { type: "mouseUp", x: Math.round(end.x), y: Math.round(end.y), button: "left", clickCount: 1, modifiers: [] }]);
+      } else if (step.operation === "inspector-x") {
+        await dom(`(() => { const input = document.querySelector("#prop-x"); if (!input) return false; input.value = ${JSON.stringify(String(step.set.x))};
+          input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+      } else if (step.operation === "text-edit") {
+        await keys("Enter");
+        await until(`(() => { const e = document.querySelector("#inline-text-editor"); return Boolean(e && !e.hidden && document.activeElement === e); })()`, "inline text editor");
+        await evaluateMain(({ webContents }, { id, text }) => { const contents = webContents.fromId(id); contents.selectAll(); contents.insertText(text); return true; },
+          { id: guestWebContentsId, text: step.text });
+        await keys("Enter", [process.platform === "darwin" ? "meta" : "control"]);
+      }
+      const committedAt = now();
+      const clicks = [];
+      for (const value of step.clicks) clicks.push(await clickAndRead(value.label, value.world, value.expected, committedAt));
+      // Re-select the target at its planned new position and read back what was committed.
+      const after = centre(step.clicks[0].world);
+      await click(after.x, after.y);
+      const selectedAfter = await selectedIds();
+      const ownSelection = Array.isArray(selectedAfter) && selectedAfter.length === 1 && selectedAfter[0] === step.targetId;
+      const geometryAfter = ownSelection ? await inspectorXY() : null;
+      if (step.operation === "text-edit") committedText = ownSelection ? await dom(`document.querySelector("#prop-text")?.value ?? null`) : null;
+      const record = { operation: step.operation, targetId: step.targetId, preEdit, geometryBefore: preEdit.geometry, geometryAfter, selectedAfter, clicks,
+        ...(committedText === undefined ? {} : { committedText }) };
+      const judged = { ...record, ...judgeImmediateClick(record) };
+      if (step.operation === "text-edit" && committedText !== step.text && judged.status === FIDELITY_STATUS.PASS)
+        Object.assign(judged, { status: FIDELITY_STATUS.UNVERIFIED, reasons: [`committed text ${JSON.stringify(committedText)} was not observed as ${JSON.stringify(step.text)}`] });
+      operations.push(judged);
+      if (judged.status !== FIDELITY_STATUS.PASS) break; // later steps assume this one
+    }
+    const status = operations.length === INTERACTION_PLAN.length ? worst(operations.map(value => value.status))
+      : worst([...operations.map(value => value.status), FIDELITY_STATUS.UNVERIFIED]);
+    editResult = { operations: operations.map(value => value.operation), statuses: operations.map(value => value.status) };
+    return { status, camera: cam, operations };
+  });
+
+  // Directly after the verified edits, on the same open document (no reopen in between).
+  await scenario("save-reopen-stable", async () => {
+    const baselineNodes = (await documentFromFixture(P)).pages[0].nodes.map(nodeSummary);
+    const pathBeforeSave = await dom(`document.querySelector("#path")?.value.trim() ?? null`);
+    const save = async label => {
+      await dom(`(() => { const menu = document.querySelector("#compact-actions"); if (menu && !menu.open) menu.querySelector("summary")?.click();
+        document.querySelector("#save")?.click(); return true; })()`);
+      await until(`["saved", "error"].includes(document.querySelector("#save-state")?.dataset.kind)`, `${label} completion`);
+      return { kind: (await saveState())?.kind ?? null, file: await fileState(P) };
+    };
+    const observation = { path: P, editsVerified: editResult, pathBeforeSave, expected: expectedStateAfterEdits(), baselineNodes };
+    const verdictNow = () => ({ ...judgeSaveReopen(observation), observation });
+    const preconditions = judgeSaveReopen({ ...observation, firstSave: undefined });
+    if (preconditions.status === FIDELITY_STATUS.UNVERIFIED && /not all verified|not the open document/.test(preconditions.reasons.join()))
+      return { ...preconditions, observation }; // never save an unverified or wrong document
+    observation.layerIdsBefore = await layerIds();
+    observation.firstSave = await save("first save");
+    if (observation.firstSave.kind !== "saved") return verdictNow();
+    const disk = await documentAt(P);
+    observation.diskNodesAfterFirstSave = disk.pages[0].nodes.map(nodeSummary);
+    observation.canonicalSha256 = sha256(codec.serializeDesignDocument(disk));
+    await guestBound("guest reload", () => guest.view.evaluate(view => view.reload()));
+    await until(`Boolean(window.codeshellPanel) && document.querySelector("#path")?.value.trim() === ${JSON.stringify(P)} && ${rendererReady}`, "reopen after reload");
+    const { samples, waitedMs } = await sampleSaveStates();
+    Object.assign(observation, { reopenSaveStates: samples, waitedMs, dirtyAfterReopen: samples.at(-1)?.kind ?? null, layerIdsAfterReopen: await layerIds() });
+    const domAfterReload = [];
+    for (const node of observation.expected) {
+      await dom(`document.querySelector('#layers-list .layer-row[data-id=${JSON.stringify(node.id)}]')?.click(), true`);
+      const selected = await selectedIds();
+      if (!Array.isArray(selected) || selected.length !== 1 || selected[0] !== node.id) continue; // missing → UNVERIFIED
+      const geometry = await inspectorXY();
+      const text = node.text === undefined ? undefined : await dom(`document.querySelector("#prop-text")?.value ?? null`);
+      domAfterReload.push({ id: node.id, x: geometry?.x, y: geometry?.y, ...(text === undefined ? {} : { text }) });
+    }
+    observation.domAfterReload = domAfterReload;
+    observation.secondSave = await save("second save");
+    return verdictNow();
   });
 
   await scenario("low-zoom-fractional-performance", async () => {
@@ -315,30 +424,6 @@ export async function runDesignStudioHostFidelity(options) {
     return { ...judgeLowZoomPerformance(observation), observation };
   });
 
-  await scenario("save-reopen-stable", async () => {
-    if (!interactionEdited) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["edit scenario did not complete"] };
-    await openFile(P);
-    const save = async () => {
-      await dom(`(() => { const menu = document.querySelector("#compact-actions"); if (menu && !menu.open) menu.querySelector("summary")?.click();
-        document.querySelector("#save")?.click(); return true; })()`);
-      await until(`["saved", "error"].includes(document.querySelector("#save-state")?.dataset.kind)`, "save completion");
-      return (await saveState())?.kind ?? null;
-    };
-    const layerIdsBefore = await layerIds();
-    const saveStateAfterSave = await save();
-    const saved = await fileState(P);
-    await save();
-    const resaved = await fileState(P);
-    const canonicalSha256 = sha256(codec.serializeDesignDocument(await documentAt(P)));
-    await guest.view.evaluate(view => view.reload());
-    await until(`Boolean(window.codeshellPanel) && document.querySelector("#path")?.value.trim() === ${JSON.stringify(P)} && ${rendererReady}`, "reopen after reload");
-    const { samples, waitedMs } = await sampleSaveStates();
-    const reopened = await fileState(P);
-    const observation = { path: P, saved, resaved, reopened, canonicalSha256, saveStateAfterSave, layerIdsBefore,
-      layerIdsAfterReopen: await layerIds(), dirtyAfterReopen: samples.at(-1)?.kind ?? null, reopenSaveStates: samples, waitedMs };
-    return { ...judgeSaveReopen(observation), observation };
-  });
-
   await scenario("same-camera-visual", async () => {
     const relativePath = FIDELITY_FIXTURE_PATHS.rotationStrips;
     await openFile(relativePath);
@@ -363,7 +448,7 @@ export async function runDesignStudioHostFidelity(options) {
           })) });
       }
       const cam = captures[0].camera, rect = captures[0].rect;
-      const reference = await captureReferenceHtml(app, { html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height) });
+      const reference = await captureReferenceHtml(app, { html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height), timeoutMs, settleTimeoutMs });
       const evidence = await saveArtifact(`visual-${target.label}-html`, Buffer.from(reference.pngBase64, "base64"));
       captures.push({ route: "html", camera: { ...cam, dpr: evidence.summary.width / Math.round(rect.width) }, png: evidence.summary, rect,
         blockedRequests: reference.blockedRequests, crops: captures[0].crops });
@@ -386,7 +471,7 @@ export async function runDesignStudioHostFidelity(options) {
     if (!geometry) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["exported SVG has no parsable viewBox/width/height"] };
     const viewport = { width: Math.ceil(geometry.viewport.width), height: Math.ceil(geometry.viewport.height) };
     const reference = await captureReferenceHtml(app, { html: `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:${design.canvas.background}}svg{display:block}</style>${svg.replace(/^<\?xml[^>]*>\s*/u, "")}`,
-      ...viewport });
+      ...viewport, timeoutMs, settleTimeoutMs });
     const svgEvidence = await saveArtifact("svg-corner-aa-svg", Buffer.from(reference.pngBase64, "base64"));
     const svgDpr = svgEvidence.summary.width / viewport.width;
     const rows = [];
@@ -417,6 +502,8 @@ export async function runDesignStudioHostFidelity(options) {
   });
 
   return { plan, packageModules, sampleReceipt, results, summary: summarizeFidelityReport(results, plan),
-    fixtures: fixtures.map(({ relativePath, purpose, sha256: digest }) => ({ relativePath, purpose, sha256: digest })),
+    terminatedGuest: guestTerminated, abortReason,
+    fixtures: fixtures.map(({ relativePath, purpose, storage, sha256: digest, logicalSha256, files }) => ({ relativePath, purpose, storage, sha256: digest, logicalSha256,
+      files: files.map(file => ({ relativePath: file.relativePath, sha256: file.sha256, bytes: Buffer.byteLength(file.bytes) })) })),
     approval: "The --design-studio-fidelity flag is a technical opt-in only; it is not user approval to open a Host window." };
 }

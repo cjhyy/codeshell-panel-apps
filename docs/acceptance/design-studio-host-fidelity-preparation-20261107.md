@@ -13,7 +13,7 @@
 
 ```sh
 # 1. 先在获授权的 Host checkout 里另行构建（本脚本绝不代为构建、下载或安装）
-# 2. 报告路径必须在本仓库之外，且报告文件和 <report>.artifacts/ 都不能已存在
+# 2. 报告的真实父目录必须已存在且在本仓库之外；报告和 <report>.artifacts 都不能已存在（含 dangling symlink）
 node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell \
   /absolute/outside-repo/ds-host-fidelity-report.json --design-studio-fidelity
 # 可选：显式传入一份真实样本（只读：记录 SHA 前后，复制到临时 project，原件不动）
@@ -53,7 +53,7 @@ node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell \
 | `scripts/design-studio-host-fidelity.mjs` | 纯模块，无顶层副作用，不 import electron、playwright 或 child_process。包含：参数解析和 opt-in 闸门；只读 preflight；样本复制；网络 allowlist；合成 fixture；各场景判定；报告汇总；create-only 输出检查 |
 | `scripts/design-studio-host-fidelity-runner.mjs` | 只在 Electron 里执行的步骤。它接收现有 harness 已经拥有的 guest 和 Electron app 句柄，自己不启动任何进程 |
 | `scripts/check-panel-desktop.mjs` | 最小扩展。改用共享的参数解析器；preflight 和 create-only 检查放在 `mkdtemp` 之前；fidelity 使用独立的私有 project `desktop-fidelity`，fixture 在启动前写入；场景在原有 owned-cleanup 的 `try/finally` 里执行，位于 design-studio 的 CanvasKit 检查之后、通用 update/restore 之前 |
-| `tests/design-studio-host-fidelity.test.mjs` | 26 项单元测试，已登记到 `tests/suites.mjs` 的 `desktop-harness` 套件 |
+| `tests/design-studio-host-fidelity.test.mjs` | 33 项单元测试（复审返修后），已登记到 `tests/suites.mjs` 的 `desktop-harness` 套件 |
 
 沿用的现有隔离：私有 mkdtemp HOME、CODE_SHELL_HOME 和 userData，并断言 Electron `app.getPath`；生产 Main/preload 的审阅式安装 IPC；Node HTTP guard；每个 Electron session 都取消 HTTP(S)；NativeEntry 和 managed Node 走 macOS deny(network*)；只向捕获到的 ChildProcess 发信号，确认其退出后才删除 HOME。
 
@@ -67,7 +67,7 @@ fixture 是合成的，不复制任何个人稿。字节就是**本仓库 `apps/
 | interaction | `underlay`、`move-target`（绘制在其上方）、`edit-target` 文字 |
 | rotation-strips | chevron 由 ±45°、9.6×1.12、r0.56 的灰色细条组成；`>_` 由 ±40°、r0.595 的细条加 `>_` 文字组成；按钮文字 `Continue 继续`（hug）；finite offset 3.5 样例 |
 | svg-corner-aa | 两组，按审计中 4 个 FAIL 行的作者几何复刻：1.26×7.2 @ (28.3, 303.4) 和 7.2×1.17 @ (27.4, 97.3)，颜色 `#686e67`，背景 `#f3f4f1`。另一组 x 偏移 120 |
-| large-text | 1200 个真实 text 节点，Latin/CJK 混排，字号 12–14，x、y 都带小数相位 |
+| large-text | 1200 个真实 text 节点，Latin/CJK 混排，字号 12–14，x、y 都带小数相位。逻辑文档 771,985 bytes，超过 Host `workspace.readText` 的 480 KiB，因此用已安装的 index codec（`createDesignIndexPersistencePlan`）写成 manifest（616 bytes）加 2 个页面分片（368,640 和 292,700 bytes，均 ≤360 KiB），见下文 I2 |
 
 ## 场景、观测与判定
 
@@ -101,9 +101,9 @@ TDD 红→绿的日志在 `.tmp/host-harness/`，不提交。每一轮都是先�
 
 ```sh
 npm ci --cache .tmp/npm-cache --prefer-offline        # exit 0
-node --test tests/design-studio-host-fidelity.test.mjs # 26/26 pass, exit 0
+node --test tests/design-studio-host-fidelity.test.mjs # 首轮 26/26；复审返修后见文末，数据不沿用
 npm run validate                                       # exit 0 (.tmp/host-harness/validate-final.log)
-npm test -- --suite desktop-harness                    # 39/39 pass, exit 0 (.tmp/host-harness/suite-desktop-harness-final.log)
+npm test -- --suite desktop-harness                    # 首轮 39/39；复审返修后见文末
 node --check scripts/check-panel-desktop.mjs           # syntax ok
 ```
 
@@ -137,3 +137,37 @@ node --check scripts/check-panel-desktop.mjs           # syntax ok
 - 视觉场景只产出证据，需要人工复核或另定获批的比较门禁。HTML 参照窗口与 webview 的合成路径可能不同。
 - 打开 flag 时仍会执行 design-studio 的通用 install/update/restore 流程，会弹出真实窗口，耗时数分钟。必须先获得用户的窗口许可。
 - 整体样本的视觉验收仍然是 BLOCKED。安装版仍为 0.23.0。没有宣告目标完成。等待 Codex 6.1-sol 独立只读审查。
+
+## 复审返修（Codex 6.1-sol 审 e2a67e86：BLOCKED，4 Important + 1 Minor）
+
+返修前先核对：HEAD 仍为 `e2a67e86`，工作区除 `.tmp/` 外干净。进程表里的 Electron 属于其他 worktree 和已安装的 app，不是本会话启动的，没有碰。本轮仍然**没有**启动 Electron、GUI、浏览器，没有构建 Host，没有安装 Panel，也没有执行 `check-panel-desktop` 或 fidelity 入口。
+
+先写红测试：`node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs`，结果 33 tests / 18 pass / 14 fail / 1 cancelled（`.tmp/host-harness/review-red.log`）。被 cancel 的是参照窗口挂起用例，原实现没有本地截止，一直挂到 15 s 的 test timeout。第一次不带 `--test-timeout` 运行时，pending-guest 用例让 runner 永久挂起，已手动停止。
+
+| 编号 | 问题 | 修复 | 新测试 |
+| --- | --- | --- | --- |
+| I1 | `hitTestCanvasNode` 按 `design.nodes` 倒序命中，而 fixture 里 `underlay` 排在 `move-target` 后面。拖到 (440,180) 后，用真实模块实测命中的是 `underlay`，后续 inspector 编辑会改错节点 | 层序改为 `underlay, move-target, edit-target`。新增 `INTERACTION_PLAN`，作为点击坐标和预期 ID 的唯一来源。每次编辑前通过 UI 选中目标，并用 `guardPreEdit` 核对 DOM 选中（必须恰好是目标）和 inspector 几何；不符就**不执行编辑**，判 UNVERIFIED，后续步骤停止。`judgeImmediateClick` 要求 preEdit 证据，且提交后的几何要落在计划容差内（拖动 ±20，其他 ±0.01），否则判 UNVERIFIED。inspector 改成设 x=200，使最终状态不同于基线 | 用 canonical fixture 加真实 `hitTestCanvasNode`，在计划几何及 ±容差两端逐个点击点断言命中 ID；preEdit guard 覆盖选错节点、多选、拖动未发生、未观测 |
+| I2 | 1200 文字的单文件 771,985 bytes，超过 Host `readText` 的 480 KiB，场景 3 根本打不开 | 不改 Host 限额。用已安装的 `document-index.mjs` 的 `createDesignIndexPersistencePlan` 生成真实索引：manifest 加 digest 命名的页面分片。runner 和测试都通过 `readFixtureDocument`（真实 `resolveDesignIndexDocument`，含摘要校验）读取。seed 会写入每个文件 | 每个文件都 ≤480 KiB，主文件 ≤384 KiB（应用的单文件上限），分片在 1 B 到 360 KiB 之间；用真实 resolver 重组后与 canonical 逻辑源逐字节一致；≥1000 个 text 节点；篡改一个分片会被摘要校验拒绝 |
+| I3 | 输出路径只做了字面 resolve，`stat` 会跟随 symlink | `claimFidelityOutputs`：父目录必须已存在，用 realpath 判断是否在 realpath 后的仓库之外；用 `lstat` 拒绝任何已有条目（包括 dangling symlink）；artifacts 目录用非 recursive 的 `mkdir` 独占创建，遇 EEXIST 即拒绝，再用 lstat 和 realpath 确认是普通目录。报告用 `wx` 写入。截图通过 `writeArtifactPng` 写入，label 白名单，`wx`，不再在 runner 里 mkdir。失败时不删除任何文件 | 真实临时目录下的场景：外部 symlink 指向仓库，确认仓库内什么都没创建；报告和 artifacts 路径上的 dangling symlink，且确认目标未被创建；`beforeCreate` 模拟 TOCTOU 竞争出现的目录；父目录缺失；报告覆盖、截图覆盖、截图 symlink、label 中的 `../` 全部拒绝 |
+| I4 | 只要有 `interactionEdited=true` 就继续，save 前重新打开文件，又拿磁盘自己的 canonical 当判据，没有核对预期内容，第二次 save 出错也不算失败；旧稿也能 PASS | 场景顺序改为编辑之后**立即**保存，中间不重新打开。前置条件：三个计划操作全部 PASS，且 `#path` 仍是编辑中的文件，否则不保存，判 UNVERIFIED。流程：第一次 save 必须为 saved → 用已安装 codec 读磁盘，预期节点的 id/text/x/y 要符合，非目标节点保持基线 → webview reload 后逐个点图层行，从 inspector 读出相同的期望值 → 第二次 save 必须为 saved，字节不变，且等于 canonical 序列化 | 负控：保存失败、磁盘仍是旧稿、误改非目标节点、第二次 save 出错、第二次 save 改了字节、reload 后文字不符、canonical 不符、dirty、图层顺序变化 → FAIL；编辑未验证、`editsVerified` 只是布尔值、打开的是其他文件、缺少 reload DOM、缺少第二次 save、磁盘缺节点 → UNVERIFIED |
+| M | `until` 在 `await dom()` 返回之后才检查截止时间，pending 的调用永远不会结束；参照窗口的 load 和 capture 也没有本地截止 | `boundedOwnedOperation`：本地截止到期后调用 owned cancel，再在有界时间内等待原操作 settle，仍未 settle 的标记 `unsettled`。所有 guest 相关调用（DOM probe、Main 输入、截图、CDP、reload）的 cancel 都只是 `guest.remove()` 一次，即移除本 harness 自己 attach 的 fidelity guest，之后的场景全部判 UNVERIFIED（aborted）。参照窗口在 Main 内对 load 和 capture 各设本地截止：到期先 destroy owned window 再等 settle，`finally` 必定 destroy；外层 evaluate 另有有界等待。不会 pkill，也不会 kill Host | pending 的假 guest：本地超时、`remove` 恰好调用一次、pending 已 settle、后续场景 aborted、`terminatedGuest:true`；永不 settle 的操作返回 `unsettled` 且不挂起；参照窗口 load 挂起时会被 destroy，且 load 已 settle |
+
+不受影响、已确认保留的行为：未 opt-in 不会启动；缺 managed node 时在 mkdtemp 之前 exit 2；样本只做读取、SHA 和复制；guest 用真实 attach 的 cwd、appId 和 trust；overall 只要有 UNVERIFIED 就不会 PASS；性能 stats 没有出口，仍判 UNVERIFIED；视觉最多 EVIDENCE_ONLY；`goalComplete` 恒为 false。
+
+覆盖说明：open-without-edit 每 250 ms 采样、共 2.2 s，不能证明两次采样之间没有出现过短暂的 dirty；这是覆盖上的局限，没有为此扩展 production 观测。
+
+### 返修后实际运行（TMPDIR=/tmp/ds-host-harness-tmp）
+
+运行前确认 `desktop-harness` 只包含 cleanup、native-fixture 和本文件的单测，均不启动 Electron 或浏览器。
+
+```sh
+node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs   # 33/33 pass, exit 0 (.tmp/host-harness/review-green-unit.log)
+npm test -- --suite desktop-harness                                           # 46/46 pass, exit 0 (.tmp/host-harness/review-suite-desktop-harness.log)
+npm run validate                                                              # exit 0 (.tmp/host-harness/review-validate.log)
+```
+
+### 仍未解决或未执行
+
+- 真实 Host 场景仍然**一个都没跑**。主 Host checkout 缺 `out/managed-runtimes/node/bin/node`，preflight 会 exit 2；需要先另行授权构建完整的 Host，并经 AskUser 取得窗口许可。
+- runner 的 Electron 专属步骤只在假句柄上测过。以下几点在真实环境中都没有验证：webview reload 后 Host 绑定是否保留；`guest.remove()` 能否让 pending 的 `executeJavaScript` settle；Electron 的 `mouseWheel` 和 `insertText` 语义。
+- 低 zoom 的 renderer stats 不可观测，仍判 UNVERIFIED。DPR1 的 SVG 角 AA 需要 DPR1 显示器。视觉结果仅作证据。

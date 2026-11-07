@@ -19,6 +19,15 @@ import {
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sha256 = value => createHash("sha256").update(value).digest("hex");
+const studioModules = async () => ({
+  codec: await import("../apps/design-studio/app/document.mjs"),
+  textMetrics: await import("../apps/design-studio/app/text-metrics.mjs"),
+  documentIndex: await import("../apps/design-studio/app/document-index.mjs"),
+});
+async function loadFixtures() {
+  const { buildDesignStudioFidelityFixtures } = await import("../scripts/design-studio-host-fidelity.mjs");
+  return buildDesignStudioFidelityFixtures(await studioModules());
+}
 async function scratch(prefix) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   assert.ok(!directory.startsWith(repository), "unit scratch must stay outside the repository");
@@ -173,25 +182,26 @@ test("the fidelity module is side-effect free and does not import Electron or Pl
 });
 
 test("synthetic fixtures are canonical codec documents covering the real-Host risk surfaces", async () => {
-  const { buildDesignStudioFidelityFixtures, FIDELITY_FIXTURE_PATHS } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const codec = await import("../apps/design-studio/app/document.mjs");
-  const metrics = await import("../apps/design-studio/app/text-metrics.mjs");
-  const fixtures = buildDesignStudioFidelityFixtures({ codec, textMetrics: metrics });
+  const { FIDELITY_FIXTURE_PATHS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { codec, textMetrics: metrics } = await studioModules();
+  const fixtures = await loadFixtures();
   assert.deepEqual(fixtures.map(value => value.relativePath).sort(), Object.values(FIDELITY_FIXTURE_PATHS).sort());
   for (const fixture of fixtures) {
     assert.match(fixture.relativePath, /^designs\/host-fidelity-[a-z0-9-]+\.codesign\.json$/);
-    const parsed = JSON.parse(fixture.bytes);
-    const reserialized = codec.serializeDesignDocument(codec.normalizeDesignDocument(parsed));
-    assert.equal(reserialized, fixture.bytes, `${fixture.relativePath} is not canonical codec output`);
+    assert.equal(codec.serializeDesignDocument(codec.normalizeDesignDocument(JSON.parse(fixture.logicalSource))), fixture.logicalSource,
+      `${fixture.relativePath} logical document is not canonical codec output`);
     assert.equal(fixture.sha256, sha256(fixture.bytes));
+    assert.equal(fixture.files[0].relativePath, fixture.relativePath);
+    assert.equal(fixture.files[0].bytes, fixture.bytes);
+    if (fixture.storage === "single") assert.equal(fixture.bytes, fixture.logicalSource);
   }
-  const byPath = new Map(fixtures.map(value => [value.relativePath, codec.normalizeDesignDocument(JSON.parse(value.bytes))]));
+  const byPath = new Map(fixtures.map(value => [value.relativePath, codec.normalizeDesignDocument(JSON.parse(value.logicalSource))]));
   const nodes = document => document.pages.flatMap(page => page.nodes ?? []);
   const flat = path => {
     const document = byPath.get(path);
     const result = [];
     const visit = node => { result.push(node); for (const child of node.children ?? []) visit(child); };
-    for (const page of JSON.parse(fixtures.find(value => value.relativePath === path).bytes).pages) page.children.forEach(visit);
+    for (const page of JSON.parse(fixtures.find(value => value.relativePath === path).logicalSource).pages) page.children.forEach(visit);
     return { document, nodes: result.length ? result : nodes(document) };
   };
 
@@ -251,6 +261,7 @@ test("open-without-edit passes only from bytes, mtime and repeated dirty observa
 test("immediate click after move/edit requires actual DOM selection at the new and old geometry", async () => {
   const { judgeImmediateClick, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const good = { operation: "drag", targetId: "move-target", geometryBefore: { x: 120, y: 140 }, geometryAfter: { x: 380, y: 140 },
+    preEdit: { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } },
     clicks: [
       { label: "new-position", elapsedSinceCommitMs: 12, expectedSelectedIds: ["move-target"], actualSelectedIds: ["move-target"] },
       { label: "old-position", elapsedSinceCommitMs: 30, expectedSelectedIds: [], actualSelectedIds: [] },
@@ -268,6 +279,12 @@ test("immediate click after move/edit requires actual DOM selection at the new a
   assert.equal(judgeImmediateClick(engineOnly).status, FIDELITY_STATUS.UNVERIFIED, "engine geometry is not UI selection evidence");
   assert.equal(judgeImmediateClick({ ...good, clicks: good.clicks.slice(0, 1) }).status, FIDELITY_STATUS.UNVERIFIED);
   assert.equal(judgeImmediateClick({ selected: true }).status, FIDELITY_STATUS.UNVERIFIED);
+  const wrongTarget = { ...structuredClone(good), preEdit: { selectedIds: ["underlay"], geometry: { x: 400, y: 140 } } };
+  assert.equal(judgeImmediateClick(wrongTarget).status, FIDELITY_STATUS.UNVERIFIED, "the edit was applied to an unverified selection");
+  const { preEdit: _omitted, ...noPreEdit } = structuredClone(good);
+  assert.equal(judgeImmediateClick(noPreEdit).status, FIDELITY_STATUS.UNVERIFIED);
+  const offPlan = { ...structuredClone(good), geometryAfter: { x: 300, y: 140 } };
+  assert.equal(judgeImmediateClick(offPlan).status, FIDELITY_STATUS.UNVERIFIED, "geometry outside the planned tolerance invalidates the click oracle");
 });
 
 test("low-zoom performance separates renderer counters from frame timing and never auto-passes", async () => {
@@ -287,17 +304,38 @@ test("low-zoom performance separates renderer counters from frame timing and nev
   assert.equal(judgeLowZoomPerformance({ ...base, renderer: counters, frames: { count: 0, intervalsMs: [] } }).status, FIDELITY_STATUS.UNVERIFIED);
 });
 
-test("save/reopen stability compares exact serialized bytes and layer identity", async () => {
-  const { judgeSaveReopen, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const good = { path: "designs/a.codesign.json", saved: fileState("a", 5), resaved: fileState("a", 5), reopened: fileState("a", 5),
-    canonicalSha256: hex("a"), saveStateAfterSave: "saved", layerIdsBefore: ["a", "b"], layerIdsAfterReopen: ["a", "b"], dirtyAfterReopen: "idle" };
+test("save/reopen requires verified edits, a saved disk with the expected nodes, the same DOM after reload and a stable second save", async () => {
+  const { judgeSaveReopen, expectedStateAfterEdits, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const expected = expectedStateAfterEdits();
+  assert.deepEqual(expected.map(node => node.id).sort(), ["edit-target", "move-target"]);
+  const baseline = [{ id: "underlay", x: 400, y: 140 }, { id: "move-target", x: 120, y: 140 }, { id: "edit-target", x: 120, y: 320, text: "Edit me HMI" }];
+  const final = baseline.map(node => ({ ...node, ...(expected.find(value => value.id === node.id) ?? {}) }));
+  const good = { path: "designs/a.codesign.json", editsVerified: { operations: ["drag", "inspector-x", "text-edit"], statuses: ["PASS", "PASS", "PASS"] },
+    pathBeforeSave: "designs/a.codesign.json", expected, baselineNodes: baseline,
+    firstSave: { kind: "saved", file: fileState("a", 5) }, diskNodesAfterFirstSave: final,
+    domAfterReload: expected.map(node => ({ ...node })), layerIdsBefore: ["underlay", "move-target", "edit-target"],
+    layerIdsAfterReopen: ["underlay", "move-target", "edit-target"], dirtyAfterReopen: "idle",
+    secondSave: { kind: "saved", file: fileState("a", 9) }, canonicalSha256: hex("a") };
   assert.equal(judgeSaveReopen(good).status, FIDELITY_STATUS.PASS);
-  assert.equal(judgeSaveReopen({ ...good, resaved: fileState("b", 6) }).status, FIDELITY_STATUS.FAIL);
+  // Real negative controls
+  assert.equal(judgeSaveReopen({ ...good, firstSave: { kind: "error", file: fileState("a", 5) } }).status, FIDELITY_STATUS.FAIL, "save failure");
+  assert.equal(judgeSaveReopen({ ...good, diskNodesAfterFirstSave: baseline }).status, FIDELITY_STATUS.FAIL, "disk still holds the old unsaved draft");
+  const otherEdited = final.map(node => node.id === "underlay" ? { ...node, x: 200 } : node);
+  assert.equal(judgeSaveReopen({ ...good, diskNodesAfterFirstSave: otherEdited }).status, FIDELITY_STATUS.FAIL, "a non-target node was edited");
+  assert.equal(judgeSaveReopen({ ...good, secondSave: { kind: "error", file: fileState("a", 9) } }).status, FIDELITY_STATUS.FAIL, "second save error");
+  assert.equal(judgeSaveReopen({ ...good, secondSave: { kind: "saved", file: fileState("b", 9) } }).status, FIDELITY_STATUS.FAIL, "second save changed bytes");
+  assert.equal(judgeSaveReopen({ ...good, domAfterReload: expected.map(node => node.id === "edit-target" ? { ...node, text: "Edit me HMI" } : node) }).status,
+    FIDELITY_STATUS.FAIL, "reloaded DOM shows other text");
   assert.equal(judgeSaveReopen({ ...good, canonicalSha256: hex("c") }).status, FIDELITY_STATUS.FAIL);
-  assert.equal(judgeSaveReopen({ ...good, layerIdsAfterReopen: ["b", "a"] }).status, FIDELITY_STATUS.FAIL);
   assert.equal(judgeSaveReopen({ ...good, dirtyAfterReopen: "dirty" }).status, FIDELITY_STATUS.FAIL);
-  assert.equal(judgeSaveReopen({ ...good, saveStateAfterSave: "error" }).status, FIDELITY_STATUS.FAIL);
-  assert.equal(judgeSaveReopen({ ...good, reopened: undefined }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, layerIdsAfterReopen: ["move-target", "underlay", "edit-target"] }).status, FIDELITY_STATUS.FAIL);
+  // Unobserved steps are never a pass
+  assert.equal(judgeSaveReopen({ ...good, editsVerified: { operations: ["drag"], statuses: ["UNVERIFIED"] } }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, editsVerified: true }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, pathBeforeSave: "designs/other.codesign.json" }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, domAfterReload: undefined }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, secondSave: undefined }).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeSaveReopen({ ...good, diskNodesAfterFirstSave: final.filter(node => node.id !== "edit-target") }).status, FIDELITY_STATUS.UNVERIFIED);
   assert.equal(judgeSaveReopen({ stable: true }).status, FIDELITY_STATUS.UNVERIFIED);
 });
 
@@ -331,8 +369,8 @@ test("SVG corner-AA probes map only real semantic statuses and require the exact
 test("report summary never declares the goal complete and keeps gaps visible", async () => {
   const { summarizeFidelityReport, planDesignStudioFidelityScenarios, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const plan = planDesignStudioFidelityScenarios({ sample: false });
-  assert.deepEqual(plan.map(value => value.id), ["open-without-edit", "immediate-click-after-edit", "low-zoom-fractional-performance",
-    "save-reopen-stable", "same-camera-visual", "svg-corner-aa-host"]);
+  assert.deepEqual(plan.map(value => value.id), ["open-without-edit", "immediate-click-after-edit", "save-reopen-stable",
+    "low-zoom-fractional-performance", "same-camera-visual", "svg-corner-aa-host"]);
   for (const scenario of plan) {
     assert.ok(scenario.fixture && scenario.steps.length && scenario.observables.length, scenario.id);
   }
@@ -352,10 +390,7 @@ test("report summary never declares the goal complete and keeps gaps visible", a
 });
 
 test("every fixture has one page because switching pages marks the document dirty", async () => {
-  const { buildDesignStudioFidelityFixtures } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const fixtures = buildDesignStudioFidelityFixtures({ codec: await import("../apps/design-studio/app/document.mjs"),
-    textMetrics: await import("../apps/design-studio/app/text-metrics.mjs") });
-  for (const fixture of fixtures) assert.equal(JSON.parse(fixture.bytes).pages.length, 1, fixture.relativePath);
+  for (const fixture of await loadFixtures()) assert.equal(JSON.parse(fixture.logicalSource).pages.length, 1, fixture.relativePath);
 });
 
 /* ---- Electron-specific runner: exercised only with fake owned handles ---- */
@@ -423,12 +458,10 @@ test("scenarios with absent DOM observables are UNVERIFIED rather than filled wi
   const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
   const directory = await scratch("ds-fidelity-runner-");
   try {
-    const codec = await import("../apps/design-studio/app/document.mjs");
-    const { buildDesignStudioFidelityFixtures } = await import("../scripts/design-studio-host-fidelity.mjs");
-    const fixtures = buildDesignStudioFidelityFixtures({ codec, textMetrics: await import("../apps/design-studio/app/text-metrics.mjs") });
-    for (const fixture of fixtures) {
-      await mkdir(join(directory, dirname(fixture.relativePath)), { recursive: true });
-      await writeFile(join(directory, fixture.relativePath), fixture.bytes);
+    const fixtures = await loadFixtures();
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      await mkdir(join(directory, dirname(file.relativePath)), { recursive: true });
+      await writeFile(join(directory, file.relativePath), file.bytes, { flag: "wx" });
     }
     const waits = [];
     const guest = { execute: async () => null, view: { evaluate: async () => null } };
@@ -455,31 +488,15 @@ test("check-panel-desktop wires fidelity only behind the explicit flag inside th
   assert.ok(run > tryStart && run < finallyStart, "fidelity must run inside the existing owned-cleanup try/finally");
   assert.match(source.slice(source.lastIndexOf("if (", run), run), /designStudioFidelity/);
   assert.match(source, /HASHED_HOST_BUILD_FILES/);
-  const outputs = source.indexOf("assertFidelityOutputsAbsent(reportArgument)");
+  const outputs = source.indexOf("claimFidelityOutputs(reportArgument)");
   assert.ok(outputs > 0 && outputs < temporary, "create-only report/artifact check must precede any temporary HOME");
   assert.doesNotMatch(source, /process\.env\.[A-Z_]*FIDELITY/);
 });
 
-test("fidelity outputs are create-only: an existing report or artifacts directory is refused before launch", async () => {
-  const { assertFidelityOutputsAbsent } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const directory = await scratch("ds-fidelity-output-");
-  try {
-    const report = join(directory, "report.json");
-    assert.deepEqual(await assertFidelityOutputsAbsent(report), { reportPath: report, artifactsDirectory: `${report}.artifacts` });
-    await mkdir(`${report}.artifacts`);
-    await assert.rejects(assertFidelityOutputsAbsent(report), /already exists/);
-    await rm(`${report}.artifacts`, { recursive: true });
-    await writeFile(report, "{}");
-    await assert.rejects(assertFidelityOutputsAbsent(report), /already exists/);
-    await assert.rejects(assertFidelityOutputsAbsent(join(repository, ".tmp/x.json")), /outside the repository/);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
 test("installed SVG export of the corner-AA fixture maps every probe to exact device geometry", async () => {
-  const { buildDesignStudioFidelityFixtures, svgReferenceGeometry, FIDELITY_FIXTURE_PATHS } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const codec = await import("../apps/design-studio/app/document.mjs");
-  const fixture = buildDesignStudioFidelityFixtures({ codec, textMetrics: await import("../apps/design-studio/app/text-metrics.mjs") })
-    .find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.svgCornerAa);
+  const { svgReferenceGeometry, FIDELITY_FIXTURE_PATHS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { codec } = await studioModules();
+  const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.svgCornerAa);
   const svg = codec.exportDesignSvg(codec.normalizeDesignDocument(JSON.parse(fixture.bytes)));
   const geometry = svgReferenceGeometry(svg);
   assert.deepEqual(geometry.viewport, { width: 400, height: 400 });
@@ -489,4 +506,197 @@ test("installed SVG export of the corner-AA fixture maps every probe to exact de
   for (const id of ["chat-vertical", "chat-horizontal", "panels-vertical", "panels-horizontal"])
     assert.match(svg, new RegExp(`data-node-id="svg-corner-${id}"`));
   assert.equal(svgReferenceGeometry("<svg></svg>"), null);
+});
+
+
+/* ---- Review fixes: I1 real hit-test oracle on the canonical fixture ---- */
+test("interaction plan expectations match the real hitTestCanvasNode on the canonical fixture at planned geometry", async () => {
+  const { INTERACTION_PLAN, FIDELITY_FIXTURE_PATHS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { hitTestCanvasNode } = await import("../apps/design-studio/app/canvas-interaction.mjs");
+  const { codec } = await studioModules();
+  const fixture = (await loadFixtures()).find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.interaction);
+  const page = codec.normalizeDesignDocument(JSON.parse(fixture.logicalSource)).pages[0];
+  const order = page.nodes.map(node => node.id);
+  assert.ok(order.indexOf("move-target") > order.indexOf("underlay"), "move-target must paint (and hit) above underlay");
+  let nodes = page.nodes;
+  const at = (overrides, point) => hitTestCanvasNode({ ...page, nodes: nodes.map(node => overrides[node.id] ? { ...node, ...overrides[node.id] } : node) }, point)?.id ?? null;
+  for (const step of INTERACTION_PLAN) {
+    const target = nodes.find(node => node.id === step.targetId);
+    assert.ok(Math.abs(target.x - step.before.x) <= (step.beforeTolerance ?? 0) && Math.abs(target.y - step.before.y) <= (step.beforeTolerance ?? 0), step.operation);
+    const offsets = step.tolerance ? [-step.tolerance, 0, step.tolerance] : [0];
+    for (const dx of offsets) for (const click of step.clicks) {
+      const actual = at({ [step.targetId]: { x: step.after.x + dx, y: step.after.y } }, click.world);
+      assert.equal(actual, click.expected[0] ?? null, `${step.operation} ${click.label} dx=${dx}`);
+    }
+    nodes = nodes.map(node => node.id === step.targetId ? { ...node, x: step.after.x, y: step.after.y, ...(step.text ? { text: step.text } : {}) } : node);
+  }
+});
+
+test("pre-edit guard refuses an edit unless the DOM selection and geometry are the planned target", async () => {
+  const { INTERACTION_PLAN, guardPreEdit } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const [drag, inspector] = INTERACTION_PLAN;
+  assert.deepEqual(guardPreEdit(drag, { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } }), []);
+  assert.deepEqual(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 391, y: 140 } }), []);
+  assert.ok(guardPreEdit(inspector, { selectedIds: ["underlay"], geometry: { x: 400, y: 140 } }).length);
+  assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target", "underlay"], geometry: { x: 380, y: 140 } }).length);
+  assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } }).length, "drag never happened");
+  assert.ok(guardPreEdit(drag, { selectedIds: null, geometry: null }).length);
+});
+
+/* ---- I2 byte budgets and the real indexed protocol ---- */
+test("every fixture file fits the real Host readText budget; large text uses the real index codec and reconstructs canonically", async () => {
+  const { HOST_READ_TEXT_MAX_BYTES, FIDELITY_FIXTURE_PATHS, readFixtureDocument } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { codec, documentIndex } = await studioModules();
+  const bundle = await import("../apps/design-studio/app/document-bundle.mjs");
+  assert.equal(HOST_READ_TEXT_MAX_BYTES, 480 * 1024);
+  const fixtures = await loadFixtures();
+  for (const fixture of fixtures) for (const file of fixture.files) {
+    const bytes = Buffer.byteLength(file.bytes);
+    assert.ok(bytes <= HOST_READ_TEXT_MAX_BYTES, `${file.relativePath} is ${bytes} bytes`);
+    assert.equal(file.sha256, sha256(file.bytes));
+    if (file.relativePath === fixture.relativePath) assert.ok(bytes <= bundle.MAX_WORKSPACE_DESIGN_TEXT_BYTES, `${file.relativePath} primary exceeds the app budget`);
+    else assert.ok(bytes <= bundle.MAX_DESIGN_BUNDLE_PART_BYTES && bytes >= 1, `${file.relativePath} part is ${bytes} bytes`);
+  }
+  const large = fixtures.find(value => value.relativePath === FIDELITY_FIXTURE_PATHS.largeText);
+  assert.equal(large.storage, "indexed");
+  assert.ok(Buffer.byteLength(large.logicalSource) > HOST_READ_TEXT_MAX_BYTES, "the logical document really exceeds one readText");
+  assert.ok(large.files.length >= 3, "manifest plus at least two page parts");
+  assert.ok(large.files.slice(1).every(file => file.relativePath.startsWith("designs/codesign-data/pages/")));
+  const memory = new Map(large.files.map(file => [file.relativePath, file.bytes]));
+  const resolved = await documentIndex.resolveDesignIndexDocument({ primarySource: large.bytes,
+    readText: async path => { assert.ok(memory.has(path), path); return memory.get(path); },
+    sha256: async value => sha256(value) });
+  assert.equal(codec.serializeDesignDocument(codec.normalizeDesignDocument(resolved.document)), large.logicalSource);
+  const texts = codec.normalizeDesignDocument(resolved.document).pages[0].nodes.filter(node => node.type === "text");
+  assert.ok(texts.length >= 1000);
+  const directory = await scratch("ds-fidelity-indexed-");
+  try {
+    for (const file of large.files) {
+      await mkdir(join(directory, dirname(file.relativePath)), { recursive: true });
+      await writeFile(join(directory, file.relativePath), file.bytes, { flag: "wx" });
+    }
+    const read = await readFixtureDocument({ projectDirectory: directory, relativePath: large.relativePath, codec, documentIndex });
+    assert.equal(codec.serializeDesignDocument(read), large.logicalSource);
+    await writeFile(join(directory, large.files[1].relativePath), large.files[1].bytes.replace("Dashboard", "Dashboarx"));
+    await assert.rejects(readFixtureDocument({ projectDirectory: directory, relativePath: large.relativePath, codec, documentIndex }), /摘要|sha|digest/i);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+/* ---- I3 output paths: real symlinks, dangling links, races, create-only ---- */
+test("output claim follows the real parent, rejects symlinks into the repository and dangling links", async () => {
+  const { claimFidelityOutputs } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { symlink, lstat } = await import("node:fs/promises");
+  const directory = await scratch("ds-fidelity-claim-");
+  try {
+    const outside = join(directory, "outside");
+    await mkdir(outside);
+    const claimed = await claimFidelityOutputs(join(outside, "report.json"));
+    assert.equal(claimed.reportPath, join(await (await import("node:fs/promises")).realpath(outside), "report.json"));
+    assert.ok((await lstat(claimed.artifactsDirectory)).isDirectory());
+    assert.ok(claimed.ownedArtifactsDirectory);
+    // Parent symlink pointing into the repository: nothing may be created there.
+    const intoRepository = join(directory, "into-repository");
+    await symlink(join(repository, "docs"), intoRepository);
+    await assert.rejects(claimFidelityOutputs(join(intoRepository, "never-created.json")), /outside the repository/);
+    await assert.rejects(lstat(join(repository, "docs", "never-created.json.artifacts")), /ENOENT/);
+    // Dangling symlinks at either output path are existing entries.
+    const dangling = join(outside, "dangling.json");
+    await symlink(join(directory, "missing-target"), dangling);
+    await assert.rejects(claimFidelityOutputs(dangling), /already exists/);
+    const danglingArtifacts = join(outside, "b.json");
+    await symlink(join(directory, "missing-dir"), `${danglingArtifacts}.artifacts`);
+    await assert.rejects(claimFidelityOutputs(danglingArtifacts), /already exists/);
+    await assert.rejects(lstat(join(directory, "missing-dir")), /ENOENT/, "a dangling artifacts link must not be followed");
+    // A directory that appears between the checks and the claim is never accepted.
+    const raced = join(outside, "raced.json");
+    await assert.rejects(claimFidelityOutputs(raced, { beforeCreate: () => mkdir(`${raced}.artifacts`) }), /EEXIST|already exists/);
+    await assert.rejects(claimFidelityOutputs(join(outside, "absent-parent", "r.json")), /ENOENT|parent/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("report and capture writes are create-only inside the owned artifacts directory", async () => {
+  const { claimFidelityOutputs, writeCreateOnly } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { writeArtifactPng } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const { symlink } = await import("node:fs/promises");
+  const directory = await scratch("ds-fidelity-create-only-");
+  try {
+    const claimed = await claimFidelityOutputs(join(directory, "report.json"));
+    await writeCreateOnly(claimed.reportPath, "{}\n");
+    await assert.rejects(writeCreateOnly(claimed.reportPath, "{\"overwritten\":true}"), /EEXIST/);
+    assert.equal(await readFile(claimed.reportPath, "utf8"), "{}\n");
+    const png = (await import("pngjs")).PNG.sync.write(Object.assign(new (await import("pngjs")).PNG({ width: 2, height: 1 }), { data: Buffer.from([0, 0, 0, 255, 255, 255, 255, 255]) }));
+    const first = await writeArtifactPng(claimed.artifactsDirectory, "visual-100-gpu", png);
+    assert.equal(first.summary.distinctColors, 2);
+    await assert.rejects(writeArtifactPng(claimed.artifactsDirectory, "visual-100-gpu", png), /EEXIST/);
+    await symlink(join(directory, "elsewhere.png"), join(claimed.artifactsDirectory, "linked.png"));
+    await assert.rejects(writeArtifactPng(claimed.artifactsDirectory, "linked", png), /EEXIST/);
+    await assert.rejects(readFile(join(directory, "elsewhere.png")), /ENOENT/);
+    await assert.rejects(writeArtifactPng(claimed.artifactsDirectory, "../escape", png), /label/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+/* ---- M bounded local timeouts with owned cancellation ---- */
+test("a pending guest call times out locally, terminates only the owned guest and waits for settlement", async () => {
+  const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const directory = await scratch("ds-fidelity-timeout-");
+  try {
+    const fixtures = await loadFixtures();
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      await mkdir(join(directory, dirname(file.relativePath)), { recursive: true });
+      await writeFile(join(directory, file.relativePath), file.bytes, { flag: "wx" });
+    }
+    const pending = new Set();
+    let removed = 0, settled = 0;
+    const guest = {
+      execute: () => new Promise((_resolve, reject) => { const entry = { reject }; pending.add(entry); }).finally(() => { settled++; }),
+      remove: async () => { removed++; for (const entry of pending) entry.reject(new Error("guest destroyed")); pending.clear(); },
+      view: { evaluate: async () => null },
+    };
+    const started = Date.now();
+    const report = await runDesignStudioHostFidelity({ enabled: true, guest, guestWebContentsId: 7, app: fakeElectron().app,
+      projectDirectory: directory, packageDirectory: join(repository, "apps/design-studio"), fixtures,
+      wait: async () => {}, timeoutMs: 40, settleTimeoutMs: 40 });
+    assert.ok(Date.now() - started < 5000, "runner must return within a local bound");
+    assert.equal(removed, 1, "only the owned guest is terminated, once");
+    assert.equal(pending.size, 0);
+    assert.ok(settled >= 1, "the pending operation settled before the runner continued");
+    assert.match(report.results[0].reasons.join(), /timed out/);
+    assert.ok(report.results.slice(1).every(result => result.status === "UNVERIFIED" && /aborted/.test(result.reasons.join())));
+    assert.equal(report.terminatedGuest, true);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("an operation that never settles after cancellation is reported unsettled without hanging", async () => {
+  const { boundedOwnedOperation } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  let cancelled = 0;
+  const started = Date.now();
+  await assert.rejects(boundedOwnedOperation(() => new Promise(() => {}), { label: "stuck", timeoutMs: 20, settleTimeoutMs: 20,
+    cancel: async () => { cancelled++; } }), error => error.unsettled === true && /stuck/.test(error.message));
+  assert.equal(cancelled, 1);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(await boundedOwnedOperation(async () => 5, { label: "fast", timeoutMs: 20, settleTimeoutMs: 20, cancel: async () => { cancelled++; } }), 5);
+  assert.equal(cancelled, 1, "no cancellation for an operation that finished in time");
+});
+
+test("reference load/capture have a local deadline that destroys the owned window before settling", async () => {
+  const { captureReferenceHtml } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const windows = [];
+  let loadSettled = false;
+  class HangingWindow {
+    constructor(options) {
+      this.options = options; this.destroyed = false; windows.push(this);
+      let rejectLoad;
+      this.webContents = { once: () => {}, loadURL: () => new Promise((_resolve, reject) => { rejectLoad = reject; }).finally(() => { loadSettled = true; }),
+        capturePage: async () => { throw new Error("unreachable"); } };
+      this.destroy = () => { this.destroyed = true; rejectLoad?.(new Error("ERR_ABORTED")); };
+    }
+    isDestroyed() { return this.destroyed; }
+  }
+  const electron = { BrowserWindow: HangingWindow, session: { fromPartition: () => ({ webRequest: { onBeforeRequest: () => {} } }) } };
+  const started = Date.now();
+  await assert.rejects(captureReferenceHtml({ evaluate: async (fn, argument) => fn(electron, argument) },
+    { html: "<p>x</p>", width: 10, height: 10, timeoutMs: 30, settleTimeoutMs: 30 }), /timed out/);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(windows[0].destroyed, true);
+  assert.equal(loadSettled, true, "the pending load settled after the owned window was destroyed");
 });
