@@ -8,20 +8,22 @@ import { PNG } from "pngjs";
 import {
   SNAP_CASES, SNAP_CAMERAS, LAYOUT_OFFSETS, SNAP_THRESHOLDS, snapProbeDocument, inferLayoutQuantum, coverageStats,
   predictBoxEdges, predictBaselineDevice, fitSnapCase, snapProbeCollectSource, snapProbeMountSource, snapProbeUnmountSource,
+  SNAP_INTER, GPU_HTML_THRESHOLDS, snapProbeSources, compareGpuToHtml, snapProbeGpuMountSource, snapProbeGpuUnmountSource,
 } from "../scripts/design-studio-snap-probe.mjs";
+import { createHash } from "node:crypto";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("six probe cases form one canonical codec document with fractional phases", async () => {
   const codec = await import("../apps/design-studio/app/document.mjs");
-  assert.deepEqual(SNAP_CASES.map(value => value.id), ["default-inter", "finite", "menlo-prompt", "arial-button", "gray-strip", "small-rect"]);
+  assert.deepEqual(SNAP_CASES.map(value => value.id), ["inter-resource", "finite", "menlo-prompt", "arial-button", "gray-strip", "small-rect"]);
   const source = codec.serializeDesignDocument(codec.normalizeDesignDocument(snapProbeDocument()));
   assert.equal(codec.serializeDesignDocument(codec.normalizeDesignDocument(JSON.parse(source))), source);
   const nodes = codec.normalizeDesignDocument(JSON.parse(source)).pages[0].nodes;
   assert.ok(nodes.find(node => node.id === "finite").layoutBaselineOffset === 3.5);
   assert.ok(nodes.find(node => node.id === "gray-strip").rotation === 45);
-  assert.deepEqual(SNAP_CAMERAS.map(camera => camera.label), ["z1", "z2", "fit"]);
-  assert.ok(SNAP_CAMERAS.every(camera => !Number.isInteger(camera.panX) && !Number.isInteger(camera.panY)), "fractional .3 pan");
+  assert.deepEqual(SNAP_CAMERAS.map(camera => camera.label), ["z1", "z2", "fit", "z1-pan"]);
+  assert.ok(SNAP_CAMERAS.every(camera => !Number.isInteger(camera.panX) && !Number.isInteger(camera.panY)), "fractional pans");
   assert.deepEqual(LAYOUT_OFFSETS, [0.01, 1 / 128, 1 / 64, 0.3, 0.51, 0.75]);
   assert.deepEqual(SNAP_THRESHOLDS, { edgeDevicePx: 0.25, centroidDevicePx: 0.15, inkBias: 0.03 });
 });
@@ -91,4 +93,61 @@ test("the headless cross-check is offline, bounded and never reads a user profil
   assert.match(source, /forced-dsf2/);
   assert.doesNotMatch(source, /userDataDir|launchPersistentContext/);
   assert.match(source, /timeout/);
+});
+
+test("Inter is an actual document font resource (bytes + alias), never the app 'Inter' family name", async () => {
+  const codec = await import("../apps/design-studio/app/document.mjs"), resourceStore = await import("../apps/design-studio/app/resource-store.mjs");
+  const interBytes = await readFile(join(repository, "apps/design-studio/app", SNAP_INTER.path));
+  const { logicalSource, interBase64, interDescriptor } = await snapProbeSources({ codec, resourceStore, interBytes,
+    sha256Hex: bytes => createHash("sha256").update(bytes).digest("hex") });
+  const design = codec.normalizeDesignDocument(JSON.parse(logicalSource));
+  assert.deepEqual(design.resources, [interDescriptor]);
+  assert.equal(interDescriptor.family, SNAP_INTER.family);
+  assert.equal(interDescriptor.sha256, createHash("sha256").update(interBytes).digest("hex"));
+  assert.equal(Buffer.from(interBase64, "base64").length, interBytes.length);
+  const node = design.pages[0].nodes.find(value => value.id === "inter-resource");
+  assert.equal(node.fontFamily, SNAP_INTER.family);
+  assert.equal(node.fontWeight, interDescriptor.weight, "no synthetic bold in either route");
+  assert.ok(design.pages[0].nodes.every(value => value.fontFamily !== "Inter"));
+  const collect = snapProbeCollectSource({ logicalSource, moduleBase: "./", interBase64 });
+  assert.match(collect, /new FontFace\(inter\.alias, Uint8Array\.from\(atob/u, "the HTML route loads the same bytes");
+  assert.match(collect, /loadMs/u, "load promise timing is recorded");
+});
+
+function solidPng(width, height, boxes, fg = [0x1f, 0x23, 0x28]) {
+  const image = new PNG({ width, height }); image.data.fill(255);
+  for (const box of boxes) for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const cover = Math.max(0, Math.min(x + 1, box.x + box.w) - Math.max(x, box.x)) * Math.max(0, Math.min(y + 1, box.y + box.h) - Math.max(y, box.y));
+    if (!cover) continue; const o = (y * width + x) * 4, alpha = cover * (box.alpha ?? 1), color = box.fg ?? fg;
+    for (let c = 0; c < 3; c++) image.data[o + c] = Math.round(255 + alpha * (color[c] - 255));
+  }
+  return image;
+}
+
+test("GPU/HTML comparison applies centroid, 50% edge and ink limits per case; 4% ink only for real-font text, with a reason", () => {
+  assert.deepEqual(GPU_HTML_THRESHOLDS, { centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03, realFontInkBias: 0.04 });
+  const camera = { label: "t", zoom: 1, panX: 0, panY: 0 }, dpr = 1;
+  const arial = SNAP_CASES.find(value => value.id === "arial-button").node, rect = SNAP_CASES.find(value => value.id === "small-rect").node;
+  // Same geometry, 3.5% lighter HTML ink: only the ink limit differs between text and shapes.
+  const box = (node, dy = 0, alpha = 0.965) => ({ x: node.x + 2, y: node.y + 4 + dy, w: 20, h: 10, alpha });
+  const html = solidPng(420, 160, [box(arial), { fg: [0x68, 0x6e, 0x67], x: rect.x, y: rect.y, w: 2, h: 7, alpha: 0.965 }]);
+  const same = compareGpuToHtml({ htmlImage: html, gpuImage: html, camera, dpr });
+  assert.ok(same.filter(row => ["arial-button", "small-rect"].includes(row.id)).every(row => row.pass && row.centroid === 0 && row.ink === 0));
+  const shifted = compareGpuToHtml({ htmlImage: html, gpuImage: solidPng(420, 160, [box(arial, 1), { fg: [0x68, 0x6e, 0x67], x: rect.x, y: rect.y, w: 2, h: 7, alpha: 0.965 }]), camera, dpr });
+  const row = shifted.find(value => value.id === "arial-button");
+  assert.equal(row.pass, false); assert.match(row.misses.join(), /centroid 1\.000/); assert.ok(Math.abs(row.centroidDelta[1] - 1) < 1e-9);
+  const inky = compareGpuToHtml({ htmlImage: html, gpuImage: solidPng(420, 160, [box(arial, 0, 1), { fg: [0x68, 0x6e, 0x67], x: rect.x, y: rect.y, w: 2, h: 7 }]), camera, dpr });
+  assert.ok(inky.find(value => value.id === "arial-button").ink > 0.03);
+  const text = inky.find(value => value.id === "arial-button"), shape = inky.find(value => value.id === "small-rect");
+  assert.equal(text.inkLimit, 0.04); assert.match(text.inkReason, /real font/); assert.equal(text.pass, true);
+  assert.equal(shape.inkLimit, 0.03); assert.equal(shape.inkReason, null); assert.equal(shape.pass, false);
+});
+
+test("the GPU probe source drives only the installed renderer in a probe-owned host and disposes it", () => {
+  const mount = snapProbeGpuMountSource({ logicalSource: "{}", moduleBase: "./", camera: SNAP_CAMERAS[0], size: { width: 10, height: 10 } });
+  const unmount = snapProbeGpuUnmountSource();
+  for (const source of [mount, unmount]) assert.doesNotMatch(source, /userAgent|fetch\(|XMLHttpRequest|https?:\/\/|WebSocket/u);
+  assert.match(mount, /canvas\/canvaskit-renderer\.mjs/);
+  assert.match(mount, /renderer\.resize\(10, 10, window\.devicePixelRatio\)/);
+  assert.match(unmount, /dispose\(\)/);
 });

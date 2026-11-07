@@ -13,8 +13,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
-import { SNAP_CAMERAS, SNAP_PROBE_SIZE, analyzeSnapCapture, inferLayoutQuantum, snapProbeCollectSource, snapProbeDocument,
-  snapProbeMountSource, snapProbeUnmountSource } from "./design-studio-snap-probe.mjs";
+import { GPU_DIAGNOSTIC_VARIANT, SNAP_CAMERAS, SNAP_INTER, SNAP_PROBE_SIZE, analyzeSnapCapture, compareGpuToHtml, inferLayoutQuantum, snapProbeCollectSource,
+  snapProbeGpuMountSource, snapProbeGpuUnmountSource, snapProbeMountSource, snapProbeSources, snapProbeUnmountSource } from "./design-studio-snap-probe.mjs";
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
   readFixtureDocument, zoomMatches, VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop,
@@ -629,24 +629,43 @@ export async function runDesignStudioHostFidelity(options) {
   // Probe 3 (run4 review): which pixel grid does this real Electron/display use? P1 layout, P2 font
   // metrics, P3 six cases at z1/z2/fit (+.3 pan); markup is mounted in a probe-owned open shadow root.
   await probeStep("probe-snap-grid", async () => {
-    const logicalSource = codec.serializeDesignDocument(codec.normalizeDesignDocument(snapProbeDocument()));
-    const collect = await dom(snapProbeCollectSource({ logicalSource, moduleBase: "./" }));
+    const { logicalSource, interBase64 } = await snapProbeSources({ codec, resourceStore: await module("resource-store.mjs"),
+      interBytes: await readFile(join(packageDirectory, "app", SNAP_INTER.path)), sha256Hex: sha256 });
+    const collect = await dom(snapProbeCollectSource({ logicalSource, moduleBase: "./", interBase64 }));
     if (!collect?.markup) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["snap probe collection unavailable"] };
-    const captures = [];
+    const captures = [], comparisons = [];
+    const capture = async host => {
+      const shot = await evaluateMain(async ({ webContents }, { id, rect }) => {
+        const image = await webContents.fromId(id).capturePage(rect);
+        return { pngBase64: image.toPNG().toString("base64"), size: image.getSize() };
+      }, { id: guestWebContentsId, rect: { x: Math.round(host.x), y: Math.round(host.y), width: Math.round(host.width), height: Math.round(host.height) } });
+      return Buffer.from(shot.pngBase64, "base64");
+    };
     try {
       for (const value of SNAP_CAMERAS) {
         const mount = await dom(snapProbeMountSource({ markup: collect.markup, camera: value, size: SNAP_PROBE_SIZE }));
-        const shot = await evaluateMain(async ({ webContents }, { id, rect }) => {
-          const image = await webContents.fromId(id).capturePage(rect);
-          return { pngBase64: image.toPNG().toString("base64"), size: image.getSize() };
-        }, { id: guestWebContentsId, rect: { x: Math.round(mount.host.x), y: Math.round(mount.host.y), width: Math.round(mount.host.width), height: Math.round(mount.host.height) } });
+        const html = await capture(mount.host);
         await dom(snapProbeUnmountSource());
-        const evidence = await saveArtifact(`snap-${value.label}`, Buffer.from(shot.pngBase64, "base64"));
+        const evidence = await saveArtifact(`snap-${value.label}`, html);
         const dpr = evidence.image.width / mount.host.width;
         captures.push({ camera: value, dpr, png: evidence.summary, mount, rows: analyzeSnapCapture({ image: evidence.image, camera: value, dpr, collect, mount }) });
+        // Same page, same camera: the installed CanvasKit renderer against that HTML capture.
+        const gpuMount = await dom(snapProbeGpuMountSource({ logicalSource, moduleBase: "./", camera: value, size: SNAP_PROBE_SIZE }));
+        const gpu = await saveArtifact(`gpu-${value.label}`, await capture(gpuMount.host));
+        await dom(snapProbeGpuUnmountSource());
+        // Diagnostic only, not counted: rotated leaves drawn by CanvasKit directly (no device shape raster).
+        const directMount = await dom(snapProbeGpuMountSource({ logicalSource, moduleBase: "./", camera: value, size: SNAP_PROBE_SIZE, rendererOptions: GPU_DIAGNOSTIC_VARIANT.rendererOptions }));
+        const direct = await saveArtifact(`${GPU_DIAGNOSTIC_VARIANT.label}-${value.label}`, await capture(directMount.host));
+        await dom(snapProbeGpuUnmountSource());
+        comparisons.push({ camera: value, dpr, png: gpu.summary, gpuStats: gpuMount.stats, rows: compareGpuToHtml({ htmlImage: evidence.image, gpuImage: gpu.image, camera: value, dpr }),
+          diagnostic: { variant: GPU_DIAGNOSTIC_VARIANT.label, rows: compareGpuToHtml({ htmlImage: evidence.image, gpuImage: direct.image, camera: value, dpr })
+            .filter(row => GPU_DIAGNOSTIC_VARIANT.cases.includes(row.id)) } });
       }
-    } finally { await dom(snapProbeUnmountSource()).catch(() => {}); }
-    return { status: FIDELITY_STATUS.EVIDENCE_ONLY, environment: collect.env, inter: collect.inter, fonts: collect.fonts, gpu: collect.gpu,
+    } finally { await dom(snapProbeUnmountSource()).catch(() => {}); await dom(snapProbeGpuUnmountSource()).catch(() => {}); }
+    const rows = comparisons.flatMap(value => value.rows);
+    return { status: FIDELITY_STATUS.EVIDENCE_ONLY, environment: collect.env, inter: collect.inter, fonts: collect.fonts, gpu: collect.gpu, profile: collect.profile,
+      gpuHtml: { pass: rows.filter(row => row.pass).length, total: rows.length, failures: rows.filter(row => !row.pass).map(row => `${row.camera}/${row.id}: ${row.misses.join("; ")}`) },
+      comparisons,
       layout: { plain: inferLayoutQuantum(collect.layout.plain.map(v => ({ requested: v.requested, measured: v.left }))),
         scaled: inferLayoutQuantum(collect.layout.scaled.map(v => ({ requested: v.requested * 2, measured: v.left }))), raw: collect.layout }, captures };
   });

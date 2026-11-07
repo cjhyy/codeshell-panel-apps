@@ -2,20 +2,27 @@
  * LayoutUnits before snapping paint edges. Rotated leaves instead snap the
  * translation/local dimensions, retaining a LayoutUnit transform-origin.
  * All coordinates and pivots are CSS pixels, before device/view scaling.
- * Saved layout, SVG and text origins remain owned by their existing paths. */
+ * Saved layout, SVG and text origins remain owned by their existing paths.
+ *
+ * `layoutScale` is the document's layout zoom. Under DevTools-emulated DSF it
+ * is 1 (CSS LayoutUnits, CSS-pixel snapping). Under a real device scale Blink
+ * zooms layout by the DSF: LayoutUnits are 1/64 physical px and edges snap to
+ * physical pixels, still before the CSS transform (recorded real DPR 2: a
+ * 1.26×7.2 rect at 28.3,120.4 paints 28.5–29.5 × 120.5–127.5). */
 const paintTypes = new Set(["rectangle", "frame", "component", "ellipse", "image"]);
 const containerTypes = new Set(["frame", "group", "component"]);
-const unit = value => Math.trunc(value * 64);
 const sizing = (node, axis) => node[axis === "width" ? "layoutSizingHorizontal" : "layoutSizingVertical"] ?? "fixed";
 const flex = node => ["horizontal", "vertical"].includes(node?.layout);
 const mainAxis = node => node.layout === "horizontal" ? "width" : "height";
 const crossAxis = node => node.layout === "horizontal" ? "height" : "width";
-const pad = (node, axis) => (axis === "width" ? ["Left", "Right"] : ["Top", "Bottom"])
-  .map(side => unit(Math.max(0, node[`padding${side}`] ?? node.padding ?? 0)));
 const alignment = value => value ?? "start";
 const aligned = (remaining, align) => align === "center" ? Math.trunc(remaining / 2) : align === "end" ? remaining : 0;
 
-export function browserPaintBoxes(sourceNodes) {
+export function browserPaintBoxes(sourceNodes, { layoutScale = 1 } = {}) {
+  if (!(Number.isFinite(layoutScale) && layoutScale > 0)) throw new Error("Browser paint boxes need a positive layout scale");
+  const unit = value => Math.trunc(value * 64 * layoutScale), quantum = 64 * layoutScale;
+  const pad = (node, axis) => (axis === "width" ? ["Left", "Right"] : ["Top", "Bottom"])
+    .map(side => unit(Math.max(0, node[`padding${side}`] ?? node.padding ?? 0)));
   const index = new Map(sourceNodes.map(node => [node.id, node]));
   const children = new Map();
   for (const node of sourceNodes) {
@@ -76,7 +83,7 @@ export function browserPaintBoxes(sourceNodes) {
           : Math.max(0, ...sizes.map(result => result.value)));
       }
     } else if (!reason && mode === "hug" && node.type === "text") {
-      value = axis === "width" ? Math.ceil(node.width * 64) : unit(node.height);
+      value = axis === "width" ? Math.ceil(node.width * 64 * layoutScale) : unit(node.height);
     } else if (!reason && mode !== "fixed" && mode !== "hug") reason = "dynamic-size";
     else if (!reason && mode === "hug" && node.type === "image") reason = "intrinsic-image";
     else if (!reason) value = unit(node[axis]);
@@ -124,7 +131,7 @@ export function browserPaintBoxes(sourceNodes) {
     const result = reason ? { reason } : { x, y, width: width.value, height: height.value };
     if (!reason && [result.x, result.y].some(value => value < 0 && value % 64 !== 0)) result.reason = "negative-world-phase-unverified";
     // This is a replay safety boundary, not a visual acceptance tolerance.
-    if (!result.reason && ["x", "y", "width", "height"].some(key => Math.abs(result[key] / 64 - node[key]) > .25)) result.reason = "LAYOUT_MISMATCH";
+    if (!result.reason && ["x", "y", "width", "height"].some(key => Math.abs(result[key] / quantum - node[key]) > .25)) result.reason = "LAYOUT_MISMATCH";
     visiting.delete(node.id); phases.set(node.id, result); return result;
   };
   for (const node of sourceNodes) {
@@ -135,14 +142,49 @@ export function browserPaintBoxes(sourceNodes) {
       stats.fallback++; stats.reasons[reason] = (stats.reasons[reason] ?? 0) + 1; continue;
     }
     stats.eligible++;
-    const x = Math.round(box.x / 64), y = Math.round(box.y / 64);
-    const width = node.rotation ? Math.round(box.width / 64) : Math.round((box.x + box.width) / 64) - x;
-    const height = node.rotation ? Math.round(box.height / 64) : Math.round((box.y + box.height) / 64) - y;
-    if (node.rotation) rotationPivots.set(node.id, { x: x + box.width / 128, y: y + box.height / 128 });
+    // Snap in (physical) layout pixels, then return CSS px. Scale 1 divides by 1.
+    const px = Math.round(box.x / 64), py = Math.round(box.y / 64);
+    const x = px / layoutScale, y = py / layoutScale;
+    const width = (node.rotation ? Math.round(box.width / 64) : Math.round((box.x + box.width) / 64) - px) / layoutScale;
+    const height = (node.rotation ? Math.round(box.height / 64) : Math.round((box.y + box.height) / 64) - py) / layoutScale;
+    if (node.rotation) rotationPivots.set(node.id, { x: x + box.width / (2 * quantum), y: y + box.height / (2 * quantum) });
     const changed = x !== node.x || y !== node.y || width !== node.width || height !== node.height;
     nodes.set(node.id, changed ? { ...node, x, y, width, height } : node);
     if (changed) stats.changed++;
   }
-  const layoutBoxes = new Map([...phases].map(([id, box]) => [id, box.reason ? box : Object.fromEntries(Object.entries(box).map(([key, value]) => [key, value / 64]))]));
+  const layoutBoxes = new Map([...phases].map(([id, box]) => [id, box.reason ? box : Object.fromEntries(Object.entries(box).map(([key, value]) => [key, value / quantum]))]));
   return { nodes, stats, fallbackReasons, layoutBoxes, rotationPivots };
+}
+
+const layoutProfiles = new WeakMap();
+/**
+ * One offscreen DOM probe: does this document lay out in CSS LayoutUnits
+ * (emulated DSF, scale 1) or in physical ones (real DSF, scale = DPR)? A child
+ * offset just above 1/(64·DPR) CSS px measures 0 in the former and exactly
+ * 1/(64·DPR) in the latter. Cached per document and DPR: initialisation and a
+ * DPR change probe again; frames only read devicePixelRatio. No user agent.
+ * Font loading does not change the layout unit (text metrics have their own
+ * font-epoch caches). Anything else is not guessed: scale 1 with a reason.
+ */
+export function blinkLayoutScale(document) {
+  const view = document?.defaultView;
+  if (!view || typeof document.createElement !== "function") return { scale: 1, dpr: 1, quantum: null, reason: "no-document" };
+  const dpr = Number.isFinite(view.devicePixelRatio) && view.devicePixelRatio > 0 ? view.devicePixelRatio : 1;
+  const cached = layoutProfiles.get(document);
+  if (cached?.dpr === dpr) return cached;
+  const host = document.createElement("div"), probe = document.createElement("div");
+  host.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;visibility:hidden;pointer-events:none;contain:strict;transform:none;zoom:1";
+  probe.style.cssText = "position:absolute;top:0;width:1px;height:1px";
+  probe.style.left = `${1.001 / (64 * dpr)}px`;
+  host.append(probe);
+  let quantum;
+  try {
+    (document.documentElement ?? document.body).append(host);
+    quantum = probe.getBoundingClientRect().left - host.getBoundingClientRect().left;
+  } finally { host.remove(); }
+  const profile = quantum === 0 ? { scale: 1, dpr, quantum }
+    : Math.abs(quantum - 1 / (64 * dpr)) < 1e-7 ? { scale: dpr, dpr, quantum }
+      : { scale: 1, dpr, quantum, reason: "unrecognized-layout-quantum" };
+  layoutProfiles.set(document, profile);
+  return profile;
 }

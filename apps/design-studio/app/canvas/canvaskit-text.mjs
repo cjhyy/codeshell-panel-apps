@@ -85,6 +85,8 @@ export async function createCanvasKitText({
   let counters = initialCounters,
     unsupportedNode = initialUnsupportedNode;
   let currentNodes = new Map(design.nodes.map((node) => [node.id, node]));
+  // Document layout zoom (blinkLayoutScale), set per scene by the renderer.
+  let layoutScale = 1;
   const rasterImages = new Map(),
     rasterPlans = new Map(),
     devicePlans = new Map(),
@@ -246,11 +248,11 @@ export async function createCanvasKitText({
   }
 
   function finitePaint(node) { return !textHasLineBoxOrigin(node) && node.textRanges === undefined; }
-  function configure(node, alias) {
+  function configure(node, alias, fontSize = node.fontSize) {
     const family = alias === undefined ? designFontFamilyCss(node.fontFamily) :
       aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
         designNamedFontFamilyCss(alias);
-    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
+    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${fontSize}px ${family}`;
     measure.textBaseline = textHasLineBoxOrigin(node) || finitePaint(node) ? "alphabetic" : "hanging";
     measure.textAlign = "left";
     // Canvas "auto" can disable pairs that the editable SVG text still kerns.
@@ -283,11 +285,13 @@ export async function createCanvasKitText({
     }
     if (textRangeTypography(node, false).length)
       return node.y + textDisplayLineMetrics(node).offsets[index] + offset;
-    return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y });
+    return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y, layoutScale });
   }
   function rasterBaseline(node, alias) {
     if (!textHasLineBoxOrigin(node)) return 0;
-    configure(node, alias);
+    // Line-box metrics come from the layout font size (fontSize × layout
+    // scale); Canvas rounds them at that size, as Blink does.
+    configure(node, alias, node.fontSize * layoutScale);
     const key = measure.font;
     let metrics = browserFontMetrics.get(key);
     if (!metrics) {
@@ -295,26 +299,27 @@ export async function createCanvasKitText({
       metrics = { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent };
       // A missing font metric is an unsupported renderer capability, not a
       // reason to silently restore the old hanging placement.
-      textLineBoxAlphabeticOffset(node, metrics);
+      textLineBoxAlphabeticOffset(node, metrics, layoutScale);
       browserFontMetrics.set(key, metrics);
     }
-    return textLineBoxAlphabeticOffset(node, metrics);
+    if (layoutScale !== 1) configure(node, alias);
+    return textLineBoxAlphabeticOffset(node, metrics, layoutScale);
   }
   function paragraphBaseline(node, entry) {
     if (!textHasLineBoxOrigin(node) || textRangeTypography(node, false).length)
       return hangingOffset(node, entry?.alias);
-    const key = JSON.stringify([entry.id, node.fontSize]);
+    const key = JSON.stringify([entry.id, node.fontSize * layoutScale]);
     let metrics = nativeFontMetrics.get(key);
     if (!metrics) {
-      const font = new CK.Font(entry.face, node.fontSize);
+      const font = new CK.Font(entry.face, node.fontSize * layoutScale);
       try {
         const measured = font.getMetrics();
         metrics = { ascent: -measured.ascent, descent: measured.descent };
-        textLineBoxAlphabeticOffset(node, metrics);
+        textLineBoxAlphabeticOffset(node, metrics, layoutScale);
         nativeFontMetrics.set(key, metrics);
       } finally { font.delete(); }
     }
-    return textLineBoxAlphabeticOffset(node, metrics);
+    return textLineBoxAlphabeticOffset(node, metrics, layoutScale);
   }
   const availableFamilies = new Map();
   function browserFamilyAvailable(node) {
@@ -419,6 +424,7 @@ export async function createCanvasKitText({
       node.letterSpacing,
       node.textAlign,
       node.textDecoration,
+      ...(layoutScale !== 1 ? [layoutScale] : []),
       node.width,
       node.height,
       node.fill,
@@ -544,7 +550,10 @@ export async function createCanvasKitText({
     trimDevicePlans(total);
     return true;
   }
-  function beginScene(nextDesign) {
+  function beginScene(nextDesign, { layoutScale: nextLayoutScale = 1 } = {}) {
+    const layoutChanged = nextLayoutScale !== layoutScale;
+    layoutScale = nextLayoutScale;
+    if (layoutChanged) contentBoundsCache.clear();
     const nextFontSnapshot = fontSnapshot(), fontsChanged = nextFontSnapshot !== loadedFontSnapshot;
     if (fontsChanged) {
       clearShapeRasters();
@@ -560,7 +569,7 @@ export async function createCanvasKitText({
           page.id === nextDesign.activePageId ? nextDesign.nodes : (page.nodes ?? []),
         )
       : nextDesign.nodes;
-    const contentChanged = nodes.some(
+    const contentChanged = layoutChanged || nodes.some(
       (node) =>
         node.type === "text" &&
         rasterSignature(node) !== rasterSignature(currentNodes.get(node.id) ?? {}),
@@ -610,7 +619,8 @@ export async function createCanvasKitText({
       if (currentNodes.get(id)?.type !== "text") unrenderedByNode.delete(id);
     for (const [id] of resourceRasterFallbacks)
       if (currentNodes.get(id)?.type !== "text") resourceRasterFallbacks.delete(id);
-    return fontsChanged;
+    // A layout-scale change re-snaps every box: retained node pictures are stale too.
+    return fontsChanged || layoutChanged;
   }
   function contentBounds(node) {
     const signature = JSON.stringify(node),

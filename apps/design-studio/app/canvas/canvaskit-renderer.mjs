@@ -8,7 +8,7 @@ import { transformedNodeBoundsInTree } from "../geometry.mjs";
 import { hitTestCanvasNode } from "../canvas-interaction.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
 import { createCanvasKitShapeRaster, canvasKitShapeRasterEligible } from "./canvaskit-shape-raster.mjs";
-import { browserPaintBoxes } from "./browser-paint-box.mjs";
+import { browserPaintBoxes, blinkLayoutScale } from "./browser-paint-box.mjs";
 import { decodeCanvasKitImage, MAX_SVG_IMAGE_PIXELS } from "./image-decode.mjs";
 
 export const CANVASKIT_VERSION = "0.42.0";
@@ -290,6 +290,8 @@ export async function createRenderer({
     recordCurrentScene = null;
   let sceneNodes = [],
     scenePaintBoxes = null,
+    sceneLayout = null,
+    sceneResources = new Map(),
     sceneIndex = new Map(),
     sceneChildren = new Map(),
     hasInstances = false,
@@ -337,6 +339,8 @@ export async function createRenderer({
     sceneState?.dispose();
     sceneState = null;
     scenePaintBoxes = null;
+    sceneLayout = null;
+    sceneResources = new Map();
     sceneImages = new Map();
     sceneImageErrors = new Map(); sceneSvgPixels = new Map();
     resourceKey = null;
@@ -460,7 +464,9 @@ export async function createRenderer({
           )
         : design.nodes;
       const index = new Map(pageNodes.map((node) => [node.id, node]));
-      const paintBoxes = browserPaintBoxes(pageNodes);
+      // HTML's layout grid (emulated vs real DSF), probed once per DPR.
+      const layout = blinkLayoutScale(canvas.ownerDocument);
+      const paintBoxes = browserPaintBoxes(pageNodes, { layoutScale: layout.scale });
       const children = new Map();
       for (const node of pageNodes) {
         if (!children.has(node.parentId)) children.set(node.parentId, []);
@@ -500,7 +506,7 @@ export async function createRenderer({
       }
       const samplingNodes = [...design.nodes, ...instanceTexts.values()];
       const samplingIndex = new Map(samplingNodes.map(node => [node.id, node]));
-      if (text.beginScene?.({ ...design, nodes: samplingNodes })) clearNodePictures(nextNodePictures);
+      if (text.beginScene?.({ ...design, nodes: samplingNodes }, { layoutScale: layout.scale })) clearNodePictures(nextNodePictures);
       const shapeCandidates = deviceTextSampling ? design.nodes.filter(node => {
         return canvasKitShapeRasterEligible(node, { hasChildren: Boolean(children.get(node.id)?.length) }) &&
           isDesignNodeVisible(design, node, index);
@@ -808,6 +814,8 @@ export async function createRenderer({
       currentDesign = design;
       sceneNodes = pageNodes;
       scenePaintBoxes = paintBoxes;
+      sceneLayout = layout;
+      sceneResources = resources;
       sceneIndex = index;
       sceneChildren = children;
       hasInstances = design.nodes.some((node) => node.type === "instance");
@@ -829,6 +837,7 @@ export async function createRenderer({
           ...text.stats(),
           instanceTextFallbackCount, instanceTextFallbacks,
           browserPaintBoxStats: paintBoxes.stats,
+          browserLayout: { ...layout },
           svgDecodedImages: svgPixels.size,
           svgDecodedPixels: [...svgPixels.values()].reduce((sum, value) => sum + value, 0),
           unsupported: [...unsupported],
@@ -839,7 +848,7 @@ export async function createRenderer({
       };
       updateStats();
       recordCurrentScene = (quality = true) => {
-        if (text.fontsChanged?.() && text.beginScene?.({ ...design, nodes: samplingNodes })) {
+        if (text.fontsChanged?.() && text.beginScene?.({ ...design, nodes: samplingNodes }, { layoutScale: layout.scale })) {
           clearNodePictures(nextNodePictures); nextNodeBytes = 0;
           for (const candidate of deviceTextCandidates)
             candidate.bounds = text.contentBounds(samplingIndex.get(candidate.id));
@@ -967,8 +976,9 @@ export async function createRenderer({
         const view = gestureView;
         gestureTimer = null; gestureView = null;
         if (disposed || !picture) return;
-        try { render(view); }
-        catch (error) {
+        try { Promise.resolve(render(view)).catch(fail); }
+        catch (error) { fail(error); }
+        function fail(error) {
           asynchronousRenderError = error;
           // The controller retires a failed surface. Standalone callers also
           // see the error in stats and on their next explicit render.
@@ -976,6 +986,10 @@ export async function createRenderer({
         }
       }, 150);
     }
+    // A DPR change can move the document between layout grids; the scene's
+    // boxes and line boxes then follow the new profile before this frame.
+    if (currentDesign && sceneLayout && blinkLayoutScale(canvas.ownerDocument).scale !== sceneLayout.scale)
+      return setScene(currentDesign, { resources: sceneResources }).then(() => render({ pan, zoom, interactive }));
     if (sceneState?.fontsChanged?.()) recordCurrentScene?.();
     // Match Skia's float32 matrix composition, including tiny residues left by
     // public wheel controls even when the effective device transform is exact.

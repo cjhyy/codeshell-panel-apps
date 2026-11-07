@@ -11,10 +11,14 @@ export const textHasLineBoxOrigin = (node) => !Number.isFinite(node.layoutBaseli
  * same grid before distributing leading. This is the logical baseline offset;
  * paint-origin snapping is separate and never rewrites authored coordinates.
  */
-export function textLineBoxAlphabeticOffset(node, { ascent, descent }) {
+export function textLineBoxAlphabeticOffset(node, { ascent, descent }, layoutScale = 1) {
   if (!Number.isFinite(ascent) || !Number.isFinite(descent))
     throw new Error("Text line boxes require finite font ascent and descent");
-  return Math.floor((textLineHeightPixels(node) + Math.round(ascent) - Math.round(descent)) / 2);
+  // With a real device scale, Blink lays text out at fontSize × scale: the
+  // metrics must be measured at that size and the leading floors in physical
+  // pixels (Arial 600 14/1.4 at DPR 2: ascent 25, not 2×13). Scale 1 is the
+  // historical CSS-pixel formula, unchanged.
+  return Math.floor((textLineHeightPixels(node) * layoutScale + Math.round(ascent) - Math.round(descent)) / 2) / layoutScale;
 }
 
 /**
@@ -25,12 +29,16 @@ export function textLineBoxAlphabeticOffset(node, { ascent, descent }) {
  * A local cached picture supplies its original world origin without putting
  * renderer metadata in the document. Imported finite offsets keep raw origins.
  */
-export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = node.y } = {}) {
+export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = node.y, layoutScale = 1 } = {}) {
   const height = textLineHeightPixels(node);
   if (!textHasLineBoxOrigin(node)) return node.y + index * height + alphabeticOffset;
-  const layoutTop = Math.trunc(originY * 64) / 64;
-  const layoutHeight = Math.round(height * 64) / 64;
-  return Math.round(layoutTop + index * layoutHeight + alphabeticOffset) + (node.y - originY);
+  // `layoutScale` is the document's layout zoom (blinkLayoutScale): 1 under
+  // DevTools-emulated DSF, the device scale under a real one. LayoutUnits and
+  // the paint-origin rounding then live on that physical grid, before any CSS
+  // transform. Scale 1 is the historical CSS-pixel replay, unchanged.
+  const layoutTop = Math.trunc(originY * 64 * layoutScale) / 64;
+  const layoutHeight = Math.round(height * layoutScale * 64) / 64;
+  return Math.round(layoutTop + index * layoutHeight + alphabeticOffset * layoutScale) / layoutScale + (node.y - originY);
 }
 
 /** Transport the historical hanging origin through the same CSS line box as

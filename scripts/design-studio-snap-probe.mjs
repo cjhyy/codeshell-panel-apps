@@ -14,7 +14,12 @@ export const SNAP_CAMERAS = Object.freeze([
   { label: "z1", zoom: 1, panX: 10.3, panY: 10.3 },
   { label: "z2", zoom: 2, panX: 10.3, panY: 10.3 },
   { label: "fit", zoom: 0.615, panX: 5.3, panY: 5.3 },
+  { label: "z1-pan", zoom: 1, panX: 13.65, panY: 11.85 },
 ].map(camera => Object.freeze(camera)));
+/** GPU-vs-HTML acceptance per case and camera (device px of the capture). Text may use 4% ink: real fonts. */
+export const GPU_HTML_THRESHOLDS = Object.freeze({ centroidDevicePx: 0.15, edge50DevicePx: 0.5, inkBias: 0.03, realFontInkBias: 0.04 });
+/** Inter is exercised through an actual document font resource (bytes + alias), never the app "Inter" name. */
+export const SNAP_INTER = Object.freeze({ id: "snap-inter", family: "DSSnapProbeInter", path: "fonts/InterVariable.woff2", weight: 400 });
 
 const base = (id, type, x, y, width, height, extra = {}) => ({ id, type, name: id, x, y, width, height, fill: "#1f2328", stroke: "transparent",
   strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, visible: true, locked: false, ...extra });
@@ -22,7 +27,8 @@ const text = (id, x, y, width, height, value, extra) => base(id, "text", x, y, w
   lineHeight: 1.2, textAlign: "left", fontFamily: "Arial", ...extra });
 /** The six review cases (world coordinates, fractional phases as in the real fixtures). */
 export const SNAP_CASES = Object.freeze([
-  { id: "default-inter", kind: "text", node: text("default-inter", 20.3, 20.3, 300, 38, "Default Inter HMI", { fontFamily: "Inter", fontSize: 32, fontWeight: 600, lineHeight: 1.15 }) },
+  // Weight 400 = the resource descriptor's weight, so neither route synthesises bold.
+  { id: "inter-resource", kind: "text", node: text("inter-resource", 20.3, 20.3, 300, 38, "Resource Inter HMI", { fontFamily: SNAP_INTER.family, fontSize: 32, fontWeight: SNAP_INTER.weight, lineHeight: 1.15 }) },
   { id: "finite", kind: "text", node: text("finite", 20.25, 70.5, 184, 20, "Finite 有限 offset", { layoutBaselineOffset: 3.5 }) },
   { id: "menlo-prompt", kind: "text", node: text("menlo-prompt", 230.25, 70.5, 22, 20, ">_", { fontFamily: "Menlo, monospace", fontSize: 13 }) },
   { id: "arial-button", kind: "text", node: text("arial-button", 270, 70, 104, 20, "Continue 继续", { fontWeight: 600, lineHeight: 1.4 }) },
@@ -30,9 +36,49 @@ export const SNAP_CASES = Object.freeze([
   { id: "small-rect", kind: "rect", node: base("small-rect", "rectangle", 28.3, 120.4, 1.26, 7.2, { fill: "#686e67" }) },
 ].map(value => Object.freeze(value)));
 
-export function snapProbeDocument() {
+export function snapProbeDocument({ interResource = null } = {}) {
   return { format: "codeshell.design", version: 3, name: "Snap grid probe", canvas: { width: 400, height: 160, background: "#ffffff" },
-    tokens: { colors: [] }, resources: [], activePageId: "main", pages: [{ id: "main", name: "Main", children: SNAP_CASES.map(value => structuredClone(value.node)) }] };
+    tokens: { colors: [] }, resources: interResource ? [interResource] : [], activePageId: "main",
+    pages: [{ id: "main", name: "Main", children: SNAP_CASES.map(value => structuredClone(value.node)) }] };
+}
+
+/** Canonical probe source with the Inter resource descriptor built by the app's own resource store. */
+export async function snapProbeSources({ codec, resourceStore, interBytes, sha256Hex }) {
+  const base64 = Buffer.from(interBytes).toString("base64");
+  const plan = await resourceStore.createDesignResourcePersistencePlan({ id: SNAP_INTER.id, kind: "font", mime: "font/woff2", base64,
+    family: SNAP_INTER.family, weight: SNAP_INTER.weight, style: "normal", sha256Bytes: sha256Hex });
+  const logicalSource = codec.serializeDesignDocument(codec.normalizeDesignDocument(snapProbeDocument({ interResource: plan.descriptor })));
+  return { logicalSource, interBase64: base64, interDescriptor: plan.descriptor };
+}
+
+/**
+ * GPU (CanvasKit, the installed renderer) against HTML (installed frontend export) for one camera.
+ * Same page, same fonts, same capture size; both measured with the same coverage statistics.
+ */
+export function compareGpuToHtml({ htmlImage, gpuImage, camera, dpr }) {
+  const world = (x, y) => [(camera.zoom * x + camera.panX) * dpr, (camera.zoom * y + camera.panY) * dpr];
+  return SNAP_CASES.map(({ id, kind, node }) => {
+    const margin = 4 + 2 / Math.max(camera.zoom, 0.25);
+    const [x0, y0] = world(node.x - margin, node.y - margin), [x1, y1] = world(node.x + node.width + margin, node.y + node.height + margin);
+    const roi = { x: Math.floor(x0), y: Math.floor(y0), width: Math.ceil(x1) - Math.floor(x0), height: Math.ceil(y1) - Math.floor(y0) };
+    const colors = { foreground: node.fill, background: "#ffffff" };
+    const html = coverageStats(htmlImage, roi, colors), gpu = coverageStats(gpuImage, roi, colors);
+    if (!(html.area > 0) || !(gpu.area > 0)) return { id, kind, camera: camera.label, roi, html, gpu, pass: false, misses: ["no ink in one route"] };
+    const centroid = Math.hypot(gpu.centroid[0] - html.centroid[0], gpu.centroid[1] - html.centroid[1]);
+    const centroidDelta = [gpu.centroid[0] - html.centroid[0], gpu.centroid[1] - html.centroid[1]];
+    const edgeDeltas = Object.fromEntries(["left", "right", "top", "bottom"].map(key => [key, gpu.edges50[key] - html.edges50[key]]));
+    const edge50 = Math.max(...Object.values(edgeDeltas).map(Math.abs));
+    const ink = gpu.area / html.area - 1;
+    const realFont = kind === "text";
+    const inkLimit = realFont && Math.abs(ink) > GPU_HTML_THRESHOLDS.inkBias ? GPU_HTML_THRESHOLDS.realFontInkBias : GPU_HTML_THRESHOLDS.inkBias;
+    const misses = [];
+    if (!(centroid <= GPU_HTML_THRESHOLDS.centroidDevicePx)) misses.push(`centroid ${centroid.toFixed(3)}`);
+    if (!(edge50 <= GPU_HTML_THRESHOLDS.edge50DevicePx)) misses.push(`edge50 ${edge50.toFixed(3)}`);
+    if (!(Math.abs(ink) <= inkLimit)) misses.push(`ink ${(ink * 100).toFixed(2)}%`);
+    return { id, kind, camera: camera.label, roi, centroid, centroidDelta, edge50, edgeDeltas, ink, inkLimit,
+      inkReason: inkLimit > GPU_HTML_THRESHOLDS.inkBias ? "real font: Blink/Skia glyph AA vs CanvasKit/Canvas2D raster of the same face" : null,
+      pass: misses.length === 0, misses, html: { area: html.area, centroid: html.centroid, edges50: html.edges50 }, gpu: { area: gpu.area, centroid: gpu.centroid, edges50: gpu.edges50 } };
+  });
 }
 
 /** Smallest layout unit and rounding rule that reproduce every measured offset exactly. */
@@ -165,15 +211,24 @@ export function analyzeSnapCapture({ image, camera, dpr, collect, mount }) {
 /* ------------------------------ browser-side sources ------------------------------ */
 const PROBE_HOST_ID = "ds-snap-probe-host";
 /** P1 layout precision, P2 font metrics (1x and dpr x), GPU pure-function inputs, markup. */
-export function snapProbeCollectSource({ logicalSource, moduleBase }) {
+export function snapProbeCollectSource({ logicalSource, moduleBase, interBase64 = null }) {
   return `(async () => {
     const base = new URL(${JSON.stringify(moduleBase)}, location.href);
     const load = path => import(new URL(path, base).href);
     const [exporter, documentModule, lineBox, fontCss, paintBox] = await Promise.all([load("frontend-export.mjs"), load("document.mjs"),
       load("text-line-box.mjs"), load("font-css.mjs"), load("canvas/browser-paint-box.mjs")]);
-    let inter = { alias: "DSSnapProbeInter", loaded: false };
-    try { const face = new FontFace(inter.alias, "url(" + JSON.stringify(new URL("fonts/InterVariable.woff2", base).href) + ")", { weight: "100 900" });
-      await face.load(); document.fonts.add(face); inter.loaded = true; } catch (error) { inter.error = String(error && error.message || error); }
+    // Inter: the resource's own bytes under its document family (load promise and metrics recorded, not fonts.check).
+    let inter = { alias: ${JSON.stringify(SNAP_INTER.family)}, loaded: false };
+    const interBase64 = ${JSON.stringify(interBase64)};
+    try {
+      const started = performance.now();
+      const face = interBase64 ? new FontFace(inter.alias, Uint8Array.from(atob(interBase64), c => c.charCodeAt(0)).buffer, { weight: "100 900" })
+        : new FontFace(inter.alias, "url(" + JSON.stringify(new URL(${JSON.stringify(SNAP_INTER.path)}, base).href) + ")", { weight: "100 900" });
+      await face.load(); document.fonts.add(face);
+      inter = { ...inter, loaded: true, status: face.status, loadMs: performance.now() - started, source: interBase64 ? "resource-bytes" : "url",
+        bytes: interBase64 ? Math.floor(interBase64.length * 3 / 4) : null };
+      window.__dsSnapProbe = { interBytes: interBase64 ? Uint8Array.from(atob(interBase64), c => c.charCodeAt(0)) : null };
+    } catch (error) { inter.error = String(error && error.message || error); }
     await document.fonts.ready;
     const dpr = window.devicePixelRatio;
     const env = { devicePixelRatio: dpr, screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth },
@@ -197,7 +252,7 @@ export function snapProbeCollectSource({ logicalSource, moduleBase }) {
     // P2: Canvas2D metrics at 1x and dpr x (font size scaled) for the review fonts.
     const measure = document.createElement("canvas").getContext("2d");
     const fontSpecs = [["menlo-13", "400", 13, '"Menlo", monospace'], ["arial-600-14", "600", 14, '"Arial"'], ["arial-14", "400", 14, '"Arial"'],
-      ["inter-app-600-32", "600", 32, fontCss.designFontFamilyCss("Inter")], ["inter-bytes-600-32", "600", 32, '"' + inter.alias + '"']];
+      ["inter-app-400-32", "400", 32, fontCss.designFontFamilyCss("Inter")], ["inter-resource-400-32", "400", 32, '"' + inter.alias + '"']];
     const fonts = fontSpecs.map(([id, weight, size, family]) => ({ id, family, checked: document.fonts.check(weight + " " + size + "px " + family, "Hg"),
       scales: [1, dpr].map(scale => { measure.font = weight + " " + size * scale + "px " + family; measure.textBaseline = "alphabetic";
         const a = measure.measureText("Hg"); measure.textBaseline = "hanging"; const h = measure.measureText("Hg");
@@ -205,20 +260,26 @@ export function snapProbeCollectSource({ logicalSource, moduleBase }) {
           inkAscent: a.actualBoundingBoxAscent, inkDescent: a.actualBoundingBoxDescent, hangingToAlphabetic: a.actualBoundingBoxAscent - h.actualBoundingBoxAscent }; }) }));
     // GPU pure-function inputs for the same nodes (installed modules).
     const design = documentModule.normalizeDesignDocument(JSON.parse(${JSON.stringify(logicalSource)}));
-    const nodes = design.pages[0].nodes, boxes = paintBox.browserPaintBoxes(nodes), gpu = {};
+    // The installed renderer's own layout profile (absent before the real-DSF fix: scale 1).
+    const profile = paintBox.blinkLayoutScale ? paintBox.blinkLayoutScale(document) : { scale: 1, legacy: true };
+    const layoutScale = profile.scale;
+    const nodes = design.pages[0].nodes, boxes = paintBox.browserPaintBoxes(nodes, { layoutScale }), gpu = {};
     for (const node of nodes) {
       if (node.type === "text") {
-        const font = (node.fontStyle || "normal") + " " + node.fontWeight + " " + node.fontSize + "px " + fontCss.designFontFamilyCss(node.fontFamily);
+        const family = fontCss.designFontFamilyCss(node.fontFamily), style = (node.fontStyle || "normal") + " " + node.fontWeight + " ";
+        const font = style + node.fontSize + "px " + family;
         measure.font = font; measure.textBaseline = "alphabetic";
         const hg = measure.measureText("Hg"), own = measure.measureText(node.text); measure.textBaseline = "hanging"; const hanging = measure.measureText("Hg");
         const metrics = { ascent: hg.fontBoundingBoxAscent, descent: hg.fontBoundingBoxDescent, hangingToAlphabetic: hg.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent };
-        const lineBoxOrigin = lineBox.textHasLineBoxOrigin(node), offset = lineBoxOrigin ? lineBox.textLineBoxAlphabeticOffset(node, metrics) : null;
-        gpu[node.id] = { font, metrics, lineBoxOrigin, alphabeticOffset: offset, inkAscent: own.actualBoundingBoxAscent, inkDescent: own.actualBoundingBoxDescent,
-          gpuBaselineWorld: lineBoxOrigin ? lineBox.textLineBoxBaselineY(node, 0, offset) : lineBox.textFiniteBaselineY(node, 0, metrics) };
+        measure.font = style + node.fontSize * layoutScale + "px " + family; measure.textBaseline = "alphabetic";
+        const scaled = measure.measureText("Hg"), layoutMetrics = { ascent: scaled.fontBoundingBoxAscent, descent: scaled.fontBoundingBoxDescent };
+        const lineBoxOrigin = lineBox.textHasLineBoxOrigin(node), offset = lineBoxOrigin ? lineBox.textLineBoxAlphabeticOffset(node, layoutMetrics, layoutScale) : null;
+        gpu[node.id] = { font, metrics, layoutMetrics, layoutScale, lineBoxOrigin, alphabeticOffset: offset, inkAscent: own.actualBoundingBoxAscent, inkDescent: own.actualBoundingBoxDescent,
+          gpuBaselineWorld: lineBoxOrigin ? lineBox.textLineBoxBaselineY(node, 0, offset, { layoutScale }) : lineBox.textFiniteBaselineY(node, 0, metrics) };
       } else gpu[node.id] = { paintBox: boxes.nodes.get(node.id) ?? null, pivot: boxes.rotationPivots.get(node.id) ?? null, fallback: boxes.fallbackReasons.get(node.id) ?? null };
     }
     const markup = { css: exporter.designFrontendCss(design, { preserveWorldOrigin: true }), body: exporter.renderDesignFrontendPage(design, { preserveWorldOrigin: true }) };
-    return { env, layout, fonts, inter, gpu, markup };
+    return { env, layout, fonts, inter, profile, gpu, markup };
   })()`;
 }
 
@@ -253,4 +314,38 @@ export function snapProbeMountSource({ markup, camera, size }) {
 }
 export function snapProbeUnmountSource() {
   return `(() => { document.getElementById(${JSON.stringify(PROBE_HOST_ID)})?.remove(); return true; })()`;
+}
+
+const GPU_HOST_ID = "ds-snap-probe-gpu";
+/** Render the same probe document through the installed CanvasKit renderer, in a probe-owned host at the same corner. */
+export function snapProbeGpuMountSource({ logicalSource, moduleBase, camera, size, rendererOptions = {} }) {
+  return `(async () => {
+    document.getElementById(${JSON.stringify(GPU_HOST_ID)})?.remove();
+    const base = new URL(${JSON.stringify(moduleBase)}, location.href);
+    const [{ createRenderer }, documentModule] = await Promise.all([import(new URL("canvas/canvaskit-renderer.mjs", base).href), import(new URL("document.mjs", base).href)]);
+    const design = documentModule.normalizeDesignDocument(JSON.parse(${JSON.stringify(logicalSource)}));
+    const bytes = window.__dsSnapProbe?.interBytes;
+    const resources = new Map((design.resources ?? []).filter(() => bytes).map(descriptor => [descriptor.id, { descriptor, bytes, mimeType: descriptor.mime }]));
+    const host = document.createElement("div"); host.id = ${JSON.stringify(GPU_HOST_ID)};
+    host.style.cssText = "all:initial;position:fixed;left:0;top:0;width:${size.width}px;height:${size.height}px;overflow:hidden;background:#ffffff;z-index:2147483647;contain:strict";
+    const canvas = document.createElement("canvas"); canvas.style.cssText = "position:absolute;left:0;top:0;display:block";
+    host.append(canvas); document.body.append(host);
+    const renderer = await createRenderer({ canvas, assetsBaseUrl: new URL("canvas/vendor/", base).href, background: "#ffffff", ...${JSON.stringify(rendererOptions)} });
+    window.__dsSnapProbeGpu = renderer;
+    renderer.resize(${size.width}, ${size.height}, window.devicePixelRatio);
+    await renderer.setScene(design, { resources });
+    const view = { pan: { x: ${camera.panX}, y: ${camera.panY} }, zoom: ${camera.zoom} };
+    const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await renderer.render(view); await frames(); await renderer.render(view); await frames();
+    const stats = renderer.stats?.() ?? {}, rect = host.getBoundingClientRect();
+    return { host: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, dpr: window.devicePixelRatio,
+      stats: { browserLayout: stats.browserLayout ?? null, browserPaintBoxStats: stats.browserPaintBoxStats ?? null,
+        unsupported: (stats.unsupported ?? []).slice(0, 20), resources: resources.size, gpu: stats.gpuRenderer ?? null } };
+  })()`;
+}
+/** Diagnostic only (never counted): the same renderer with device sampling off, i.e. rotated leaves drawn by CanvasKit itself. */
+export const GPU_DIAGNOSTIC_VARIANT = Object.freeze({ label: "gpu-direct", rendererOptions: Object.freeze({ deviceTextSampling: false }), cases: Object.freeze(["gray-strip", "small-rect"]) });
+export function snapProbeGpuUnmountSource() {
+  return `(() => { try { window.__dsSnapProbeGpu?.dispose(); } catch {} window.__dsSnapProbeGpu = null;
+    document.getElementById(${JSON.stringify(GPU_HOST_ID)})?.remove(); return true; })()`;
 }
