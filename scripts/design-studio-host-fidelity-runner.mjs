@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import {
   FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
-  readFixtureDocument, zoomMatches,
+  readFixtureDocument, zoomMatches, VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop,
   judgeImmediateClick, judgeLowZoomPerformance, judgeOpenWithoutEdit, judgeSaveReopen, judgeSvgCornerProbe,
   judgeVisualCaptureGroup, planDesignStudioFidelityScenarios, summarizeFidelityReport, svgReferenceGeometry,
 } from "./design-studio-host-fidelity.mjs";
@@ -125,6 +125,52 @@ export const DESIGN_STUDIO_PROBES = Object.freeze({
       const style = getComputedStyle(element); if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return [];
       const rect = element.getBoundingClientRect(); if (!(rect.width > 0 && rect.height > 0)) return [];
       return [{ name, x: rect.x - stage.x, y: rect.y - stage.y, width: rect.width, height: rect.height }]; }); })()`,
+  // HTML reference rendered by the installed frontend-export inside the guest document (fonts ready),
+  // so finite paint offsets use real browser font metrics. Static HTML only; the reference
+  // window that rasterises it keeps JavaScript disabled.
+  guestReference: logicalSource => `(async () => {
+    const base = new URL("./", location.href);
+    const [exporter, documentModule, fontCss] = await Promise.all([import(new URL("frontend-export.mjs", base).href),
+      import(new URL("document.mjs", base).href), import(new URL("font-css.mjs", base).href)]);
+    await document.fonts.ready;
+    const design = documentModule.normalizeDesignDocument(JSON.parse(${JSON.stringify(logicalSource)}));
+    const fontChecks = design.pages[0].nodes.filter(node => node.type === "text").map(node => {
+      const font = (node.fontStyle || "normal") + " " + node.fontWeight + " " + node.fontSize + "px " + fontCss.designFontFamilyCss(node.fontFamily);
+      return { id: node.id, font, available: document.fonts.check(font, "Hg") }; });
+    return { source: "guest", fontsReady: document.fonts.status, fontChecks,
+      css: exporter.designFrontendCss(design, { preserveWorldOrigin: true }), body: exporter.renderDesignFrontendPage(design, { preserveWorldOrigin: true }) };
+  })()`,
+  // Read-only runtime inputs/outputs for the text and shape paths of the GPU renderer and the
+  // live browser-renderer DOM, for the same nodes, using the installed pure modules.
+  renderRuntimeProbe: (logicalSource, textIds, shapeIds) => `(async () => {
+    const base = new URL("./", location.href);
+    const [lineBox, fontCss, documentModule, paintBox] = await Promise.all([import(new URL("text-line-box.mjs", base).href),
+      import(new URL("font-css.mjs", base).href), import(new URL("document.mjs", base).href), import(new URL("canvas/browser-paint-box.mjs", base).href)]);
+    const design = documentModule.normalizeDesignDocument(JSON.parse(${JSON.stringify(logicalSource)}));
+    const nodes = design.pages[0].nodes, byId = new Map(nodes.map(node => [node.id, node]));
+    const stage = document.querySelector("#stage")?.getBoundingClientRect();
+    const measure = document.createElement("canvas").getContext("2d");
+    const dom = id => { const element = document.querySelector('#browser-surface [data-codeshell-id="' + id + '"]'); if (!element) return null;
+      const rect = element.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(element);
+      return { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, fontFamily: getComputedStyle(element).fontFamily,
+        transform: getComputedStyle(element).transform, textRects: [...range.getClientRects()].map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height })) }; };
+    const text = ${JSON.stringify(textIds)}.map(id => { const node = byId.get(id);
+      const font = (node.fontStyle || "normal") + " " + node.fontWeight + " " + node.fontSize + "px " + fontCss.designFontFamilyCss(node.fontFamily);
+      measure.font = font; measure.textBaseline = "alphabetic"; const alpha = measure.measureText("Hg");
+      measure.textBaseline = "hanging"; const hanging = measure.measureText("Hg");
+      const metrics = { ascent: alpha.fontBoundingBoxAscent, descent: alpha.fontBoundingBoxDescent, inkAscent: alpha.actualBoundingBoxAscent,
+        inkDescent: alpha.actualBoundingBoxDescent, hangingToAlphabetic: alpha.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent };
+      const lineBoxOrigin = lineBox.textHasLineBoxOrigin(node);
+      const alphabeticOffset = lineBoxOrigin ? lineBox.textLineBoxAlphabeticOffset(node, metrics) : null;
+      const gpuBaselineWorld = lineBoxOrigin ? lineBox.textLineBoxBaselineY(node, 0, alphabeticOffset) : lineBox.textFiniteBaselineY(node, 0, metrics);
+      return { id, node: { x: node.x, y: node.y, width: node.width, height: node.height, fontSize: node.fontSize, lineHeight: node.lineHeight,
+        layoutBaselineOffset: node.layoutBaselineOffset ?? null }, font, metrics, lineBoxOrigin, alphabeticOffset, gpuBaselineWorld, dom: dom(id) }; });
+    const boxes = paintBox.browserPaintBoxes(nodes);
+    const shapes = ${JSON.stringify(shapeIds)}.map(id => { const node = byId.get(id);
+      return { id, node: { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation, cornerRadius: node.cornerRadius },
+        paintBox: boxes.nodes.get(id) ?? null, pivot: boxes.rotationPivots.get(id) ?? null, fallback: boxes.fallbackReasons.get(id) ?? null, dom: dom(id) }; });
+    return { stage: stage && { x: stage.x, y: stage.y, width: stage.width, height: stage.height }, dpr: window.devicePixelRatio, text, shapes };
+  })()`,
   environment: () => `({ devicePixelRatio: window.devicePixelRatio, innerWidth: window.innerWidth, innerHeight: window.innerHeight,
     userAgent: typeof navigator === "undefined" ? null : navigator.userAgent })`,
   openState: () => `(() => { const wrap = document.querySelector("#stage-wrap"), save = document.querySelector("#save-state");
@@ -165,11 +211,17 @@ export async function openDesignFileWithDiagnostics({ execute, relativePath, tim
     }
     const dialog = await execute(DESIGN_STUDIO_PROBES.dialogState()).catch(error => ({ unavailable: String(error?.message ?? error) }));
     const bridge = await execute(DESIGN_STUDIO_PROBES.workspaceListResult(relativePath)).catch(error => ({ unavailable: String(error?.message ?? error) }));
-    diagnostics.push({ attempt, dialog, bridge });
     const retryAfterMs = bridge?.retryAfterMs;
-    if (attempt === 1 && bridge?.code === "RATE_LIMITED" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 && retryAfterMs <= maxRetryAfterMs) {
+    // run3: the app showed "no designs" while workspace.list listed the target a moment later
+    // (app.js discoverDesignFiles turns any root listing error into an empty list). Reopen once
+    // after its 3 s discovery cache; a Host RATE_LIMITED reset is waited for exactly.
+    const retry = attempt !== 1 ? null
+      : bridge?.code === "RATE_LIMITED" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 && retryAfterMs <= maxRetryAfterMs ? "rate-limited"
+        : bridge?.ok === true && bridge.includesTarget === true && dialog?.fileRowCount === 0 ? "empty-dialog-with-listed-target" : null;
+    diagnostics.push({ attempt, dialog, bridge, retry });
+    if (retry) {
       await execute(DESIGN_STUDIO_PROBES.closeFilesDialog());
-      await wait(retryAfterMs + 250);
+      await wait(retry === "rate-limited" ? retryAfterMs + 250 : 3250);
       continue;
     }
     break;
@@ -177,6 +229,51 @@ export async function openDesignFileWithDiagnostics({ execute, relativePath, tim
   const error = new Error(`timed out waiting for file row ${relativePath}; observed ${JSON.stringify(diagnostics)}`);
   error.diagnostics = diagnostics;
   throw error;
+}
+
+/** One owned CDP Performance session per measurement: attach/enable once, read, then disable/detach once. */
+export function createCdpMetricsSession(evaluateMain, guestWebContentsId) {
+  let started = false, stopped = false, attachedByUs = false;
+  const read = () => evaluateMain(async ({ webContents }, { id }) => Object.fromEntries((await webContents.fromId(id).debugger
+    .sendCommand("Performance.getMetrics")).metrics.map(value => [value.name, value.value])), { id: guestWebContentsId });
+  return {
+    async start() {
+      if (started) throw new Error("CDP metrics session already started");
+      started = true;
+      attachedByUs = await evaluateMain(async ({ webContents }, { id }) => {
+        const contents = webContents.fromId(id), attach = !contents.debugger.isAttached();
+        if (attach) contents.debugger.attach("1.3");
+        await contents.debugger.sendCommand("Performance.enable");
+        return attach;
+      }, { id: guestWebContentsId });
+      return read();
+    },
+    read,
+    async stop() {
+      if (!started || stopped) return;
+      stopped = true;
+      await evaluateMain(async ({ webContents }, { id, detach }) => {
+        const contents = webContents.fromId(id);
+        try { await contents.debugger.sendCommand("Performance.disable"); } finally { if (detach && contents.debugger.isAttached()) contents.debugger.detach(); }
+        return true;
+      }, { id: guestWebContentsId, detach: attachedByUs });
+    },
+  };
+}
+
+/** rAF interval statistics overall and for intervals ending inside a gesture window. */
+export function summarizeFrames(times, { start, end } = {}) {
+  const stats = intervals => {
+    const sorted = [...intervals].sort((a, b) => a - b), pick = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : null;
+    return { count: intervals.length, p50Ms: pick(.5), p95Ms: pick(.95), maxMs: sorted.at(-1) ?? null, intervalsMs: intervals };
+  };
+  const all = [], window = [];
+  for (let index = 1; index < (times?.length ?? 0); index++) {
+    const interval = times[index] - times[index - 1];
+    all.push(interval);
+    if (Number.isFinite(start) && Number.isFinite(end) && times[index] >= start && times[index] <= end) window.push(interval);
+  }
+  return { all: stats(all), window: stats(window), gesture: { start, end } };
 }
 
 /**
@@ -340,7 +437,6 @@ export async function runDesignStudioHostFidelity(options) {
   const codec = await module("document.mjs");
   const textMetrics = await module("text-metrics.mjs");
   const documentIndex = await module("document-index.mjs");
-  const frontend = await module("frontend-export.mjs");
   const svgMetrics = await import(new URL("../tests/apps/design-studio/svg-semantic-metrics.mjs", import.meta.url).href);
   const packageModules = {};
   for (const path of ["document.mjs", "text-metrics.mjs", "document-index.mjs", "frontend-export.mjs"])
@@ -439,11 +535,13 @@ export async function runDesignStudioHostFidelity(options) {
     }
   };
   const openFile = relativePath => openDesignFileWithDiagnostics({ execute: dom, relativePath, timeoutMs, now, wait });
-  const zoomTo = async target => {
+  const zoomTo = async (target, focal = null) => {
     await dom(DESIGN_STUDIO_PROBES.wheelInstall());
     const cam = await camera();
     if (!cam) return { reached: false, target, zoom: null, reasons: ["#stage camera transform not observable"], trace: [] };
-    const center = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
+    // Ctrl+wheel zooms around the cursor (app setZoom focal), so an anchored focal keeps that world point in place.
+    const center = focal ? { x: Math.round(focal.x), y: Math.round(focal.y) }
+      : { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
     return closedLoopZoom({ target, wait, readZoom: async () => (await camera())?.zoom,
       readDomDeltas: async () => (await dom(DESIGN_STUDIO_PROBES.wheelRead())) ?? [],
       sendWheel: deltaY => sendInput([{ type: "mouseWheel", x: center.x, y: center.y, deltaX: 0, deltaY, hasPreciseScrollingDeltas: true,
@@ -472,13 +570,7 @@ export async function runDesignStudioHostFidelity(options) {
   const nodeSummary = node => ({ id: node.id, x: node.x, y: node.y, ...(node.type === "text" ? { text: node.text } : {}) });
   const fixtureById = new Map(fixtures.map(fixture => [fixture.relativePath, fixture]));
   const documentFromFixture = async relativePath => codec.normalizeDesignDocument(JSON.parse(fixtureById.get(relativePath).logicalSource));
-  const referenceHtml = (design, cam) => {
-    const css = frontend.designFrontendCss(design, { preserveWorldOrigin: true });
-    const body = frontend.renderDesignFrontendPage(design, { preserveWorldOrigin: true });
-    return `<!doctype html><meta charset="utf-8"><style>${css}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}` +
-      `#export-world{position:absolute;left:0;top:0;transform-origin:0 0;transform:translate(${cam.panX}px,${cam.panY}px) scale(${cam.zoom})}` +
-      `.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${body}</div>`;
-  };
+
 
   const results = [], probes = [];
   const environment = await dom(DESIGN_STUDIO_PROBES.environment()).catch(() => null);
@@ -557,31 +649,32 @@ export async function runDesignStudioHostFidelity(options) {
     await dom(`(() => { const state = window.__designStudioHostFidelityFrames = { times: [], running: true };
       const tick = time => { if (!state.running) return; state.times.push(time); requestAnimationFrame(tick); };
       requestAnimationFrame(tick); return true; })()`);
-    const metrics = () => evaluateMain(async ({ webContents }, { id }) => {
-      const contents = webContents.fromId(id);
-      const attached = contents.debugger.isAttached();
-      if (!attached) contents.debugger.attach("1.3");
-      try {
-        await contents.debugger.sendCommand("Performance.enable");
-        return Object.fromEntries((await contents.debugger.sendCommand("Performance.getMetrics")).metrics.map(value => [value.name, value.value]));
-      } finally { if (!attached) contents.debugger.detach(); }
-    }, { id: guestWebContentsId });
-    const before = await metrics();
-    const cam0 = await camera();
-    for (let index = 0; index < 30; index++) {
-      await sendInput([{ type: "mouseWheel", x: Math.round(cam0.rect.x + cam0.rect.width / 2), y: Math.round(cam0.rect.y + cam0.rect.height / 2),
-        deltaX: index % 2 ? 3 : -2, deltaY: index % 3 ? 5 : -4, canScroll: true }]);
-      await wait(16);
-    }
-    await wait(400);
-    const after = await metrics();
-    const times = await dom(`(() => { const state = window.__designStudioHostFidelityFrames; state.running = false;
+    const cdp = createCdpMetricsSession(evaluateMain, guestWebContentsId);
+    let before = null, after = null, times = null, gestureStart = null, gestureEnd = null;
+    try {
+      before = await cdp.start();
+      const cam0 = await camera();
+      const focal = { x: Math.round(cam0.rect.x + cam0.rect.width / 2), y: Math.round(cam0.rect.y + cam0.rect.height / 2) };
+      gestureStart = await dom("performance.now()");
+      // A real gesture: fractional-phase pans interleaved with small anchored Ctrl+wheel zoom steps.
+      for (let index = 0; index < 40; index++) {
+        const zoomStep = index % 5 === 4;
+        await sendInput([{ type: "mouseWheel", x: focal.x, y: focal.y, deltaX: zoomStep ? 0 : (index % 2 ? 3 : -2), deltaY: zoomStep ? (index % 10 === 4 ? 6 : -6) : (index % 3 ? 5 : -4),
+          hasPreciseScrollingDeltas: true, canScroll: true, ...(zoomStep ? { modifiers: ["control"] } : {}) }]);
+        await wait(16);
+      }
+      gestureEnd = await dom("performance.now()");
+      await wait(400);
+      after = await cdp.read();
+    } finally { await cdp.stop().catch(() => {}); }
+    times = await dom(`(() => { const state = window.__designStudioHostFidelityFrames; state.running = false;
       delete window.__designStudioHostFidelityFrames; return state.times; })()`);
-    const intervalsMs = Array.isArray(times) ? times.slice(1).map((time, index) => time - times[index]) : [];
+    const frameSummary = summarizeFrames(Array.isArray(times) ? times : [], { start: gestureStart, end: gestureEnd });
+    const intervalsMs = frameSummary.all.intervalsMs;
     const sorted = [...intervalsMs].sort((a, b) => a - b), pick = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : null;
     const cam = await camera();
     const delta = key => before && after && Number.isFinite(after[key] - before[key]) ? (after[key] - before[key]) * 1000 : null;
-    const observation = { textNodeCount, openedTextLayerCount, open, zoom, camera: cam && { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio },
+    const observation = { textNodeCount, openedTextLayerCount, open, zoom, frameSummary, gestureWindowMs: gestureEnd - gestureStart, camera: cam && { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio },
       frames: { count: intervalsMs.length, intervalsMs, p50Ms: pick(.5), p95Ms: pick(.95), maxMs: sorted.at(-1) ?? null },
       cpu: { scriptDurationMs: delta("ScriptDuration"), taskDurationMs: delta("TaskDuration"), layoutDurationMs: delta("LayoutDuration"),
         recalcStyleDurationMs: delta("RecalcStyleDuration") },
@@ -721,47 +814,73 @@ export async function runDesignStudioHostFidelity(options) {
     const relativePath = FIDELITY_FIXTURE_PATHS.rotationStrips;
     await openFile(relativePath);
     const design = await documentAt(relativePath);
-    const samples = Object.fromEntries(["chevron-group", "prompt-glyph-group", "button-frame", "finite-sample"].map(id => {
-      const node = design.pages[0].nodes.find(value => value.id === id);
-      return [id, { x: node.x, y: node.y, width: node.width, height: node.height }];
-    }));
+    const nodes = design.pages[0].nodes;
+    const logicalSource = fixtureById.get(relativePath).logicalSource;
+    // HTML reference from the installed frontend-export inside the guest (browser font metrics).
+    const reference = await dom(DESIGN_STUDIO_PROBES.guestReference(logicalSource)).catch(error => ({ error: String(error?.message ?? error) }));
+    const referenceMeta = reference?.body ? { source: reference.source, fontsReady: reference.fontsReady, fontChecks: reference.fontChecks } : { source: "unavailable", error: reference?.error ?? null };
+    const referenceHtmlFor = cam => `<!doctype html><meta charset="utf-8"><style>${reference.css}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}` +
+      `#export-world{position:absolute;left:0;top:0;transform-origin:0 0;transform:translate(${cam.panX}px,${cam.panY}px) scale(${cam.zoom})}` +
+      `.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${reference.body}</div>`;
+    const textIds = ["prompt-glyph", "button-label", "finite-sample-text"];
+    const shapeIds = ["chevron-upper", "chevron-lower", "prompt-glyph-stroke-a", "prompt-glyph-stroke-b"];
     const groups = [];
-    currentPageBounds = codec.designPageBounds(design);
-    for (const target of [{ label: "100", zoom: 1 }, { label: "200", zoom: 2 }, { label: "fit" }]) {
+    // One capture set (gpu, browser, html) per anchored frame and zoom; fit captures every frame at once.
+    const plans = [
+      ...[1, 2].flatMap(targetZoom => [...new Set(VISUAL_SAMPLES.map(sample => sample.frameId))].map(frameId =>
+        ({ label: `${frameId}@${targetZoom * 100}`, targetZoom, frameId, samples: VISUAL_SAMPLES.filter(sample => sample.frameId === frameId) }))),
+      { label: "all@fit", targetZoom: null, frameId: null, samples: VISUAL_SAMPLES },
+    ];
+    for (const plan of plans) {
       await chooseRenderer("gpu");
+      await dom(`document.querySelector("#zoom-value")?.click(), true`);
+      await wait(400);
       let zoom = null;
-      if (target.zoom) {
-        zoom = await zoomTo(target.zoom);
+      if (plan.targetZoom) {
+        const fitCamera = await camera();
+        const anchor = plan.samples[0].anchor;
+        zoom = await zoomTo(plan.targetZoom, fitCamera && toClient(fitCamera, anchor[0], anchor[1]));
         if (!zoom.reached) {
-          groups.push({ label: target.label, targetZoom: target.zoom, zoom, captures: [], status: FIDELITY_STATUS.UNVERIFIED,
-            reasons: [`target zoom ${target.zoom} not reached; captures skipped so no other zoom is labelled ${target.label}`] });
+          for (const sample of plan.samples) groups.push({ label: `${sample.id}@${plan.targetZoom * 100}`, targetZoom: plan.targetZoom, zoom, reference: referenceMeta,
+            captures: [], status: FIDELITY_STATUS.UNVERIFIED, reasons: [`target zoom ${plan.targetZoom} not reached; no capture labelled with it`] });
           continue;
         }
-      } else { await dom(`document.querySelector("#zoom-value")?.click(), true`); await wait(400); }
+      }
       await waitToastHidden();
-      const captures = [];
+      const shots = [];
+      let runtime = null;
       for (const route of ["gpu", "browser"]) {
         await chooseRenderer(route);
         const cam = await camera();
-        const evidence = await capture(cam, `visual-${target.label}-${route}`);
-        captures.push({ route, camera: { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio }, png: evidence.summary,
-          pageCrop: await pageCrop(cam, evidence.summary),
-          rect: cam.rect, crops: Object.fromEntries(Object.entries(samples).map(([id, box]) => {
-            const origin = { x: cam.zoom * box.x + cam.panX, y: cam.zoom * box.y + cam.panY };
-            return [id, { x: origin.x * cam.canvasRatio, y: origin.y * cam.canvasRatio, width: box.width * cam.zoom * cam.canvasRatio, height: box.height * cam.zoom * cam.canvasRatio }];
-          })) });
+        const overlays = await dom(DESIGN_STUDIO_PROBES.overlayRects());
+        const evidence = await capture(cam, `visual-${plan.label.replace(/[^a-z0-9]+/gu, "-")}-${route}`);
+        shots.push({ route, cam, overlays, evidence });
+        if (route === "browser")
+          runtime = await dom(DESIGN_STUDIO_PROBES.renderRuntimeProbe(logicalSource, textIds, shapeIds)).catch(error => ({ error: String(error?.message ?? error) }));
       }
-      const cam = captures[0].camera, rect = captures[0].rect;
-      const reference = await referenceBound({ html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height) });
-      const evidence = await saveArtifact(`visual-${target.label}-html`, Buffer.from(reference.pngBase64, "base64"));
-      const htmlCamera = { ...cam, dpr: evidence.summary.width / Math.round(rect.width) };
-      captures.push({ route: "html", camera: htmlCamera, png: evidence.summary, rect, pageCrop: await pageCrop(htmlCamera, evidence.summary, { guestOverlays: false }),
-        blockedRequests: reference.blockedRequests, crops: captures[0].crops });
-      const group = { label: target.label, targetZoom: target.zoom ?? null, zoom, captures };
-      groups.push({ ...group, ...judgeVisualCaptureGroup(group) });
+      const cam = shots[0].cam, rect = cam.rect;
+      if (reference?.body) {
+        const html = await referenceBound({ html: referenceHtmlFor(cam), width: Math.round(rect.width), height: Math.round(rect.height) });
+        const evidence = await saveArtifact(`visual-${plan.label.replace(/[^a-z0-9]+/gu, "-")}-html`, Buffer.from(html.pngBase64, "base64"));
+        shots.push({ route: "html", cam: { ...cam, canvasRatio: evidence.summary.width / Math.round(rect.width) }, overlays: [], evidence, blockedRequests: html.blockedRequests });
+      }
+      const bands = frameLabelBands(nodes, cam.zoom);
+      for (const sample of plan.samples) {
+        const captures = shots.map(shot => ({ route: shot.route, camera: { zoom: shot.cam.zoom, panX: shot.cam.panX, panY: shot.cam.panY, dpr: shot.cam.canvasRatio },
+          png: shot.evidence.summary, rect: shot.cam.rect, ...(shot.blockedRequests ? { blockedRequests: shot.blockedRequests } : {}),
+          pageCrop: sampleRegionCrop({ camera: { zoom: shot.cam.zoom, panX: shot.cam.panX, panY: shot.cam.panY, dpr: shot.cam.canvasRatio }, region: sample.region,
+            capture: { width: shot.evidence.summary.width, height: shot.evidence.summary.height }, overlays: shot.overlays ?? [],
+            labelBands: shot.route === "html" ? [] : bands }) }));
+        const group = { label: `${sample.id}@${plan.targetZoom ? plan.targetZoom * 100 : "fit"}`, sampleId: sample.id, region: sample.region,
+          targetZoom: plan.targetZoom, zoom, reference: referenceMeta, stageRect: rect,
+          captureRectOffset: { x: Math.round(rect.x) - rect.x, y: Math.round(rect.y) - rect.y }, captures };
+        groups.push({ ...group, ...judgeVisualCaptureGroup(group) });
+      }
+      groups.at(-1).runtime = runtime;
+      groups.at(-1).runtimeFor = plan.label;
     }
     await chooseRenderer("gpu");
-    return { status: worst(groups.map(group => group.status)), groups };
+    return { status: worst(groups.map(group => group.status)), reference: referenceMeta, groups };
   });
 
   await scenario("svg-corner-aa-host", async () => {

@@ -358,7 +358,7 @@ test("same-camera visual captures are evidence for review, never an automatic pa
   const camera = { zoom: 2, panX: 40, panY: 40, dpr: 2 };
   const pageCrop = { x: 80, y: 80, width: 240, height: 60, clipped: false, comparisonEligible: true, overlays: [] };
   const capture = route => ({ route, camera, pageCrop, png: { sha256: hex("d"), width: 400, height: 200, distinctColors: 90 }, rect: { x: 0, y: 0, width: 200, height: 100 } });
-  const group = { label: "200", targetZoom: 2, zoom: { reached: true }, captures: ["gpu", "browser", "html"].map(capture) };
+  const group = { label: "200", targetZoom: 2, zoom: { reached: true }, reference: { source: "guest" }, captures: ["gpu", "browser", "html"].map(capture) };
   assert.equal(judgeVisualCaptureGroup(group).status, FIDELITY_STATUS.EVIDENCE_ONLY);
   const moved = structuredClone(group); moved.captures[2].camera = { ...camera, panX: 41 };
   assert.equal(judgeVisualCaptureGroup(moved).status, FIDELITY_STATUS.UNVERIFIED, "routes must share one camera");
@@ -1195,7 +1195,7 @@ test("closed-loop zoom measures the delivered DOM delta and reaches exact target
 test("visual groups must be captured at their target zoom with one shared, overlay-free page crop", async () => {
   const { judgeVisualCaptureGroup, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const crop = { x: 80, y: 80, width: 240, height: 60, clipped: false, comparisonEligible: true, overlays: [] };
-  const make = (zoom, overrides = {}) => ({ label: "100", targetZoom: 1, zoom: { reached: true }, captures: ["gpu", "browser", "html"].map(route => ({ route,
+  const make = (zoom, overrides = {}) => ({ label: "100", targetZoom: 1, zoom: { reached: true }, reference: { source: "guest" }, captures: ["gpu", "browser", "html"].map(route => ({ route,
     camera: { zoom, panX: 4, panY: 5, dpr: 2 }, pageCrop: crop, png: { sha256: hex("e"), width: 400, height: 200, distinctColors: 20 } })), ...overrides });
   assert.equal(judgeVisualCaptureGroup(make(Math.fround(1))).status, FIDELITY_STATUS.EVIDENCE_ONLY);
   const wrong = judgeVisualCaptureGroup(make(Math.fround(0.1)));
@@ -1298,4 +1298,84 @@ test("the desktop report records the real Chromium version", async () => {
   const source = await readFile(join(repository, "scripts/check-panel-desktop.mjs"), "utf8");
   assert.match(source, /chrome: process\.versions\.chrome/);
   assert.match(source, /probe: designStudioFidelity\.probe/);
+});
+
+/* ---- run3 follow-up: comparison qualification ---- */
+test("an empty dialog while the structured listing contains the target reopens once after the app's 3 s discovery cache", async () => {
+  const { openDesignFileWithDiagnostics } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const path = "designs/host-fidelity-interaction.codesign.json";
+  const make = async includesTarget => {
+    const dom = await realIdDocument({ documentPath: "designs/other.codesign.json", rows: [] });
+    dom.elements.get("files-list").textContent = "还没有设计文件。编辑画布后会自动保存。";
+    const panel = { callResult: async () => ({ ok: true, value: { entries: includesTarget ? [{ kind: "file", path }] : [] } }) };
+    return { dom, run: source => (0, eval)(`(function (document, window) { return (${source}); })`)(dom.document, { codeshellPanel: panel }) };
+  };
+  const cached = await make(true);
+  const waits = [];
+  const opened = await openDesignFileWithDiagnostics({ execute: async source => cached.run(source), relativePath: path, timeoutMs: 20, now: () => performance.now(),
+    wait: async ms => { waits.push(ms); if (ms === 3250) { const row = { textContent: path, click() { cached.dom.elements.get("document-path").value = path; } };
+      cached.dom.document.querySelectorAll = () => [row]; } } });
+  assert.equal(opened.attempts, 2);
+  assert.ok(waits.includes(3250));
+  assert.match(opened.diagnostics[0].dialog.filesListText, /还没有设计文件/);
+  assert.equal(opened.diagnostics[0].bridge.includesTarget, true);
+  assert.equal(opened.diagnostics[0].retry, "empty-dialog-with-listed-target");
+  const absent = await make(false);
+  await assert.rejects(openDesignFileWithDiagnostics({ execute: async source => absent.run(source), relativePath: path, timeoutMs: 20, now: () => performance.now(), wait: async () => {} }),
+    error => error.diagnostics.length === 1 && error.diagnostics[0].retry === null);
+});
+
+test("sample regions sit inside their frames below the canvas frame-label band and become ineligible when covered", async () => {
+  const { VISUAL_SAMPLES, frameLabelBands, sampleRegionCrop } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { codec } = await studioModules();
+  const fixture = (await loadFixtures()).find(value => value.relativePath.includes("rotation"));
+  const nodes = codec.normalizeDesignDocument(JSON.parse(fixture.logicalSource)).pages[0].nodes;
+  assert.deepEqual(VISUAL_SAMPLES.map(sample => sample.id), ["chevron", "prompt-strokes", "prompt-text", "button-text", "finite-text"]);
+  for (const zoom of [0.615, 1, 2]) {
+    const bands = frameLabelBands(nodes, zoom);
+    assert.equal(bands.length, zoom >= 0.65 ? 4 : 0, "labels are drawn for the four top-level frames at zoom >= 0.65");
+    for (const sample of VISUAL_SAMPLES) {
+      const frame = nodes.find(node => node.id === sample.frameId);
+      const [x, y, width, height] = sample.region;
+      assert.ok(x >= frame.x && y >= frame.y + 2 && x + width <= frame.x + frame.width && y + height <= frame.y + frame.height, sample.id);
+      assert.ok(bands.every(band => y >= band.y + band.height || y + height <= band.y || x >= band.x + band.width || x + width <= band.x), `${sample.id} vs label @${zoom}`);
+    }
+  }
+  const camera = { zoom: 1, panX: 100, panY: 50, dpr: 2 };
+  const crop = sampleRegionCrop({ camera, region: [42, 42, 28, 28], capture: { width: 986, height: 1348 }, overlays: [], labelBands: frameLabelBands(nodes, 1) });
+  assert.deepEqual([crop.x, crop.y, crop.width, crop.height, crop.comparisonEligible], [284, 184, 56, 56, true]);
+  const labelHit = sampleRegionCrop({ camera, region: [40, 20, 28, 28], capture: { width: 986, height: 1348 }, overlays: [], labelBands: frameLabelBands(nodes, 1) });
+  assert.equal(labelHit.comparisonEligible, false);
+  assert.match(labelHit.overlays.join(), /frame-label:chevron-group/);
+  const outside = sampleRegionCrop({ camera: { ...camera, panX: -500 }, region: [42, 42, 28, 28], capture: { width: 986, height: 1348 }, overlays: [], labelBands: [] });
+  assert.equal(outside.comparisonEligible, false, "a clipped sample region is not compared");
+});
+
+test("visual comparison requires an HTML reference generated in the browser guest, not in Node", async () => {
+  const { judgeVisualCaptureGroup, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const crop = { x: 8, y: 8, width: 40, height: 20, clipped: false, comparisonEligible: true, overlays: [] };
+  const make = reference => ({ label: "button-text@100", targetZoom: 1, zoom: { reached: true }, reference, captures: ["gpu", "browser", "html"].map(route => ({ route,
+    camera: { zoom: 1, panX: 1, panY: 2, dpr: 2 }, pageCrop: crop, png: { sha256: hex("f"), width: 100, height: 50, distinctColors: 9 } })) });
+  assert.equal(judgeVisualCaptureGroup(make({ source: "guest", fontsReady: true })).status, FIDELITY_STATUS.EVIDENCE_ONLY);
+  assert.equal(judgeVisualCaptureGroup(make({ source: "node" })).status, FIDELITY_STATUS.UNVERIFIED);
+  assert.equal(judgeVisualCaptureGroup(make(undefined)).status, FIDELITY_STATUS.UNVERIFIED);
+  const source = await readFile(join(repository, "scripts/design-studio-host-fidelity-runner.mjs"), "utf8");
+  assert.doesNotMatch(source, /frontend\.renderDesignFrontendPage\(/, "the runner no longer renders the reference in Node");
+});
+
+test("CPU metrics use one owned debugger session and gesture frames are summarised inside the gesture window", async () => {
+  const { createCdpMetricsSession, summarizeFrames } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const calls = { attach: 0, detach: 0, enable: 0, disable: 0, reads: 0 };
+  let attached = false, script = 1;
+  const contents = { debugger: { isAttached: () => attached, attach: () => { calls.attach++; attached = true; }, detach: () => { calls.detach++; attached = false; },
+    sendCommand: async method => { if (method === "Performance.enable") calls.enable++; if (method === "Performance.disable") calls.disable++;
+      if (method === "Performance.getMetrics") { calls.reads++; script += 0.25; return { metrics: [{ name: "ScriptDuration", value: script }, { name: "TaskDuration", value: script * 2 }] }; } return {}; } } };
+  const evaluateMain = (fn, argument) => fn({ webContents: { fromId: () => contents } }, argument);
+  const session = createCdpMetricsSession(evaluateMain, 7);
+  const before = await session.start(), after = await session.read();
+  await session.stop(); await session.stop();
+  assert.deepEqual(calls, { attach: 1, detach: 1, enable: 1, disable: 1, reads: 2 });
+  assert.equal((after.ScriptDuration - before.ScriptDuration) * 1000, 250, "deltas come from one session, not reset counters");
+  const frames = summarizeFrames([0, 8, 16, 24, 40, 48, 300, 308], { start: 10, end: 50 });
+  assert.deepEqual([frames.window.count, frames.window.maxMs, frames.all.count], [4, 16, 7]);
 });

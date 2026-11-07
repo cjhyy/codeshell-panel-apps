@@ -519,6 +519,42 @@ export const zoomMatches = (actual, target) => finite(actual) && finite(target) 
  * Visible app overlays (toolbar, toast, hints; CSS px relative to the stage) that touch
  * the crop make it ineligible for comparison rather than being mixed in.
  */
+/**
+ * Focus samples for the rotation-strips fixture. Each region (world x, y, width, height)
+ * lies inside its top-level frame and below the frame-label band that the app draws on
+ * its overlay canvas at zoom >= 0.65 (canvas-interaction.mjs: label at node.y - 18/zoom,
+ * hit box node.y - 30/zoom). Anchors are the frame centres used for anchored zoom.
+ */
+export const VISUAL_SAMPLES = Object.freeze([
+  { id: "chevron", frameId: "chevron-group", region: [42, 42, 28, 28], anchor: [56, 56], nodes: ["chevron-upper", "chevron-lower"] },
+  { id: "prompt-strokes", frameId: "prompt-glyph-group", region: [99, 44, 18, 24], anchor: [120, 56], nodes: ["prompt-glyph-stroke-a", "prompt-glyph-stroke-b"] },
+  { id: "prompt-text", frameId: "prompt-glyph-group", region: [117, 44, 26, 24], anchor: [120, 56], nodes: ["prompt-glyph"] },
+  { id: "button-text", frameId: "button-frame", region: [172, 44, 112, 24], anchor: [228, 56], nodes: ["button-label"] },
+  { id: "finite-text", frameId: "finite-sample", region: [318, 44, 190, 24], anchor: [412, 56], nodes: ["finite-sample-text"] },
+].map(sample => Object.freeze(sample)));
+const FRAME_LABEL_MIN_ZOOM = 0.65;
+/** Conservative world-space bands of the app's canvas-drawn frame labels (not DOM). */
+export function frameLabelBands(nodes, zoom) {
+  if (!(zoom >= FRAME_LABEL_MIN_ZOOM)) return [];
+  return nodes.filter(node => !node.parentId && ["frame", "component", "group"].includes(node.type) && node.visible !== false)
+    .map(node => ({ id: node.id, x: node.x, y: node.y - 30 / zoom, width: Math.max(node.width, 200 / zoom), height: 30 / zoom }));
+}
+/** Device crop of one sample region; ineligible when clipped, covered by a DOM overlay or by a frame-label band. */
+export function sampleRegionCrop({ camera, region, capture, overlays = [], labelBands = [] }) {
+  const { zoom, panX, panY, dpr } = camera;
+  const [x, y, width, height] = region;
+  const x0 = (zoom * x + panX) * dpr, y0 = (zoom * y + panY) * dpr, x1 = (zoom * (x + width) + panX) * dpr, y1 = (zoom * (y + height) + panY) * dpr;
+  const left = Math.floor(x0), top = Math.floor(y0), right = Math.ceil(x1), bottom = Math.ceil(y1);
+  const clipped = left < 0 || top < 0 || right > capture.width || bottom > capture.height;
+  const touches = (ax, ay, aw, ah) => ax < right && ax + aw > left && ay < bottom && ay + ah > top;
+  const covered = [
+    ...overlays.filter(o => touches(o.x * dpr, o.y * dpr, o.width * dpr, o.height * dpr)).map(o => o.name),
+    ...labelBands.filter(b => touches((zoom * b.x + panX) * dpr, (zoom * b.y + panY) * dpr, b.width * zoom * dpr, b.height * zoom * dpr)).map(b => `frame-label:${b.id}`),
+  ];
+  return { x: left, y: top, width: right - left, height: bottom - top, clipped, comparisonEligible: !clipped && covered.length === 0,
+    overlays: covered, transform: { deviceScale: zoom * dpr, originX: x0, originY: y0 } };
+}
+
 export function pageCropRect({ camera, pageBounds, capture, overlays = [] }) {
   const { zoom, panX, panY, dpr } = camera;
   const x0 = (zoom * pageBounds.x + panX) * dpr, y0 = (zoom * pageBounds.y + panY) * dpr;
@@ -551,6 +587,9 @@ export function judgeVisualCaptureGroup(group) {
       if (!zoomMatches(capture.camera?.zoom, group.targetZoom))
         reasons.push(`${capture.route}: camera zoom ${capture.camera?.zoom} is not the target zoom ${group.targetZoom}`);
   }
+  // run3: the Node-rendered HTML lacked the browser-measured finite paint offset.
+  if (captures.some(capture => capture.route === "html") && group?.reference?.source !== "guest")
+    reasons.push(`HTML reference was not generated in the browser guest (${group?.reference?.source ?? "unknown"})`);
   const crop = captures[0]?.pageCrop;
   for (const capture of captures) {
     const value = capture.pageCrop;
