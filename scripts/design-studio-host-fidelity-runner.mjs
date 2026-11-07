@@ -85,6 +85,32 @@ export function createOwnedGuestCleanup(guest, { timeoutMs = 5_000 } = {}) {
 const TIMED_OUT = Symbol("timed-out");
 
 /**
+ * Bounded pre-run setup for the fidelity guest: readiness polling and the guest
+ * webContents id. Each guest call uses boundedOwnedOperation with the shared
+ * guest cleanup as cancel, so a hung renderer cannot block before the caller's
+ * finally; unsettled errors propagate to the existing owned Electron cleanup.
+ */
+export async function prepareFidelityGuest({ guest, guestCleanup, readySource, timeoutMs = 30_000, settleTimeoutMs = 5_000,
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now() }) {
+  const cancel = async () => {
+    const state = await guestCleanup.remove();
+    if (state.removeState !== "resolved") throw new Error(`owned guest remove ${state.removeState}`);
+  };
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    const ready = await boundedOwnedOperation(() => guest.execute(readySource),
+      { label: "fidelity guest readiness probe", timeoutMs: Math.max(1, deadline - now()), settleTimeoutMs, cancel });
+    if (ready === true) break;
+    if (now() >= deadline) throw new Error(`fidelity guest not ready within ${timeoutMs}ms`);
+    await wait(100);
+  }
+  const guestWebContentsId = await boundedOwnedOperation(() => guest.view.evaluate(view => view.getWebContentsId()),
+    { label: "fidelity guest webContents id", timeoutMs, settleTimeoutMs, cancel });
+  if (!Number.isInteger(guestWebContentsId) || guestWebContentsId <= 0) throw new Error(`invalid fidelity guest webContents id: ${guestWebContentsId}`);
+  return { guestWebContentsId };
+}
+
+/**
  * Render static HTML in an owned hidden BrowserWindow of the same Electron/Chromium,
  * with JavaScript disabled and every non data/blob/about request cancelled. Load and
  * capture have a local deadline inside Main: on timeout the owned window is destroyed

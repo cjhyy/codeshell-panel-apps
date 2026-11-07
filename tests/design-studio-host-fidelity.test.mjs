@@ -498,7 +498,7 @@ test("check-panel-desktop wires fidelity only behind the explicit flag inside th
   assert.ok(preflight > 0 && preflight < temporary, "preflight must run before any temporary HOME is created");
   assert.ok(source.indexOf("preflightPanelDesktopHost(") < source.indexOf("launchCodeShellElectron("));
   const run = source.indexOf("runDesignStudioHostFidelity(");
-  const tryStart = source.indexOf("\ntry {"), finallyStart = source.indexOf("} finally {\n  cleanupReceipt");
+  const tryStart = source.indexOf("\ntry {"), finallyStart = source.indexOf("} finally {\n  // Owned Electron/HOME cleanup first");
   assert.ok(run > tryStart && run < finallyStart, "fidelity must run inside the existing owned-cleanup try/finally");
   assert.match(source.slice(source.lastIndexOf("if (", run), run), /designStudioFidelity/);
   assert.match(source, /HASHED_HOST_BUILD_FILES/);
@@ -870,4 +870,107 @@ test("a reference evaluation that never settles is not swallowed: rest aborted a
     assert.equal(report.summary.notRun.length, 5, "filtered scenarios stay visible as not run");
     assert.notEqual(report.summary.overall, "PASS");
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+/* ---- Fourth review: bounded pre-run setup, evidence-preserving failure partials ---- */
+test("pre-run guest setup is bounded and hands a hung guest to the shared owned cleanup", async () => {
+  const { prepareFidelityGuest, createOwnedGuestCleanup } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const ready = 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"';
+  // 1. A readiness probe that never returns; remove settles it.
+  let removes = 0, rejectPending;
+  const hung = { execute: () => new Promise((_resolve, reject) => { rejectPending = reject; }),
+    remove: async () => { removes++; rejectPending?.(new Error("guest destroyed")); }, view: { evaluate: async () => 9 } };
+  const cleanup = createOwnedGuestCleanup(hung, { timeoutMs: 20 });
+  let started = Date.now();
+  await assert.rejects(prepareFidelityGuest({ guest: hung, guestCleanup: cleanup, readySource: ready, timeoutMs: 20, settleTimeoutMs: 20, wait: async () => {} }),
+    error => error.timedOut === true && error.unsettled === false && /readiness/.test(error.message));
+  assert.ok(Date.now() - started < 1000);
+  await cleanup.remove(); // the caller's finally
+  assert.equal(removes, 1, "runner path and caller finally share one remove");
+  // 2. Probe and remove both hang: still bounded, unsettled, owned Host cleanup required.
+  const stuck = { execute: () => new Promise(() => {}), remove: () => new Promise(() => {}), view: { evaluate: async () => 9 } };
+  const stuckCleanup = createOwnedGuestCleanup(stuck, { timeoutMs: 20 });
+  started = Date.now();
+  await assert.rejects(prepareFidelityGuest({ guest: stuck, guestCleanup: stuckCleanup, readySource: ready, timeoutMs: 20, settleTimeoutMs: 20, wait: async () => {} }),
+    error => error.unsettled === true);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(stuckCleanup.state().requiresOwnedHostCleanup, true);
+  // 3. getWebContentsId hangs after readiness.
+  const idHangs = { execute: async () => true, remove: async () => {}, view: { evaluate: () => new Promise(() => {}) } };
+  await assert.rejects(prepareFidelityGuest({ guest: idHangs, guestCleanup: createOwnedGuestCleanup(idHangs, { timeoutMs: 20 }), readySource: ready,
+    timeoutMs: 20, settleTimeoutMs: 20, wait: async () => {} }), /webContents id/);
+  // 4. A ready guest that never becomes ready within the poll budget is a plain bounded failure.
+  let polls = 0;
+  const notReady = { execute: async () => { polls++; return false; }, remove: async () => {}, view: { evaluate: async () => 9 } };
+  await assert.rejects(prepareFidelityGuest({ guest: notReady, guestCleanup: createOwnedGuestCleanup(notReady), readySource: ready,
+    timeoutMs: 30, settleTimeoutMs: 20, wait: () => new Promise(resolve => setTimeout(resolve, 5)) }), /not ready/);
+  assert.ok(polls >= 2);
+  // 5. Normal path.
+  const fine = { execute: async () => true, remove: async () => {}, view: { evaluate: async () => 42 } };
+  assert.deepEqual(await prepareFidelityGuest({ guest: fine, guestCleanup: createOwnedGuestCleanup(fine), readySource: ready, timeoutMs: 20, settleTimeoutMs: 20,
+    wait: async () => {} }), { guestWebContentsId: 42 });
+});
+
+test("failure partial keeps completed fidelity evidence and the actual cleanup outcome, never as complete or PASS", async () => {
+  const { buildFidelityFailurePartial, describeOwnedCleanup } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const fidelityReport = { summary: { overall: "INCOMPLETE", goalComplete: false }, results: [{ id: "open-without-edit", status: "PASS" }] };
+  const artifacts = [{ label: "visual-100-gpu", offset: 0, length: 5, sha256: hex("a") }];
+  const primary = new Error("generic restore assertion failed");
+  const cleanupError = new AggregateError([primary, new Error("Fixture HOME retained for an unverified live Electron: /x")], "cleanup failed");
+  const cleanup = describeOwnedCleanup({ error: cleanupError, primaryFailure: primary });
+  assert.deepEqual(cleanup, { completed: false, receipt: null, homeRetained: true,
+    errors: ["Fixture HOME retained for an unverified live Electron: /x"] });
+  const partial = buildFidelityFailurePartial({ stage: "design-studio: project update and exact-package restore", failure: primary, fidelityReport, artifacts, cleanup });
+  assert.equal(partial.partial, true);
+  assert.equal(partial.complete, false);
+  assert.equal(partial.goalComplete, false);
+  assert.notEqual(partial.overall, "PASS");
+  assert.equal(partial.failure.message, "generic restore assertion failed");
+  assert.deepEqual(partial.designStudioFidelity, fidelityReport, "completed fidelity evidence is kept");
+  assert.deepEqual(partial.artifacts, artifacts, "the bundle index is kept");
+  assert.equal(partial.cleanup.homeRetained, true);
+  const ok = describeOwnedCleanup({ receipt: { exited: true, homeRemoved: true } });
+  assert.deepEqual(ok, { completed: true, receipt: { exited: true, homeRemoved: true }, homeRetained: false, errors: [] });
+  const notRun = buildFidelityFailurePartial({ stage: "launch production Electron", failure: new Error("x"), fidelityReport: null, artifacts: [], cleanup: ok });
+  assert.equal(notRun.designStudioFidelity.status, "NOT_RUN");
+  assert.equal(notRun.overall, "NOT_COMPLETE");
+});
+
+test("the failure partial is written at most once and a write error never replaces the original failure", async () => {
+  const { writeFidelityPartialOnce } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const writes = [];
+  let written = false;
+  const outputs = { reportWritten: () => written, writeReport: async text => { writes.push(text); written = true; } };
+  assert.deepEqual(await writeFidelityPartialOnce(outputs, { partial: true }), { written: true });
+  assert.deepEqual(await writeFidelityPartialOnce(outputs, { partial: true }), { written: false, reason: "report already written" });
+  assert.equal(writes.length, 1);
+  assert.ok(writes[0].endsWith("\n") && JSON.parse(writes[0]).partial === true);
+  const broken = { reportWritten: () => false, writeReport: async () => { throw new Error("EIO"); } };
+  assert.deepEqual(await writeFidelityPartialOnce(broken, { partial: true }), { written: false, error: "EIO" });
+  assert.deepEqual(await writeFidelityPartialOnce(null, { partial: true }), { written: false, reason: "no fidelity outputs" });
+});
+
+test("claimed outputs expose whether the single report write already happened", unixOnly, async () => {
+  const { claimFidelityOutputs } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const outputs = await claimFidelityOutputs();
+  try {
+    assert.equal(outputs.reportWritten(), false);
+    await outputs.writeReport("{}\n");
+    assert.equal(outputs.reportWritten(), true);
+  } finally { await outputs.close(); await removeOwned([outputs.reportPath, outputs.bundlePath]); }
+});
+
+test("check-panel-desktop bounds fidelity setup and writes one partial after the owned cleanup on any failure", async () => {
+  const source = await readFile(join(repository, "scripts/check-panel-desktop.mjs"), "utf8");
+  assert.doesNotMatch(source, /untilGuest\(fidelityGuest/, "the unbounded generic poll is not used for the fidelity guest");
+  assert.doesNotMatch(source, /fidelityGuest\.view\.evaluate/);
+  const cleanupCreated = source.indexOf("createOwnedGuestCleanup(fidelityGuest)");
+  const prepare = source.indexOf("prepareFidelityGuest(");
+  assert.ok(cleanupCreated > 0 && prepare > cleanupCreated, "setup runs after the shared cleanup exists");
+  assert.ok(source.lastIndexOf("try {", prepare) > cleanupCreated, "setup runs inside the try whose finally removes the guest");
+  const ownedCleanup = source.indexOf("cleanupPanelDesktopFixture({ app, ownedChildProcess");
+  const partial = source.indexOf("writeFidelityPartialOnce(");
+  assert.ok(partial > ownedCleanup, "the partial is written after the owned cleanup so it records its actual outcome");
+  assert.equal(source.match(/fidelityOutputs\.writeReport\(/g)?.length, 1, "only the success path writes the full report directly");
+  assert.match(source.slice(partial - 600, partial + 400), /describeOwnedCleanup/);
 });

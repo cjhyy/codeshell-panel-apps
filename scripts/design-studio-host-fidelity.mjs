@@ -629,6 +629,7 @@ export async function claimFidelityOutputs({ root = SYSTEM_OUTPUT_ROOTS[process.
     name: outputName, root, rootChain: chain, reportPath, bundlePath,
     identity: { report: { dev: identity.report.dev, ino: identity.report.ino }, bundle: { dev: identity.bundle.dev, ino: identity.bundle.ino } },
     artifacts: () => artifacts.map(value => ({ ...value })),
+    reportWritten: () => reportWritten,
     writeArtifact: (label, buffer) => serial(async () => {
       if (closed) throw new Error("fidelity outputs are closed");
       if (typeof label !== "string" || !ARTIFACT_LABEL.test(label)) throw new Error(`invalid artifact label: ${label}`);
@@ -657,6 +658,34 @@ export async function claimFidelityOutputs({ root = SYSTEM_OUTPUT_ROOTS[process.
       await Promise.allSettled([report.close(), bundle.close()]);
     }),
   };
+}
+
+/**
+ * Failure evidence. After the existing owned Electron/HOME cleanup has run, a
+ * failed run writes one partial through the held report handle: completed
+ * fidelity results, the artifact-bundle index and the actual cleanup outcome.
+ * It is never complete, never PASS, and a write problem never replaces the
+ * original failure (the caller still exits non-zero).
+ */
+export function describeOwnedCleanup({ receipt = null, error = null, primaryFailure = null } = {}) {
+  if (!error) return { completed: true, receipt, homeRetained: false, errors: [] };
+  const errors = (error instanceof AggregateError ? error.errors : [error]).filter(value => value !== primaryFailure)
+    .map(value => String(value?.message ?? value));
+  return { completed: false, receipt: null, homeRetained: errors.some(message => /HOME retained/u.test(message)), errors };
+}
+export function buildFidelityFailurePartial({ stage, failure, fidelityReport, artifacts = [], cleanup }) {
+  return { schemaVersion: 1, partial: true, complete: false, goalComplete: false, overall: "NOT_COMPLETE", stage: stage ?? null,
+    failure: failure ? { name: failure.name ?? "Error", message: String(failure.message ?? failure) } : null,
+    designStudioFidelity: fidelityReport ?? { status: "NOT_RUN" }, artifacts, cleanup,
+    note: "Partial evidence from a failed run: completed scenario results and artifacts only; not acceptance and not a PASS." };
+}
+export async function writeFidelityPartialOnce(outputs, partial) {
+  if (!outputs) return { written: false, reason: "no fidelity outputs" };
+  if (outputs.reportWritten()) return { written: false, reason: "report already written" };
+  try {
+    await outputs.writeReport(`${JSON.stringify(partial, null, 2)}\n`);
+    return { written: true };
+  } catch (error) { return { written: false, error: String(error?.message ?? error) }; }
 }
 
 /** Map authored world geometry into the exported SVG's original-size device pixels. */

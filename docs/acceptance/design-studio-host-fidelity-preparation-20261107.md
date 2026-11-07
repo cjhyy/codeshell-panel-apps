@@ -52,7 +52,7 @@ node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell --design-
 | --- | --- |
 | `scripts/design-studio-host-fidelity.mjs` | 纯模块，无顶层副作用，不 import electron、playwright 或 child_process。包含：参数解析和 opt-in 闸门；只读 preflight；样本复制；网络 allowlist；合成 fixture；各场景判定；报告汇总；create-only 输出检查 |
 | `scripts/design-studio-host-fidelity-runner.mjs` | 只在 Electron 里执行的步骤。它接收现有 harness 已经拥有的 guest 和 Electron app 句柄，自己不启动任何进程 |
-| `scripts/check-panel-desktop.mjs` | 最小扩展。改用共享的参数解析器；preflight 和 create-only 检查放在 `mkdtemp` 之前；fidelity 使用独立的私有 project `desktop-fidelity`，fixture 在启动前写入；场景在原有 owned-cleanup 的 `try/finally` 里执行，位于 design-studio 的 CanvasKit 检查之后、通用 update/restore 之前 |
+| `scripts/check-panel-desktop.mjs` | 最小扩展。改用共享的参数解析器；preflight 和 fidelity 输出 claim（root-owned 系统临时目录内两个持有句柄的文件，见第三轮）放在 `mkdtemp` 之前；fidelity 使用独立的私有 project `desktop-fidelity`，fixture 在启动前写入；场景在原有 owned-cleanup 的 `try/finally` 里执行，位于 design-studio 的 CanvasKit 检查之后、通用 update/restore 之前 |
 | `tests/design-studio-host-fidelity.test.mjs` | 33 项单元测试（复审返修后），已登记到 `tests/suites.mjs` 的 `desktop-harness` 套件 |
 
 沿用的现有隔离：私有 mkdtemp HOME、CODE_SHELL_HOME 和 userData，并断言 Electron `app.getPath`；生产 Main/preload 的审阅式安装 IPC；Node HTTP guard；每个 Electron session 都取消 HTTP(S)；NativeEntry 和 managed Node 走 macOS deny(network*)；只向捕获到的 ChildProcess 发信号，确认其退出后才删除 HOME。
@@ -82,7 +82,7 @@ fixture 是合成的，不复制任何个人稿。字节就是**本仓库 `apps/
 | 5 | same-camera-visual | 在约 100%、约 200%（Ctrl+wheel，最多迭代 6 次，容差 1e-6）和 fit 三档下，对 GPU 和 browser 两种 renderer 分别用 `capturePage` 截取 stage 区域；从 `#stage` 的 2D transform 读取相机。HTML 参照由**已安装包**的 `designFrontendCss`/`renderDesignFrontendPage` 生成，套用同一相机，在同一 Electron/Chromium 的 owned 隐藏窗口里截图。报告记录 chevron、`>_`、button、finite 样例的 device 裁剪框 | 各路线相机一致且截图非空时判 EVIDENCE_ONLY；相机不一致、截图空白或缺少某条路线时判 UNVERIFIED | 应用没有 100%/200% 预设；HTML 参照是隐藏窗口的合成路径，与 webview 可能不同；没有获批的像素阈值 |
 | 6 | svg-corner-aa-host | 已安装的 `exportDesignSvg` 输出按原尺寸放进参照窗口截图；用 `tests/apps/design-studio/svg-semantic-metrics.mjs` 的 `compareSvgSemantics`（获批的 fill 合同）判定；GPU 和 browser 在 zoom 1 的截图只按同一 oracle 做描述，不作门禁 | 语义 PASS 映射为 PASS，`FAIL_SVG_GEOMETRY` 映射为 FAIL，其余判 UNVERIFIED | Retina Host 截出来是 DPR2；原来 4 个 FAIL 行是 DPR1/z1，需要 DPR1 显示器才能复现，会在 notes 中注明 |
 
-报告和截图 PNG 都是 create-only，必须在仓库外。每个场景单独 try/catch：harness 步骤出错时该场景记为 UNVERIFIED，并保留错误信息。
+报告和截图（第三轮起）：fidelity 拒绝任何报告路径；harness 在 root-owned 系统临时目录（macOS 为 `/private/tmp`）中以 `O_CREAT|O_EXCL|O_NOFOLLOW` 创建报告和 PNG bundle 两个文件，持有句柄，所有字节都经句柄写入，报告只写一次。不带 flag 的原有 Desktop 检查仍接受 `[new-report.json]` 并以 `wx` 写入。每个场景单独 try/catch：harness 步骤出错时该场景记为 UNVERIFIED，并保留错误信息。
 
 ## 测试与实际运行
 
@@ -111,7 +111,7 @@ node --check scripts/check-panel-desktop.mjs           # syntax ok
 
 单元测试覆盖：
 
-- 默认参数不变；环境变量不能 opt-in；flag 必须带 Host 路径和报告路径，且只接受 `--app design-studio`；
+- 默认参数不变；环境变量不能 opt-in；flag 必须带 Host 路径，且只接受 `--app design-studio`。第三轮起 flag **拒绝**报告路径，输出为 root-owned 系统临时目录中持有句柄的 report 和 bundle；不带 flag 的原有 Desktop 报告契约 `[new-report.json]` 保留；
 - preflight 准确报告缺件（包括 managed runtime 和 Electron dist），`actionsTaken` 为空，并且不写入 Host；
 - 样本复制：前后 SHA 和 mtime 一致，原件 0444 不变；复制期间原件被改动、原件位于 project 内、或给出相对路径时，都会拒绝；
 - 外部网络 allowlist；默认 offline catalog 和 package scripts 都不调用 `check-panel-desktop` 或 fidelity；纯模块不 import electron、playwright 或 child_process，也没有顶层副作用；
@@ -121,7 +121,7 @@ node --check scripts/check-panel-desktop.mjs           # syntax ok
 - 没有 opt-in 时 runner 不碰任何句柄；
 - 参照窗口在 capture 失败时也会被 destroy，并拒绝 http(s) 和 file；
 - 用假 guest 运行时，所有场景都是 UNVERIFIED 或 FAIL，没有 PASS，也不会真实 sleep；
-- 静态检查接线：preflight 和 create-only 检查在 `mkdtemp` 之前；runner 位于原 `try/finally` 之内，且受 flag 条件控制。
+- 静态检查接线：preflight 和 fidelity 输出 claim 在 `mkdtemp` 之前；runner 位于原 `try/finally` 之内，且受 flag 条件控制。
 
 ## 未执行项（全部如实列出）
 
@@ -185,7 +185,7 @@ npm run validate                                                              # 
 1. **输出根只有一个：root-owned 的系统临时目录**。macOS 是 `/private/tmp`，Linux 是 `/tmp`。`verifyRootOwnedOutputRoot` 对路径链上的每一级做 lstat，要求：不是 symlink、是目录、uid 为 0、可被他人写的那一级必须带 sticky 位。本机实测 `/`、`/private` 均为 0755 root，`/private/tmp` 为 1777 root，满足要求。非 root 进程无法替换这条链上的任何一级，所以 check→create 之间不存在可被利用的父目录替换窗口。macOS 上的 `/tmp` 本身是 symlink，会被拒绝；仓库目录、用户目录也会被拒绝；没有这种根的平台直接拒绝运行，不退回较弱的检查。
 2. **只在该根下直接创建两个文件，不创建任何目录**。两个文件都用 `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW(|O_CLOEXEC)`、权限 0600 打开，文件名带随机部分。同名条目已存在（包括 dangling symlink 或普通文件）时报 EEXIST，且不会跟随 symlink。如果第二个文件创建失败，只有在路径仍指向我们持有的那个 inode（dev/ino 一致）时，才删除刚创建的第一个文件。
 3. **持有句柄，全部写入都经由句柄**。PNG 用带 offset 的 `FileHandle.write` 追加进 bundle；报告只写一次，写后 `sync`；`close` 幂等。之后即使有人对这两个路径做 rename 或换成 symlink，写入仍然落在原 inode 上，不会改写到别处。runner 里已经没有任何按路径的 `writeFile` 或 `mkdir`（有静态测试守护）。
-4. check-panel-desktop 在 `mkdtemp` 之前完成 claim；最终报告通过句柄写入；失败路径在 owned cleanup 的 `.finally` 中关闭句柄。不带 flag 的原有 Desktop 检查仍按 `[new-report.json]` 以 `wx` 写入，行为不变。
+4. check-panel-desktop 在 `mkdtemp` 之前完成 claim；最终报告通过句柄写入；失败路径的处理见第四轮（先 owned cleanup，再写一次 partial，然后关闭句柄）。不带 flag 的原有 Desktop 检查仍按 `[new-report.json]` 以 `wx` 写入，行为不变。
 
 负控（全部是 `/private/tmp` 里的真实 inode 和 symlink，测试结束后只删除自己创建的条目）：
 
@@ -229,3 +229,26 @@ npm run validate                                                              # 
 - **跨平台的任意用户路径安全写入**：没有 openat 就做不到，因此已放弃，改为上述 root-owned 根加句柄绑定。Windows 等没有这种根的平台直接拒绝运行。
 - **root 或同 uid 的进程**：root 本身不在防护范围内。同 uid 的进程可以 rename 我们创建的文件，但写入仍然落在持有的 inode 上；这类进程本来也能直接写仓库，不属于这条边界要防的对象。
 - **真实 Host 场景仍然 0 个运行过**。主 Host checkout 缺 `out/managed-runtimes/node/bin/node`（preflight 会 exit 2），也没有获得窗口许可。性能 stats 没有出口，判 UNVERIFIED；视觉场景最多 EVIDENCE_ONLY；`goalComplete` 恒为 false。以下行为只在假句柄上验证过：`guest.remove()` 在真实 Electron 里能否让挂起的 `executeJavaScript` settle；Main 中 BrowserWindow 被 destroy 后，load 和 capture 是否会 reject。
+
+## 第四轮小项收敛（a5f23f5e：I3、I4、M 已由独立 CC reviewer PASS，不重做）
+
+返修前核对：HEAD 为 `a5f23f5e`，工作区除 `.tmp/` 外干净。本轮仍然**没有**启动 Electron、GUI 或浏览器，没有构建 Host，没有安装 Panel，没有执行任何入口，也没有触碰另一个 cwd 中的 Host 构建任务。
+
+红：`node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs` → 45 tests / 40 pass / 5 fail（`.tmp/host-harness/review4-red.log`）。
+
+1. **fidelity 运行前的准备步骤加上界。** 原来 runner 之前有两个 await：`untilGuest(fidelityGuest, …)`（其中单次 `execute` 可能永久挂起）和 `fidelityGuest.view.evaluate(getWebContentsId)`，都没有上界。现在改为 runner 中的 `prepareFidelityGuest`：就绪轮询的每次 `execute` 和 webContents id 的读取，都经由已有的 `boundedOwnedOperation`，cancel 用的是共享的 `guestCleanup.remove()`（本身已有上界，没有再加一层）。这一步位于 `createOwnedGuestCleanup` 之后、内层 try 之内，因此任何失败都会进入 finally 中那次幂等的 remove。未结清的错误继续向外抛出，交给现有的 owned Electron cleanup。这项防护只用于 fidelity 入口，通用的 `attach` 和 `untilGuest` 没有改动。负控：probe 挂起但 remove 能让它结束（有界，`unsettled:false`，remove 一共只调用一次）；probe 和 remove 都挂起（有界，`unsettled`，`requiresOwnedHostCleanup`）；webContents id 挂起；轮询期间一直未就绪；正常路径。
+2. **任何失败都保留证据，且只写一次。** check-panel-desktop 的外层 finally 先运行现有的 `cleanupPanelDesktopFixture`，并捕获它的结果；随后，只要是 fidelity 运行并且发生了失败（包括 runner 完成之后通用的 update/restore 断言失败、unsettled 交接、或 owned cleanup 本身失败），就通过持有的句柄写入**一份** partial，然后关闭句柄，最后重新抛出 owned cleanup 的错误，因此进程仍以非零码退出。partial 由 `buildFidelityFailurePartial` 生成，内容是 `partial:true, complete:false, goalComplete:false, overall:"NOT_COMPLETE"`、stage、原始 failure、已完成的 `designStudioFidelity`（未运行时为 `NOT_RUN`）、artifact bundle 索引，以及 `describeOwnedCleanup` 给出的**实际**清理结果（是否完成、是否保留了 HOME、除原始 failure 之外的 cleanup 错误）。`writeFidelityPartialOnce` 的行为：报告已经写过时不再写；写入出错时只返回错误信息，不抛出，也不替换原始 failure。原先 unsettled 路径里那次在 owned cleanup 之前的 partial 写入已经删除，所以 partial 里一定包含最终的清理回执。现在只有成功路径会直接调用 `writeReport`，静态测试保证这一点。
+3. **文档契约修正。** 正文第 114 行一带原来写着“flag 必须带报告路径”，已改为：fidelity 拒绝报告路径，输出是 root-owned 系统临时目录中持有句柄的 report 和 bundle；同时注明原有不带 flag 的 `[new-report.json]` 契约保留。第 55、85、124 行的相关描述和命令示例同步更新。
+
+### 第四轮实际运行（TMPDIR=/tmp/ds-host-harness-tmp）
+
+```sh
+node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs   # 45/45 pass, exit 0 (.tmp/host-harness/review4-green.log)
+npm test -- --suite desktop-harness                                           # 58/58 pass, exit 0；套件只含 cleanup/native-fixture/本文件，无 Electron
+npm run validate                                                              # exit 0
+```
+
+### 仍存在的缺口
+
+- partial 只能记录已完成的事实。如果 runner 本身在中途抛错（而不是返回报告），已经写入的截图仍会出现在 bundle 索引里，但 `designStudioFidelity` 会是 `NOT_RUN`，不会补出场景级结果。
+- 真实 Host 场景仍然 0 个运行过：主 Host checkout 缺 managed runtime，也没有获得窗口许可。性能判 UNVERIFIED，视觉最多 EVIDENCE_ONLY，`goalComplete` 恒为 false。

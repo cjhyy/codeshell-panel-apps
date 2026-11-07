@@ -14,8 +14,9 @@ import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-des
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
-import { createOwnedGuestCleanup, runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
-import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, claimFidelityOutputs, copyDesignStudioSample,
+import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
+import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
+  describeOwnedCleanup, writeFidelityPartialOnce,
   parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -358,12 +359,14 @@ app.on("session-created", session => {
         // Shared, idempotent and bounded: the runner's timeout path and this finally.
         const guestCleanup = createOwnedGuestCleanup(fidelityGuest);
         try {
-          await untilGuest(fidelityGuest, 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"');
+          // Bounded readiness and webContents id; a hung guest goes to the shared cleanup.
+          const { guestWebContentsId } = await prepareFidelityGuest({ guest: fidelityGuest, guestCleanup,
+            readySource: 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"' });
           const core = await hostModule("packages/core/dist/index.js");
           const selected = (await core.listProjectPanelApps(fidelityProject, id)).find(value => value.id === id);
           assert.ok(selected?.installPath, "installed Design Studio package path not found for the fidelity project");
           fidelityReport = await runDesignStudioHostFidelity({ enabled: true, guest: fidelityGuest, guestCleanup,
-            guestWebContentsId: await fidelityGuest.view.evaluate(view => view.getWebContentsId()), app,
+            guestWebContentsId, app,
             projectDirectory: fidelityProject, packageDirectory: selected.installPath, fixtures: fidelitySeed.fixtures,
             seededStates: fidelitySeed.seededStates, sampleReceipt: fidelitySeed.sampleReceipt,
             artifactSink: fidelityOutputs, log: message => console.log(message) });
@@ -373,9 +376,9 @@ app.on("session-created", session => {
           const removal = await guestCleanup.remove();
           // Unsettled guest/reference work or a failed/pending remove is handed to the
           // existing owned Electron cleanup (captured ChildProcess only) by failing here.
+          // The single partial (with the real owned-cleanup outcome) is written after it.
           if (fidelityReport?.cleanup?.requiresOwnedHostCleanup || removal.requiresOwnedHostCleanup) {
-            await fidelityOutputs.writeReport(`${JSON.stringify({ partial: true, designStudioFidelity: fidelityReport,
-              guestCleanup: removal, reason: "unsettled owned fidelity work; owned Electron cleanup follows" }, null, 2)}\n`);
+            if (fidelityReport) fidelityReport.guestCleanup = removal;
             throw new Error(`Design Studio fidelity left unsettled owned work: ${JSON.stringify({ guest: removal, unsettled: fidelityReport?.cleanup?.unsettled })}`);
           }
         }
@@ -779,8 +782,18 @@ app.on("session-created", session => {
     managedReceipts: await managedFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
-  cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure })
-    .finally(async () => { if (failure) await fidelityOutputs?.close(); });
+  // Owned Electron/HOME cleanup first; a fidelity partial then records its real outcome.
+  let ownedCleanupError;
+  try { cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure }); }
+  catch (error) { ownedCleanupError = error; }
+  if (fidelityOutputs && (failure || ownedCleanupError)) {
+    const partial = buildFidelityFailurePartial({ stage, failure: failure?.error, fidelityReport, artifacts: fidelityOutputs.artifacts(),
+      cleanup: describeOwnedCleanup({ receipt: cleanupReceipt, error: ownedCleanupError, primaryFailure: failure?.error }) });
+    const written = await writeFidelityPartialOnce(fidelityOutputs, partial);
+    console.error(`Design Studio fidelity partial report: ${JSON.stringify({ path: fidelityOutputs.reportPath, ...written })}`);
+    await fidelityOutputs.close();
+  }
+  if (ownedCleanupError) throw ownedCleanupError;
 }
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
