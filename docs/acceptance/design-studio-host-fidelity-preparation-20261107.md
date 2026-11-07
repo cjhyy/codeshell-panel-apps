@@ -353,3 +353,73 @@ TMPDIR=/tmp/ds-host-harness-tmp npm run test:desktop -- \
 ```
 
 真实 Host 场景至今仍然 0 个产生有效结果。真实交互、截图、性能和 DPR 都要等重跑才知道。`goalComplete` 恒为 false。
+
+## run2 返修（`0441cc24`）与定向真实诊断 probe1
+
+### run2 暴露的问题与修复
+
+1. **缩放方向错了。** run2 中 `zoomTo` 自行假设“发出的 deltaY 就是 DOM 收到的 deltaY”，结果 100/200 两组截图实际都停在 zoom 0.1。判定函数又没有检查目标 zoom，导致这两组仍被记为 EVIDENCE_ONLY。修复如下：
+   - 新增 `closedLoopZoom`。它按 app 自己的缩放公式（`app.js:6925`：`zoom *= exp(-deltaY·0.006)`，`setZoom` 会把结果 clamp 到 0.1–4）计算所需步长；在 `#stage` 上挂一个被动 capture 监听器，读出 DOM 实际收到的 deltaY；先做一步校准测出映射关系，再做修正。
+   - 到达目标的判定只允许 float32 读回精度：`ZOOM_TOLERANCE = 1e-6`，是相对误差，不是任何百分比放宽。
+   - 达不到目标时：visual 组跳过截图并判 UNVERIFIED，不再给别的 zoom 贴上 100/200 的标签；性能场景不采集指标；SVG 的 GPU/browser 对照行不截图。
+   - `judgeVisualCaptureGroup` 现在要求 `targetZoom` 已达成，且每条路线的相机 zoom 都等于目标。
+2. **截图只取页面区域。** 每张截图都附带 `pageCrop`：用 `designPageBounds` 得到页面的世界坐标，经共享相机换算到 device 坐标（CSS = zoom·world + pan，device = CSS·dpr），再裁到截图范围内。规则：
+   - 只要 toolbar（`.canvas-meta`）、`#toast`、`#renderer-message`、`#infinite-canvas-hint`、`#selection-size`、`#inline-text-editor` 中任意一个可见元素与裁剪框相交，该裁剪就标为 `comparisonEligible:false`；
+   - 三条路线的裁剪框必须完全相同；
+   - 截图前最多等待 8 s，让打开文件时出现的 toast 消失；
+   - 整张原图保留在 bundle 中，报告同时记录 `transform`（`deviceScale`、`origin`）。
+   
+   另外记录 `process.versions.chrome`、DPR、viewport 和 userAgent。
+3. **拖动结果改为可精确预测。** app 的移动会先吸附到 8 单位网格，再吸附到 6/zoom 范围内的静止节点边缘或中心（`app.js:2994-3010`、`geometry.mjs` 中的 `snapValue`/`snapBoundsToNodes`）。run2 中 380 先被网格吸附到 384，又被 `underlay` 左边缘吸附到 400。现在把目标设为 x=400：它既在网格上，也正对 `underlay` 左边缘，所以吸附距离为 0。drop 改为 (460,180)，容差 0。新增单测用 app 真实的吸附函数，在 zoom 0.25–1、屏幕取整误差 ±0.5 px 的组合下验证结果都是 400。inspector 编辑仍然把 x 设为 200（不涉及吸附）。
+4. **找不到文件行时保留证据。** `openDesignFileWithDiagnostics` 在超时时记录对话框的实际文本（`#files-list`、`#workspace-summary`、`#file-switch-status`、文件行数），并发起一次结构化的 `callResult("workspace.list")`，拿到准确的错误码和 `retryAfterMs`。只有 Host 返回 `RATE_LIMITED` 且 `retryAfterMs ≤ 65 s` 时，才按这个真实时间重试一次。DOM probe 走 `executeJavaScript`，不算 Host bridge 调用。性能场景挪到第一个执行，并要求 DOM 中实际存在 ≥1000 个 `large-text-` 图层行，否则判 UNVERIFIED。
+5. **新增 `--design-studio-probe`。** 必须与 fidelity flag 一起使用；只运行两个诊断 probe，不运行 6 个场景。
+
+离线红绿记录：
+
+- 红：60 tests / 49 pass / 11 fail（`.tmp/host-harness/run2-fix-red.log`）。
+- 绿：60/60（`run2-fix-green.log`）。另有 4 个旧测试随新合同更新：拖动目标改为精确的 400，判定要求 DOM 图层数，计划顺序改为性能场景在前；没有放宽任何门槛。
+- `npm test -- --suite desktop-harness` 73/73；`npm run validate` exit 0。两者都不启动窗口。
+
+### probe1 收据（已获授权的单次有界专属实例；代码为 `0441cc24`）
+
+- 命令：`TMPDIR=/tmp/ds-host-harness-tmp npm run test:desktop -- /Users/admin/.codex/worktrees/codeshell-design-fidelity-host-build-20261107 --app design-studio --design-studio-fidelity --design-studio-probe`
+- 时间：2026-11-07T03:49:23Z 至 03:49:49Z，共 26 s，exit 3。probe 模式不跑 6 个场景，因此这是预期的 INCOMPLETE。
+- 证据文件：
+  - 日志 `/tmp/ds-host-harness-tmp/probe1/run.log`，sha `edfb5dbf…73e8`；
+  - FD 报告 `/private/tmp/ds-host-fidelity-1794023363507-37718cd19d83b449.report.json`，sha `1d2cabd7…f32a`；
+  - bundle 为 0 bytes，因为 probe 不截图。
+- 运行环境：
+  - Panel `0441cc2401e880e1645d063474fc486ae09c1eb8`，Host `19fbe3828`；
+  - Electron 33.4.11，**Chromium 130.0.6723.191**，Node 20.18.3，darwin arm64；
+  - guest 的 DPR 为 2，viewport 1024×720，userAgent 为 `… code-shell/33.4.11 Chrome/130.0.6723.191 Electron/33.4.11 …`。
+- 隔离：app.paths 全部位于 `/private/tmp/ds-host-harness-tmp/panel-desktop-ipc-0rzc3d/home` 下；NativeEntry 记录只有 harness 自己的 self-test，没有 codex；网络 guard 中 pid 89574 和 89616 各 7 个负向探测都通过。
+- 清理：清理回执为 pid 89616，exitCode 0，`homeRemoved:true`。运行后该 pid 已不存在，临时目录已删除。operator 的 Electron/CodeShell 进程集合在运行前后都是 23 个，diff 为空。
+- **Ctrl+wheel 的投递语义（实测）：** Electron `sendInputEvent` 发送 mouseWheel `deltaY = s` 时，DOM 收到的是 `deltaY = −s`，幅度完全相同，小数也会保留（精度为 float32）；`deltaMode` 为 0；设不设 `hasPreciseScrollingDeltas` 结果一样。四次原始事件的记录：
+
+  | 发送 | DOM 收到 | zoom 变化 |
+  | --- | --- | --- |
+  | 60 | −60 | 0.615 → 0.8815 |
+  | 60（precise） | −60 | 0.8815 → 1.2635 |
+  | 37.5（precise） | −37.5 | 1.2635 → 1.5823 |
+  | −60（precise） | +60 | 1.5823 → 1.1039 |
+
+  这证实了 run2 的根因：旧代码发送 −207.6，DOM 收到 +207.6，zoom 因此被压到下限 0.1。
+- **闭环缩放：**
+  - 目标 1：校准步发送 −40，DOM 收到 +40，zoom 0.615 → 0.48378；修正步发送 121.0222，DOM 收到 −121.0222，zoom 正好到 **1**。
+  - 目标 2：从 1 出发，校准步 → 0.78663；修正步发送 155.5245，zoom 到 **1.9999998808**（float32，相对误差 6e-8）。
+  - 每一步实测的 zoom 都与按 app 公式预测的值一致。
+- **大文档打开：** 在全新 guest 中作为第一个操作，`host-fidelity-large-text.codesign.json` 第 1 次尝试就出现在列表中并打开，耗时 101 ms；DOM 中有 **1,200** 个 `large-text-` 图层行；documentPath 正确，对话框已关闭，renderer 为 active/gpu。这说明 index manifest 加分片的真实加载链路是正常的。**run2 中文件行没有出现的根因仍未证实**：当时没有采到对话框文字或 bridge 错误码，“前面步骤累积了大量调用”只是一个与现象相符、但没有证据支持的推测。现在性能场景排在第一个，并且会采集诊断证据。
+- 日志里 6 个场景名在 probe 模式下仍会被打印，这是 `scenario()` 在跳过之前就输出了 log，属于外观问题；summary 中这 6 个场景都是 notRun，并没有执行。
+
+### 仍未完成
+
+- 真实环境下的 100%/200%/fit 截图对比、page crop、低 zoom 性能指标，都还要等下一次完整运行才有结果。
+- run2 中看到的三处现象目前只作描述，需要在正确采样后再判断是否要修 production：fit 下 HTML 的 finite 文字比 GPU 低约 3 device px；GPU 的 chevron 更深、更细；`>_` 略偏下。
+- DPR1 没有实测；renderer stats 没有出口；视觉结果只能作为证据；`goalComplete` 恒为 false。
+
+下一次真实完整运行（需先经独立 review）：
+
+```sh
+TMPDIR=/tmp/ds-host-harness-tmp npm run test:desktop -- \
+  /Users/admin/.codex/worktrees/codeshell-design-fidelity-host-build-20261107 --app design-studio --design-studio-fidelity
+```
