@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import {
-  FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, expectedStateAfterEdits, guardPreEdit, readFixtureDocument,
+  FIDELITY_FIXTURE_PATHS, FIDELITY_STATUS, INTERACTION_PLAN, OPEN_WAIT_MIN_MS, ZOOM_TOLERANCE, expectedStateAfterEdits, guardPreEdit, pageCropRect,
+  readFixtureDocument, zoomMatches,
   judgeImmediateClick, judgeLowZoomPerformance, judgeOpenWithoutEdit, judgeSaveReopen, judgeSvgCornerProbe,
   judgeVisualCaptureGroup, planDesignStudioFidelityScenarios, summarizeFidelityReport, svgReferenceGeometry,
 } from "./design-studio-host-fidelity.mjs";
@@ -100,11 +101,119 @@ export const DESIGN_STUDIO_PROBES = Object.freeze({
   fileOpened: path => `document.querySelector("#document-path")?.value.trim() === ${JSON.stringify(path)} && ` +
     `document.querySelector("#save-state")?.textContent !== "打开中…" && !document.querySelector("#files-dialog")?.open && ${RENDERER_READY}`,
   reloadedFile: path => `Boolean(window.codeshellPanel) && document.querySelector("#document-path")?.value.trim() === ${JSON.stringify(path)} && ${RENDERER_READY}`,
+  dialogState: () => `(() => { const list = document.querySelector("#files-list");
+    return { filesDialogOpen: Boolean(document.querySelector("#files-dialog")?.open), filesListText: (list?.textContent ?? "").slice(0, 600),
+      fileRowCount: [...document.querySelectorAll("#files-list .file-row")].length,
+      fileSwitchStatus: document.querySelector("#file-switch-status")?.textContent ?? null,
+      workspaceSummary: document.querySelector("#workspace-summary")?.textContent ?? null }; })()`,
+  // One structured bridge call, only after a missing row, to record the exact Host error code.
+  workspaceListResult: path => `(async () => { const panel = window.codeshellPanel;
+    if (!panel?.callResult) return { available: false };
+    const result = await panel.callResult("workspace.list", { path: "designs" });
+    if (result?.ok) { const entries = result.value?.entries ?? [];
+      return { ok: true, entries: entries.length, includesTarget: entries.some(entry => entry.path === ${JSON.stringify(path)}) }; }
+    return { ok: false, code: result?.error?.code ?? null, message: result?.error?.message ?? null, retryAfterMs: result?.error?.retryAfterMs ?? null }; })()`,
+  closeFilesDialog: () => `(() => { const dialog = document.querySelector("#files-dialog"); if (dialog?.open) dialog.close(); return true; })()`,
+  textLayerCount: () => `document.querySelectorAll('#layers-list .layer-row[data-id^="large-text-"]').length`,
+  wheelInstall: () => `(() => { if (!window.__designStudioFidelityWheel) { const seen = window.__designStudioFidelityWheel = [];
+    document.querySelector("#stage")?.addEventListener("wheel", event => seen.push({ deltaX: event.deltaX, deltaY: event.deltaY,
+      deltaMode: event.deltaMode, ctrlKey: event.ctrlKey, metaKey: event.metaKey }), { capture: true, passive: true }); } return true; })()`,
+  wheelRead: () => `(window.__designStudioFidelityWheel ?? []).splice(0)`,
+  overlayRects: () => `(() => { const stage = document.querySelector("#stage")?.getBoundingClientRect(); if (!stage) return null;
+    return [".canvas-meta", "#renderer-message", "#infinite-canvas-hint", "#selection-size", "#inline-text-editor", "#toast"].flatMap(name => {
+      const element = document.querySelector(name); if (!element || element.hidden) return [];
+      const style = getComputedStyle(element); if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return [];
+      const rect = element.getBoundingClientRect(); if (!(rect.width > 0 && rect.height > 0)) return [];
+      return [{ name, x: rect.x - stage.x, y: rect.y - stage.y, width: rect.width, height: rect.height }]; }); })()`,
+  environment: () => `({ devicePixelRatio: window.devicePixelRatio, innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+    userAgent: typeof navigator === "undefined" ? null : navigator.userAgent })`,
   openState: () => `(() => { const wrap = document.querySelector("#stage-wrap"), save = document.querySelector("#save-state");
     return { documentPath: document.querySelector("#document-path")?.value ?? null, saveKind: save?.dataset.kind ?? null, saveText: save?.textContent ?? null,
       filesDialogOpen: Boolean(document.querySelector("#files-dialog")?.open), rendererStatus: wrap?.dataset.rendererStatus ?? null,
       rendererMode: wrap?.dataset.rendererMode ?? null }; })()`,
 });
+
+export { ZOOM_TOLERANCE };
+
+/**
+ * Open a design through the real files dialog. When the row never appears, record the
+ * dialog's own text and one structured workspace.list result (exact Host error code).
+ * Retry once only when the Host reports RATE_LIMITED with a bounded retryAfterMs.
+ */
+export async function openDesignFileWithDiagnostics({ execute, relativePath, timeoutMs, now = () => performance.now(),
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)), maxRetryAfterMs = 65_000 }) {
+  const poll = async source => {
+    const deadline = now() + timeoutMs;
+    for (;;) {
+      if (await execute(source) === true) return true;
+      if (now() >= deadline) return false;
+      await wait(50);
+    }
+  };
+  const diagnostics = [];
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await execute(`document.querySelector("#open-files")?.click(), true`);
+    if (await poll(DESIGN_STUDIO_PROBES.fileRowListed(relativePath))) {
+      if (await execute(DESIGN_STUDIO_PROBES.clickFileRow(relativePath)) !== true) throw new Error(`file row for ${relativePath} disappeared before its click`);
+      if (!await poll(DESIGN_STUDIO_PROBES.fileOpened(relativePath))) {
+        const state = await execute(DESIGN_STUDIO_PROBES.openState()).catch(error => ({ unavailable: String(error?.message ?? error) }));
+        const error = new Error(`timed out waiting for open ${relativePath}; observed ${JSON.stringify(state)}`);
+        error.diagnostics = diagnostics;
+        throw error;
+      }
+      return { attempts: attempt, diagnostics };
+    }
+    const dialog = await execute(DESIGN_STUDIO_PROBES.dialogState()).catch(error => ({ unavailable: String(error?.message ?? error) }));
+    const bridge = await execute(DESIGN_STUDIO_PROBES.workspaceListResult(relativePath)).catch(error => ({ unavailable: String(error?.message ?? error) }));
+    diagnostics.push({ attempt, dialog, bridge });
+    const retryAfterMs = bridge?.retryAfterMs;
+    if (attempt === 1 && bridge?.code === "RATE_LIMITED" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 && retryAfterMs <= maxRetryAfterMs) {
+      await execute(DESIGN_STUDIO_PROBES.closeFilesDialog());
+      await wait(retryAfterMs + 250);
+      continue;
+    }
+    break;
+  }
+  const error = new Error(`timed out waiting for file row ${relativePath}; observed ${JSON.stringify(diagnostics)}`);
+  error.diagnostics = diagnostics;
+  throw error;
+}
+
+/**
+ * Closed-loop Ctrl+wheel zoom using the app's own formula (app.js: zoom *= exp(-deltaY*0.006)).
+ * The delivered DOM deltaY is measured by a passive capture listener, so the mapping from the
+ * sent input event to the DOM event (sign, scale) is observed, not assumed. The target is
+ * reached only within ZOOM_TOLERANCE (float32 readback precision); otherwise reached:false.
+ */
+export async function closedLoopZoom({ target, readZoom, sendWheel, readDomDeltas, wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  maxSteps = 6, settleMs = 250 }) {
+  const trace = [];
+  const fail = (reasons, zoom) => ({ reached: false, target, zoom, reasons, trace });
+  await readDomDeltas();
+  let k = null;
+  for (let step = 0; step < maxSteps; step++) {
+    const before = await readZoom();
+    if (!(Number.isFinite(before) && before > 0)) return fail(["camera zoom not observable"], before);
+    if (zoomMatches(before, target)) return { reached: true, target, zoom: before, reasons: [], trace, scale: k };
+    const domNeeded = -Math.log(target / before) / 0.006;
+    const kind = k === null ? "calibration" : "correction";
+    const sentDeltaY = k === null ? Math.sign(domNeeded) * Math.min(Math.abs(domNeeded), 40) : domNeeded / k;
+    await sendWheel(sentDeltaY);
+    await wait(settleMs);
+    const events = (await readDomDeltas() ?? []).filter(event => event.ctrlKey || event.metaKey);
+    const after = await readZoom();
+    const domDeltaY = events.map(event => event.deltaY), total = domDeltaY.reduce((sum, value) => sum + value, 0);
+    trace.push({ kind, zoomBefore: before, sentDeltaY, domDeltaY, deltaModes: events.map(event => event.deltaMode), zoomAfter: after,
+      expectedZoomAfter: before * Math.exp(-total * 0.006) });
+    if (!events.length) return fail([`no wheel event reached the stage for sent deltaY ${sentDeltaY}`], after);
+    if (events.some(event => event.deltaMode !== 0)) return fail([`wheel deltaMode ${events.map(event => event.deltaMode)} is not pixels`], after);
+    if (total === 0) return fail([`delivered DOM deltaY was 0 for sent ${sentDeltaY}: delivery appears quantized; target ${target} not reached`], after);
+    k = total / sentDeltaY;
+  }
+  const final = await readZoom();
+  if (zoomMatches(final, target)) return { reached: true, target, zoom: final, reasons: [], trace, scale: k };
+  return fail([`target zoom ${target} not reached after ${maxSteps} steps (last ${final}); the delivered deltas may be quantized`], final);
+}
 
 /**
  * Bounded pre-run setup for the fidelity guest: readiness polling and the guest
@@ -219,7 +328,9 @@ const hexRgb = value => [1, 3, 5].map(offset => Number.parseInt(value.slice(offs
 export async function runDesignStudioHostFidelity(options) {
   if (options?.enabled !== true) throw new Error("Design Studio fidelity requires explicit --design-studio-fidelity opt-in");
   const { guest, guestWebContentsId, app, projectDirectory, packageDirectory, fixtures, seededStates = {},
-    sampleReceipt = null, artifactSink = null, log = () => {}, onlyScenarios = null } = options;
+    sampleReceipt = null, artifactSink = null, log = () => {}, probe = false } = options;
+  // Probe mode runs only the two diagnostic probes (zoom input, large-file open).
+  const onlyScenarios = probe ? [] : options.onlyScenarios ?? null;
   const wait = options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const now = options.now ?? (() => performance.now());
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -327,25 +438,28 @@ export async function runDesignStudioHostFidelity(options) {
       throw error;
     }
   };
-  const openFile = async relativePath => {
-    await dom(`document.querySelector("#open-files")?.click(), true`);
-    await untilWithState(DESIGN_STUDIO_PROBES.fileRowListed(relativePath), `file row ${relativePath}`);
-    if (await dom(DESIGN_STUDIO_PROBES.clickFileRow(relativePath)) !== true) throw new Error(`file row for ${relativePath} disappeared before its click`);
-    await untilWithState(DESIGN_STUDIO_PROBES.fileOpened(relativePath), `open ${relativePath}`);
-  };
+  const openFile = relativePath => openDesignFileWithDiagnostics({ execute: dom, relativePath, timeoutMs, now, wait });
   const zoomTo = async target => {
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const cam = await camera();
-      if (!cam) return null;
-      if (Math.abs(cam.zoom - target) <= 1e-6) return cam;
-      const center = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
-      // App zoom: zoom * exp(-deltaY * 0.006) around the cursor.
-      const deltaY = -Math.log(target / cam.zoom) / 0.006;
-      await sendInput([{ type: "mouseWheel", x: center.x, y: center.y, deltaX: 0, deltaY, modifiers: ["control"], canScroll: true }]);
-      await wait(250);
-    }
-    return camera();
+    await dom(DESIGN_STUDIO_PROBES.wheelInstall());
+    const cam = await camera();
+    if (!cam) return { reached: false, target, zoom: null, reasons: ["#stage camera transform not observable"], trace: [] };
+    const center = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
+    return closedLoopZoom({ target, wait, readZoom: async () => (await camera())?.zoom,
+      readDomDeltas: async () => (await dom(DESIGN_STUDIO_PROBES.wheelRead())) ?? [],
+      sendWheel: deltaY => sendInput([{ type: "mouseWheel", x: center.x, y: center.y, deltaX: 0, deltaY, hasPreciseScrollingDeltas: true,
+        canScroll: true, modifiers: ["control"] }]) });
   };
+  const waitToastHidden = async () => {
+    const deadline = now() + 8_000;
+    while (now() < deadline && await dom(`document.querySelector("#toast")?.hidden === false`) === true) await wait(200);
+  };
+  const pageCrop = async (cam, png, { guestOverlays = true } = {}) => {
+    const overlays = guestOverlays ? await dom(DESIGN_STUDIO_PROBES.overlayRects()) : [];
+    const crop = pageCropRect({ camera: { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.dpr ?? cam.canvasRatio },
+      pageBounds: currentPageBounds, capture: { width: png.width, height: png.height }, overlays: overlays ?? [] });
+    return overlays === null ? { ...crop, comparisonEligible: false, overlays: ["overlay rects unobserved"] } : crop;
+  };
+  let currentPageBounds = null;
   const capture = async (cam, label) => {
     const result = await evaluateMain(async ({ webContents }, { id, rect }) => {
       const image = await webContents.fromId(id).capturePage(rect);
@@ -366,7 +480,51 @@ export async function runDesignStudioHostFidelity(options) {
       `.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${body}</div>`;
   };
 
-  const results = [];
+  const results = [], probes = [];
+  const environment = await dom(DESIGN_STUDIO_PROBES.environment()).catch(() => null);
+  async function probeStep(id, body) {
+    if (!probe) return;
+    log(`design-studio fidelity probe: ${id}`);
+    if (abortReason) { probes.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`aborted: ${abortReason}`] }); return; }
+    try { probes.push({ id, ...(await body()) }); }
+    catch (error) { probes.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`probe step failed: ${error?.message ?? error}`], diagnostics: error?.diagnostics ?? null }); }
+  }
+  // Probe 1 (fresh guest, first action): does the 1200-text indexed document list and open?
+  await probeStep("probe-large-open", async () => {
+    const relativePath = FIDELITY_FIXTURE_PATHS.largeText, started = now();
+    const open = await openFile(relativePath);
+    const elapsedMs = Math.round(now() - started);
+    await wait(600);
+    const openedTextLayerCount = await dom(DESIGN_STUDIO_PROBES.textLayerCount());
+    const state = await dom(DESIGN_STUDIO_PROBES.openState());
+    return { status: openedTextLayerCount >= 1000 ? FIDELITY_STATUS.EVIDENCE_ONLY : FIDELITY_STATUS.UNVERIFIED, open, elapsedMs, openedTextLayerCount, state };
+  });
+  // Probe 2: what DOM wheel event does an Electron Ctrl+wheel input produce, and does the closed loop reach 1 and 2?
+  await probeStep("probe-zoom-input", async () => {
+    await openFile(FIDELITY_FIXTURE_PATHS.rotationStrips);
+    await chooseRenderer("gpu");
+    await dom(`document.querySelector("#zoom-value")?.click(), true`);
+    await wait(400);
+    await dom(DESIGN_STUDIO_PROBES.wheelInstall());
+    await dom(DESIGN_STUDIO_PROBES.wheelRead());
+    const cam = await camera();
+    if (!cam) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["camera not observable"] };
+    const center = { x: Math.round(cam.rect.x + cam.rect.width / 2), y: Math.round(cam.rect.y + cam.rect.height / 2) };
+    const raw = [];
+    for (const input of [{ deltaY: 60 }, { deltaY: 60, hasPreciseScrollingDeltas: true }, { deltaY: 37.5, hasPreciseScrollingDeltas: true },
+      { deltaY: -60, hasPreciseScrollingDeltas: true }]) {
+      const before = (await camera())?.zoom;
+      await sendInput([{ type: "mouseWheel", x: center.x, y: center.y, deltaX: 0, canScroll: true, modifiers: ["control"], ...input }]);
+      await wait(300);
+      raw.push({ sent: input, dom: await dom(DESIGN_STUDIO_PROBES.wheelRead()), zoomBefore: before, zoomAfter: (await camera())?.zoom });
+    }
+    await dom(`document.querySelector("#zoom-value")?.click(), true`);
+    await wait(400);
+    const fitZoom = (await camera())?.zoom;
+    const toOne = await zoomTo(1), toTwo = await zoomTo(2);
+    const delivered = raw.every(entry => Array.isArray(entry.dom) && entry.dom.length > 0);
+    return { status: delivered ? FIDELITY_STATUS.EVIDENCE_ONLY : FIDELITY_STATUS.UNVERIFIED, raw, fitZoom, toOne, toTwo };
+  });
   async function scenario(id, body) {
     log(`design-studio fidelity: ${id}`);
     if (onlyScenarios && !onlyScenarios.includes(id)) return;
@@ -385,6 +543,52 @@ export async function runDesignStudioHostFidelity(options) {
     }
     return { samples, waitedMs: Math.round(now() - started) };
   };
+
+  await scenario("low-zoom-fractional-performance", async () => {
+    const relativePath = FIDELITY_FIXTURE_PATHS.largeText;
+    const open = await openFile(relativePath);
+    await chooseRenderer("gpu");
+    const design = await documentAt(relativePath);
+    const textNodeCount = design.pages.flatMap(page => page.nodes).filter(node => node.type === "text").length;
+    const openedTextLayerCount = await dom(DESIGN_STUDIO_PROBES.textLayerCount());
+    const zoom = await zoomTo(0.3711);
+    if (!zoom.reached) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: [`low zoom not reached; metrics not collected: ${zoom.reasons.join("; ")}`],
+      observation: { textNodeCount, openedTextLayerCount, open, zoom } };
+    await dom(`(() => { const state = window.__designStudioHostFidelityFrames = { times: [], running: true };
+      const tick = time => { if (!state.running) return; state.times.push(time); requestAnimationFrame(tick); };
+      requestAnimationFrame(tick); return true; })()`);
+    const metrics = () => evaluateMain(async ({ webContents }, { id }) => {
+      const contents = webContents.fromId(id);
+      const attached = contents.debugger.isAttached();
+      if (!attached) contents.debugger.attach("1.3");
+      try {
+        await contents.debugger.sendCommand("Performance.enable");
+        return Object.fromEntries((await contents.debugger.sendCommand("Performance.getMetrics")).metrics.map(value => [value.name, value.value]));
+      } finally { if (!attached) contents.debugger.detach(); }
+    }, { id: guestWebContentsId });
+    const before = await metrics();
+    const cam0 = await camera();
+    for (let index = 0; index < 30; index++) {
+      await sendInput([{ type: "mouseWheel", x: Math.round(cam0.rect.x + cam0.rect.width / 2), y: Math.round(cam0.rect.y + cam0.rect.height / 2),
+        deltaX: index % 2 ? 3 : -2, deltaY: index % 3 ? 5 : -4, canScroll: true }]);
+      await wait(16);
+    }
+    await wait(400);
+    const after = await metrics();
+    const times = await dom(`(() => { const state = window.__designStudioHostFidelityFrames; state.running = false;
+      delete window.__designStudioHostFidelityFrames; return state.times; })()`);
+    const intervalsMs = Array.isArray(times) ? times.slice(1).map((time, index) => time - times[index]) : [];
+    const sorted = [...intervalsMs].sort((a, b) => a - b), pick = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : null;
+    const cam = await camera();
+    const delta = key => before && after && Number.isFinite(after[key] - before[key]) ? (after[key] - before[key]) * 1000 : null;
+    const observation = { textNodeCount, openedTextLayerCount, open, zoom, camera: cam && { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio },
+      frames: { count: intervalsMs.length, intervalsMs, p50Ms: pick(.5), p95Ms: pick(.95), maxMs: sorted.at(-1) ?? null },
+      cpu: { scriptDurationMs: delta("ScriptDuration"), taskDurationMs: delta("TaskDuration"), layoutDurationMs: delta("LayoutDuration"),
+        recalcStyleDurationMs: delta("RecalcStyleDuration") },
+      // The installed app keeps CanvasKit stats() private; no reviewed read-only surface exists.
+      renderer: null };
+    return { ...judgeLowZoomPerformance(observation), observation };
+  });
 
   await scenario("open-without-edit", async () => {
     const targets = [FIDELITY_FIXTURE_PATHS.legacyReceipts, ...(sampleReceipt ? [sampleReceipt.relativePath] : [])];
@@ -513,49 +717,6 @@ export async function runDesignStudioHostFidelity(options) {
     return verdictNow();
   });
 
-  await scenario("low-zoom-fractional-performance", async () => {
-    const relativePath = FIDELITY_FIXTURE_PATHS.largeText;
-    await openFile(relativePath);
-    await chooseRenderer("gpu");
-    const design = await documentAt(relativePath);
-    const textNodeCount = design.pages.flatMap(page => page.nodes).filter(node => node.type === "text").length;
-    await zoomTo(0.3711);
-    await dom(`(() => { const state = window.__designStudioHostFidelityFrames = { times: [], running: true };
-      const tick = time => { if (!state.running) return; state.times.push(time); requestAnimationFrame(tick); };
-      requestAnimationFrame(tick); return true; })()`);
-    const metrics = () => evaluateMain(async ({ webContents }, { id }) => {
-      const contents = webContents.fromId(id);
-      const attached = contents.debugger.isAttached();
-      if (!attached) contents.debugger.attach("1.3");
-      try {
-        await contents.debugger.sendCommand("Performance.enable");
-        return Object.fromEntries((await contents.debugger.sendCommand("Performance.getMetrics")).metrics.map(value => [value.name, value.value]));
-      } finally { if (!attached) contents.debugger.detach(); }
-    }, { id: guestWebContentsId });
-    const before = await metrics();
-    const cam0 = await camera();
-    for (let index = 0; index < 30; index++) {
-      await sendInput([{ type: "mouseWheel", x: Math.round(cam0.rect.x + cam0.rect.width / 2), y: Math.round(cam0.rect.y + cam0.rect.height / 2),
-        deltaX: index % 2 ? 3 : -2, deltaY: index % 3 ? 5 : -4, canScroll: true }]);
-      await wait(16);
-    }
-    await wait(400);
-    const after = await metrics();
-    const times = await dom(`(() => { const state = window.__designStudioHostFidelityFrames; state.running = false;
-      delete window.__designStudioHostFidelityFrames; return state.times; })()`);
-    const intervalsMs = Array.isArray(times) ? times.slice(1).map((time, index) => time - times[index]) : [];
-    const sorted = [...intervalsMs].sort((a, b) => a - b), pick = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : null;
-    const cam = await camera();
-    const delta = key => before && after && Number.isFinite(after[key] - before[key]) ? (after[key] - before[key]) * 1000 : null;
-    const observation = { textNodeCount, camera: cam && { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio },
-      frames: { count: intervalsMs.length, intervalsMs, p50Ms: pick(.5), p95Ms: pick(.95), maxMs: sorted.at(-1) ?? null },
-      cpu: { scriptDurationMs: delta("ScriptDuration"), taskDurationMs: delta("TaskDuration"), layoutDurationMs: delta("LayoutDuration"),
-        recalcStyleDurationMs: delta("RecalcStyleDuration") },
-      // The installed app keeps CanvasKit stats() private; no reviewed read-only surface exists.
-      renderer: null };
-    return { ...judgeLowZoomPerformance(observation), observation };
-  });
-
   await scenario("same-camera-visual", async () => {
     const relativePath = FIDELITY_FIXTURE_PATHS.rotationStrips;
     await openFile(relativePath);
@@ -565,15 +726,26 @@ export async function runDesignStudioHostFidelity(options) {
       return [id, { x: node.x, y: node.y, width: node.width, height: node.height }];
     }));
     const groups = [];
+    currentPageBounds = codec.designPageBounds(design);
     for (const target of [{ label: "100", zoom: 1 }, { label: "200", zoom: 2 }, { label: "fit" }]) {
       await chooseRenderer("gpu");
-      if (target.zoom) await zoomTo(target.zoom); else { await dom(`document.querySelector("#zoom-value")?.click(), true`); await wait(400); }
+      let zoom = null;
+      if (target.zoom) {
+        zoom = await zoomTo(target.zoom);
+        if (!zoom.reached) {
+          groups.push({ label: target.label, targetZoom: target.zoom, zoom, captures: [], status: FIDELITY_STATUS.UNVERIFIED,
+            reasons: [`target zoom ${target.zoom} not reached; captures skipped so no other zoom is labelled ${target.label}`] });
+          continue;
+        }
+      } else { await dom(`document.querySelector("#zoom-value")?.click(), true`); await wait(400); }
+      await waitToastHidden();
       const captures = [];
       for (const route of ["gpu", "browser"]) {
         await chooseRenderer(route);
         const cam = await camera();
         const evidence = await capture(cam, `visual-${target.label}-${route}`);
         captures.push({ route, camera: { zoom: cam.zoom, panX: cam.panX, panY: cam.panY, dpr: cam.canvasRatio }, png: evidence.summary,
+          pageCrop: await pageCrop(cam, evidence.summary),
           rect: cam.rect, crops: Object.fromEntries(Object.entries(samples).map(([id, box]) => {
             const origin = { x: cam.zoom * box.x + cam.panX, y: cam.zoom * box.y + cam.panY };
             return [id, { x: origin.x * cam.canvasRatio, y: origin.y * cam.canvasRatio, width: box.width * cam.zoom * cam.canvasRatio, height: box.height * cam.zoom * cam.canvasRatio }];
@@ -582,9 +754,11 @@ export async function runDesignStudioHostFidelity(options) {
       const cam = captures[0].camera, rect = captures[0].rect;
       const reference = await referenceBound({ html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height) });
       const evidence = await saveArtifact(`visual-${target.label}-html`, Buffer.from(reference.pngBase64, "base64"));
-      captures.push({ route: "html", camera: { ...cam, dpr: evidence.summary.width / Math.round(rect.width) }, png: evidence.summary, rect,
+      const htmlCamera = { ...cam, dpr: evidence.summary.width / Math.round(rect.width) };
+      captures.push({ route: "html", camera: htmlCamera, png: evidence.summary, rect, pageCrop: await pageCrop(htmlCamera, evidence.summary, { guestOverlays: false }),
         blockedRequests: reference.blockedRequests, crops: captures[0].crops });
-      groups.push({ label: target.label, captures, ...judgeVisualCaptureGroup({ label: target.label, captures }) });
+      const group = { label: target.label, targetZoom: target.zoom ?? null, zoom, captures };
+      groups.push({ ...group, ...judgeVisualCaptureGroup(group) });
     }
     await chooseRenderer("gpu");
     return { status: worst(groups.map(group => group.status)), groups };
@@ -594,7 +768,7 @@ export async function runDesignStudioHostFidelity(options) {
     const relativePath = FIDELITY_FIXTURE_PATHS.svgCornerAa;
     await openFile(relativePath);
     await chooseRenderer("gpu");
-    await zoomTo(1);
+    const zoom = await zoomTo(1);
     const design = await documentAt(relativePath);
     const nodes = design.pages[0].nodes;
     const probes = nodes.filter(node => node.id.startsWith("svg-corner-"));
@@ -616,7 +790,8 @@ export async function runDesignStudioHostFidelity(options) {
         deviceShape: shape, semantic: semanticSummary, ...judgeSvgCornerProbe({ dpr: svgDpr, semantic }) });
     }
     const hostRoutes = [];
-    for (const route of ["gpu", "browser"]) {
+    if (!zoom.reached) hostRoutes.push({ skipped: true, zoom, reason: "zoom 1 not reached; GPU/browser rows not captured (run2 rows at zoom 0.1 were invalid)" });
+    else for (const route of ["gpu", "browser"]) {
       await chooseRenderer(route);
       const cam = await camera();
       const evidence = await capture(cam, `svg-corner-aa-${route}`);
@@ -630,10 +805,10 @@ export async function runDesignStudioHostFidelity(options) {
         descriptiveOnly: "GPU/browser rows use the SVG oracle descriptively; the approved contract gates only exported SVG", rows: descriptive });
     }
     await chooseRenderer("gpu");
-    return { status: worst(rows.map(row => row.status)), svg: { png: svgEvidence.summary, blockedRequests: reference.blockedRequests, rows }, hostRoutes };
+    return { status: worst(rows.map(row => row.status)), svg: { png: svgEvidence.summary, blockedRequests: reference.blockedRequests, rows }, zoom, hostRoutes };
   });
 
-  return { plan, packageModules, sampleReceipt, results, summary: summarizeFidelityReport(results, plan),
+  return { plan, packageModules, sampleReceipt, environment, probes, results, summary: summarizeFidelityReport(results, plan),
     terminatedGuest: guestTerminated, abortReason,
     cleanup: { guest: guestCleanup.state(), unsettled,
       requiresOwnedHostCleanup: unsettled.length > 0 || guestCleanup.state().requiresOwnedHostCleanup },

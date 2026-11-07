@@ -55,7 +55,7 @@ test("fidelity opt-in requires a built Host and refuses any user-chosen report p
   assert.equal(parsePanelDesktopArguments(["/host", "/tmp/new-report.json"]).reportArgument, "/tmp/new-report.json", "the existing desktop gate keeps its report path");
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG]);
   assert.equal(parsed.selectedApp, "design-studio", "fidelity runs only the Design Studio package case");
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: null, probe: false });
 });
 
 test("fidelity opt-in rejects other Panels and stray sample flags", () => {
@@ -65,7 +65,7 @@ test("fidelity opt-in rejects other Panels and stray sample flags", () => {
   assert.throws(() => parsePanelDesktopArguments(["/host", "/tmp/r.json", "--unknown"]), /unexpected argument/);
   const parsed = parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--app", "design-studio",
     "--design-studio-sample", "/tmp/sample.codesign.json"]);
-  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json" });
+  assert.deepEqual(parsed.designStudioFidelity, { samplePath: "/tmp/sample.codesign.json", probe: false });
 });
 
 async function fakeHost(host, paths, { electron = true } = {}) {
@@ -261,7 +261,7 @@ test("open-without-edit passes only from bytes, mtime and repeated dirty observa
 
 test("immediate click after move/edit requires actual DOM selection at the new and old geometry", async () => {
   const { judgeImmediateClick, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const good = { operation: "drag", targetId: "move-target", geometryBefore: { x: 120, y: 140 }, geometryAfter: { x: 380, y: 140 },
+  const good = { operation: "drag", targetId: "move-target", geometryBefore: { x: 120, y: 140 }, geometryAfter: { x: 400, y: 140 },
     preEdit: { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } },
     clicks: [
       { label: "new-position", elapsedSinceCommitMs: 12, expectedSelectedIds: ["move-target"], actualSelectedIds: ["move-target"] },
@@ -284,13 +284,13 @@ test("immediate click after move/edit requires actual DOM selection at the new a
   assert.equal(judgeImmediateClick(wrongTarget).status, FIDELITY_STATUS.UNVERIFIED, "the edit was applied to an unverified selection");
   const { preEdit: _omitted, ...noPreEdit } = structuredClone(good);
   assert.equal(judgeImmediateClick(noPreEdit).status, FIDELITY_STATUS.UNVERIFIED);
-  const offPlan = { ...structuredClone(good), geometryAfter: { x: 300, y: 140 } };
+  const offPlan = { ...structuredClone(good), geometryAfter: { x: 392, y: 140 } };
   assert.equal(judgeImmediateClick(offPlan).status, FIDELITY_STATUS.UNVERIFIED, "geometry outside the planned tolerance invalidates the click oracle");
 });
 
 test("low-zoom performance separates renderer counters from frame timing and never auto-passes", async () => {
   const { judgeLowZoomPerformance, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
-  const base = { textNodeCount: 1200, camera: { zoom: 0.3711, panX: -103.375, panY: 41.625, dpr: 2 },
+  const base = { textNodeCount: 1200, openedTextLayerCount: 1200, camera: { zoom: 0.3711, panX: -103.375, panY: 41.625, dpr: 2 },
     frames: { count: 60, intervalsMs: Array(60).fill(16.7), p50Ms: 16.7, p95Ms: 18, maxMs: 20 },
     cpu: { scriptDurationMs: 120, taskDurationMs: 400, layoutDurationMs: 3 }, renderer: null };
   const missing = judgeLowZoomPerformance(base);
@@ -356,8 +356,9 @@ test("save/reopen requires verified edits, a saved disk with the expected nodes,
 test("same-camera visual captures are evidence for review, never an automatic pass", async () => {
   const { judgeVisualCaptureGroup, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const camera = { zoom: 2, panX: 40, panY: 40, dpr: 2 };
-  const capture = route => ({ route, camera, png: { sha256: hex("d"), width: 400, height: 200, distinctColors: 90 }, rect: { x: 0, y: 0, width: 200, height: 100 } });
-  const group = { label: "200", captures: ["gpu", "browser", "html"].map(capture) };
+  const pageCrop = { x: 80, y: 80, width: 240, height: 60, clipped: false, comparisonEligible: true, overlays: [] };
+  const capture = route => ({ route, camera, pageCrop, png: { sha256: hex("d"), width: 400, height: 200, distinctColors: 90 }, rect: { x: 0, y: 0, width: 200, height: 100 } });
+  const group = { label: "200", targetZoom: 2, zoom: { reached: true }, captures: ["gpu", "browser", "html"].map(capture) };
   assert.equal(judgeVisualCaptureGroup(group).status, FIDELITY_STATUS.EVIDENCE_ONLY);
   const moved = structuredClone(group); moved.captures[2].camera = { ...camera, panX: 41 };
   assert.equal(judgeVisualCaptureGroup(moved).status, FIDELITY_STATUS.UNVERIFIED, "routes must share one camera");
@@ -383,8 +384,8 @@ test("SVG corner-AA probes map only real semantic statuses and require the exact
 test("report summary never declares the goal complete and keeps gaps visible", async () => {
   const { summarizeFidelityReport, planDesignStudioFidelityScenarios, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
   const plan = planDesignStudioFidelityScenarios({ sample: false });
-  assert.deepEqual(plan.map(value => value.id), ["open-without-edit", "immediate-click-after-edit", "save-reopen-stable",
-    "low-zoom-fractional-performance", "same-camera-visual", "svg-corner-aa-host"]);
+  assert.deepEqual(plan.map(value => value.id), ["low-zoom-fractional-performance", "open-without-edit", "immediate-click-after-edit",
+    "save-reopen-stable", "same-camera-visual", "svg-corner-aa-host"]);
   for (const scenario of plan) {
     assert.ok(scenario.fixture && scenario.steps.length && scenario.observables.length, scenario.id);
   }
@@ -396,7 +397,7 @@ test("report summary never declares the goal complete and keeps gaps visible", a
   assert.equal(passing.goalComplete, false);
   const mixed = summarizeFidelityReport([...all.slice(1), { id: plan[0].id, status: FIDELITY_STATUS.UNVERIFIED, reasons: ["x"] }]);
   assert.equal(mixed.overall, "INCOMPLETE");
-  assert.deepEqual(mixed.unverified, ["open-without-edit"]);
+  assert.deepEqual(mixed.unverified, [plan[0].id]);
   const failed = summarizeFidelityReport([...all.slice(1), { id: plan[0].id, status: FIDELITY_STATUS.FAIL }]);
   assert.equal(failed.overall, "FAIL");
   assert.equal(summarizeFidelityReport(all.slice(1)).overall, "INCOMPLETE", "a missing scenario cannot pass");
@@ -553,9 +554,10 @@ test("pre-edit guard refuses an edit unless the DOM selection and geometry are t
   const { INTERACTION_PLAN, guardPreEdit } = await import("../scripts/design-studio-host-fidelity.mjs");
   const [drag, inspector] = INTERACTION_PLAN;
   assert.deepEqual(guardPreEdit(drag, { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } }), []);
-  assert.deepEqual(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 391, y: 140 } }), []);
+  assert.deepEqual(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 400, y: 140 } }), []);
+  assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 384, y: 140 } }).length, "grid-only 384 is not the snapped 400");
   assert.ok(guardPreEdit(inspector, { selectedIds: ["underlay"], geometry: { x: 400, y: 140 } }).length);
-  assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target", "underlay"], geometry: { x: 380, y: 140 } }).length);
+  assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target", "underlay"], geometry: { x: 400, y: 140 } }).length);
   assert.ok(guardPreEdit(inspector, { selectedIds: ["move-target"], geometry: { x: 120, y: 140 } }).length, "drag never happened");
   assert.ok(guardPreEdit(drag, { selectedIds: null, geometry: null }).length);
 });
@@ -1136,4 +1138,164 @@ test("the failure partial carries the fidelity responsibility boundary", async (
     boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY } });
   assert.equal(partial.boundaries.externalAgentRuntime.status, "NOT_APPLICABLE");
   assert.equal(partial.overall, "NOT_COMPLETE");
+});
+
+/* ---- run2 regressions: snap-predictable drag, closed-loop zoom, page crops, file-open evidence ---- */
+test("the drag lands exactly where the app's real grid and node snapping put it, at any plausible zoom", async () => {
+  const { INTERACTION_PLAN } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const { snapValue, snapBoundsToNodes } = await import("../apps/design-studio/app/geometry.mjs");
+  const [drag, inspector] = INTERACTION_PLAN;
+  assert.deepEqual([drag.after, drag.tolerance], [{ x: 400, y: 140 }, 0], "x=400 is on the 8-unit grid and on underlay's left edge");
+  assert.deepEqual([inspector.before, inspector.beforeTolerance ?? 0], [{ x: 400, y: 140 }, 0]);
+  const stationary = [{ id: "underlay", x: 400, y: 140, width: 160, height: 120 }, { id: "edit-target", x: 120, y: 320, width: 220, height: 24 }];
+  for (const zoom of [0.25, 0.288, 0.5, 0.615, 1]) for (const screenError of [-0.5, 0, 0.5]) {
+    const delta = drag.drop.x - drag.grab.x + screenError / zoom;
+    const gridX = snapValue(drag.before.x + delta) - drag.before.x;
+    const snapped = snapBoundsToNodes({ x: drag.before.x, y: drag.before.y, width: 120, height: 80 }, stationary, { x: gridX, y: 0 }, 6 / zoom);
+    assert.equal(drag.before.x + snapped.x, 400, `zoom ${zoom} error ${screenError}`);
+    assert.equal(drag.before.y + snapped.y, 140);
+  }
+});
+
+function wheelSimulator({ k = -1, integer = false, deliver = true, start = 0.288 } = {}) {
+  let zoom = start;
+  const delivered = [];
+  return {
+    get zoom() { return zoom; },
+    readZoom: async () => Math.fround(zoom), // the overlay 2D transform is float32
+    sendWheel: async sent => {
+      if (!deliver) return;
+      const deltaY = k * (integer ? Math.round(sent) : sent);
+      delivered.push({ deltaY, deltaMode: 0, ctrlKey: true, metaKey: false });
+      zoom = Math.min(4, Math.max(0.1, zoom * Math.exp(-deltaY * 0.006))); // app.js:6925 + setZoom clamp
+    },
+    readDomDeltas: async () => delivered.splice(0),
+  };
+}
+
+test("closed-loop zoom measures the delivered DOM delta and reaches exact targets, or reports why not", async () => {
+  const { closedLoopZoom, ZOOM_TOLERANCE } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  for (const k of [-1, -3, 0.5]) for (const target of [1, 2]) {
+    const sim = wheelSimulator({ k });
+    const result = await closedLoopZoom({ target, ...sim, wait: async () => {} });
+    assert.equal(result.reached, true, `k=${k} target=${target}: ${JSON.stringify(result.reasons)}`);
+    assert.ok(Math.abs(result.zoom / target - 1) <= ZOOM_TOLERANCE);
+    assert.ok(result.trace.length >= 2 && result.trace.every(step => Number.isFinite(step.sentDeltaY) && Array.isArray(step.domDeltaY)));
+    assert.equal(result.trace[0].kind, "calibration");
+  }
+  const quantized = await closedLoopZoom({ target: 1, ...wheelSimulator({ k: -1, integer: true }), wait: async () => {} });
+  assert.equal(quantized.reached, false, "integer-only delivery cannot reach 1.0 within the readback tolerance");
+  assert.match(quantized.reasons.join(), /not reached|quantiz/);
+  const silent = await closedLoopZoom({ target: 1, ...wheelSimulator({ deliver: false }), wait: async () => {} });
+  assert.equal(silent.reached, false);
+  assert.match(silent.reasons.join(), /no wheel event/);
+  assert.ok(ZOOM_TOLERANCE <= 1e-6, "no arbitrary percentage tolerance");
+});
+
+test("visual groups must be captured at their target zoom with one shared, overlay-free page crop", async () => {
+  const { judgeVisualCaptureGroup, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const crop = { x: 80, y: 80, width: 240, height: 60, clipped: false, comparisonEligible: true, overlays: [] };
+  const make = (zoom, overrides = {}) => ({ label: "100", targetZoom: 1, zoom: { reached: true }, captures: ["gpu", "browser", "html"].map(route => ({ route,
+    camera: { zoom, panX: 4, panY: 5, dpr: 2 }, pageCrop: crop, png: { sha256: hex("e"), width: 400, height: 200, distinctColors: 20 } })), ...overrides });
+  assert.equal(judgeVisualCaptureGroup(make(Math.fround(1))).status, FIDELITY_STATUS.EVIDENCE_ONLY);
+  const wrong = judgeVisualCaptureGroup(make(Math.fround(0.1)));
+  assert.equal(wrong.status, FIDELITY_STATUS.UNVERIFIED, "run2: '100' captured at zoom 0.1");
+  assert.match(wrong.reasons.join(), /target zoom 1/);
+  assert.equal(judgeVisualCaptureGroup(make(1, { zoom: { reached: false, reasons: ["no wheel event"] } })).status, FIDELITY_STATUS.UNVERIFIED);
+  const mixed = make(1); mixed.captures[2] = { ...mixed.captures[2], pageCrop: { ...crop, x: 81 } };
+  assert.equal(judgeVisualCaptureGroup(mixed).status, FIDELITY_STATUS.UNVERIFIED, "routes must share one page crop");
+  const covered = make(1); covered.captures = covered.captures.map(capture => ({ ...capture, pageCrop: { ...crop, comparisonEligible: false, overlays: ["#toast"] } }));
+  assert.equal(judgeVisualCaptureGroup(covered).status, FIDELITY_STATUS.UNVERIFIED);
+  const fit = make(0.615, { label: "fit", targetZoom: null, zoom: null });
+  assert.equal(judgeVisualCaptureGroup(fit).status, FIDELITY_STATUS.EVIDENCE_ONLY, "fit records its actual zoom");
+});
+
+test("page crops map world page bounds through the shared camera and exclude app overlays", async () => {
+  const { pageCropRect } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const camera = { zoom: 0.615, panX: 62, panY: 300.1, dpr: 2 };
+  const toolbar = { name: ".canvas-meta", x: 73, y: 626, width: 408, height: 36 }; // CSS px inside the stage
+  const crop = pageCropRect({ camera, pageBounds: { x: 0, y: 0, width: 600, height: 120 }, capture: { width: 986, height: 1348 }, overlays: [toolbar] });
+  assert.deepEqual([crop.x, crop.y, crop.width, crop.height], [124, 600, 738, 148]);
+  assert.equal(crop.comparisonEligible, true);
+  assert.equal(crop.clipped, false);
+  assert.deepEqual(crop.transform, { deviceScale: 1.23, originX: 124, originY: 600.2 });
+  const covered = pageCropRect({ camera, pageBounds: { x: 0, y: 0, width: 600, height: 120 }, capture: { width: 986, height: 1348 },
+    overlays: [toolbar, { name: "#toast", x: 300, y: 290, width: 200, height: 60 }] });
+  assert.equal(covered.comparisonEligible, false);
+  assert.deepEqual(covered.overlays, ["#toast"]);
+  const big = pageCropRect({ camera: { zoom: 1, panX: -50, panY: 10, dpr: 2 }, pageBounds: { x: 0, y: 0, width: 600, height: 120 }, capture: { width: 986, height: 1348 }, overlays: [] });
+  assert.deepEqual([big.x, big.width, big.clipped], [0, 986, true]);
+});
+
+test("a missing file row records the dialog text and the exact bridge error, retrying once only on a real RATE_LIMITED reset", async () => {
+  const { openDesignFileWithDiagnostics } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const path = "designs/host-fidelity-large-text.codesign.json";
+  const make = async ({ code, retryAfterMs, entries }) => {
+    const dom = await realIdDocument({ documentPath: "designs/other.codesign.json", rows: [] });
+    dom.elements.get("files-list").textContent = code === "RATE_LIMITED" ? "面板请求过于频繁。" : "";
+    dom.elements.get("workspace-summary").textContent = "无法读取工作区";
+    const calls = [];
+    const panel = { callResult: async (method, params) => { calls.push([method, params]);
+      return code ? { ok: false, error: { code, message: "面板请求过于频繁。", retryAfterMs } } : { ok: true, value: { entries } }; } };
+    const run = source => (0, eval)(`(function (document, window) { return (${source}); })`)(dom.document, { codeshellPanel: panel });
+    return { dom, calls, run };
+  };
+  // 1. RATE_LIMITED with a short real reset: one bounded retry, then the open succeeds.
+  const limited = await make({ code: "RATE_LIMITED", retryAfterMs: 5 });
+  const waits = [];
+  const opened = await openDesignFileWithDiagnostics({ execute: async source => limited.run(source), relativePath: path, timeoutMs: 20,
+    now: () => performance.now(), wait: async ms => { waits.push(ms);
+      if (ms === 5 + 250) { const row = { textContent: path, click() { limited.dom.elements.get("document-path").value = path; } }; limited.dom.document.querySelectorAll = () => [row]; } } });
+  assert.equal(opened.attempts, 2);
+  assert.equal(opened.diagnostics[0].bridge.code, "RATE_LIMITED");
+  assert.equal(opened.diagnostics[0].bridge.retryAfterMs, 5);
+  assert.match(opened.diagnostics[0].dialog.filesListText, /面板请求过于频繁/);
+  assert.ok(waits.includes(5 + 250), "waits for the Host's own retryAfterMs, not a guessed minute");
+  assert.deepEqual(limited.calls, [["workspace.list", { path: "designs" }]], "one diagnostic bridge call");
+  // 2. A listing that does contain the file: no retry; the failure carries the evidence.
+  const listed = await make({ entries: [{ kind: "file", path }] });
+  await assert.rejects(openDesignFileWithDiagnostics({ execute: async source => listed.run(source), relativePath: path, timeoutMs: 20, now: () => performance.now(), wait: async () => {} }),
+    error => /file row/.test(error.message) && error.diagnostics[0].bridge.ok === true && error.diagnostics[0].bridge.includesTarget === true);
+  // 3. A reset longer than the bound is not waited for.
+  const long = await make({ code: "RATE_LIMITED", retryAfterMs: 120_000 });
+  await assert.rejects(openDesignFileWithDiagnostics({ execute: async source => long.run(source), relativePath: path, timeoutMs: 20, now: () => performance.now(), wait: async () => {} }),
+    error => error.diagnostics.length === 1 && error.diagnostics[0].bridge.code === "RATE_LIMITED");
+});
+
+test("low-zoom performance requires the 1000+ text layers to be open in the real DOM", async () => {
+  const { judgeLowZoomPerformance, FIDELITY_STATUS } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const base = { textNodeCount: 1200, openedTextLayerCount: 1200, camera: { zoom: 0.3711, panX: -103.375, panY: 41.625, dpr: 2 },
+    frames: { count: 3, intervalsMs: [16, 17, 16] }, cpu: {}, renderer: null };
+  assert.equal(judgeLowZoomPerformance(base).status, FIDELITY_STATUS.UNVERIFIED);
+  const notOpen = judgeLowZoomPerformance({ ...base, openedTextLayerCount: 0 });
+  assert.match(notOpen.reasons.join(), /not open in the DOM/);
+  assert.match(judgeLowZoomPerformance({ ...base, openedTextLayerCount: undefined }).reasons.join(), /not open in the DOM/);
+});
+
+test("--design-studio-probe runs only the two diagnostic probes and never the six scenarios", async () => {
+  assert.throws(() => parsePanelDesktopArguments(["/host", "--design-studio-probe"]), /requires --design-studio-fidelity/);
+  assert.deepEqual(parsePanelDesktopArguments(["/host", DESIGN_STUDIO_FIDELITY_FLAG, "--design-studio-probe"]).designStudioFidelity, { samplePath: null, probe: true });
+  const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const directory = await scratch("ds-fidelity-probe-");
+  try {
+    const fixtures = await loadFixtures();
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      await mkdir(join(directory, dirname(file.relativePath)), { recursive: true });
+      await writeFile(join(directory, file.relativePath), file.bytes, { flag: "wx" });
+    }
+    const guest = { execute: async () => null, remove: async () => {}, view: { evaluate: async () => null } };
+    const report = await runDesignStudioHostFidelity({ enabled: true, probe: true, guest, guestWebContentsId: 7, app: fakeElectron().app,
+      projectDirectory: directory, packageDirectory: join(repository, "apps/design-studio"), fixtures, wait: async () => {}, timeoutMs: 20, settleTimeoutMs: 20 });
+    assert.deepEqual(report.results, [], "no fidelity scenario runs in probe mode");
+    assert.deepEqual(report.probes.map(value => value.id), ["probe-large-open", "probe-zoom-input"]);
+    assert.ok(report.probes.every(value => value.status === "UNVERIFIED"));
+    assert.equal(report.summary.notRun.length, 6);
+    assert.ok("environment" in report, "DPR/viewport/user agent are recorded");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("the desktop report records the real Chromium version", async () => {
+  const source = await readFile(join(repository, "scripts/check-panel-desktop.mjs"), "utf8");
+  assert.match(source, /chrome: process\.versions\.chrome/);
+  assert.match(source, /probe: designStudioFidelity\.probe/);
 });

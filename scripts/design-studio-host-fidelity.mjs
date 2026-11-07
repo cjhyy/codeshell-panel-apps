@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
 export const DESIGN_STUDIO_SAMPLE_FLAG = "--design-studio-sample";
+export const DESIGN_STUDIO_PROBE_FLAG = "--design-studio-probe";
 const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] | " +
   `<built-host-checkout> ${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]`;
 
@@ -48,7 +49,7 @@ export const FIDELITY_HOST_FILES = Object.freeze([...REQUIRED_HOST_FILES]);
  */
 export function parsePanelDesktopArguments(argv, _environment = {}) {
   const [hostArgument, ...rest] = argv;
-  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false;
+  let reportArgument, selectedApp, fidelity = false, samplePath = null, sampleSeen = false, probe = false;
   if (!hostArgument || hostArgument.startsWith("--"))
     throw new Error(`a built Host checkout path is required; ${USAGE}`);
   for (let index = 0; index < rest.length; index++) {
@@ -59,6 +60,9 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     } else if (value === DESIGN_STUDIO_FIDELITY_FLAG) {
       if (fidelity) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} given twice`);
       fidelity = true;
+    } else if (value === DESIGN_STUDIO_PROBE_FLAG) {
+      if (probe) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} given twice`);
+      probe = true;
     } else if (value === DESIGN_STUDIO_SAMPLE_FLAG) {
       if (sampleSeen || !rest[index + 1] || rest[index + 1].startsWith("--"))
         throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires one sample path`);
@@ -69,6 +73,7 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     } else throw new Error(`unexpected argument: ${value}; ${USAGE}`);
   }
   if (sampleSeen && !fidelity) throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
+  if (probe && !fidelity) throw new Error(`${DESIGN_STUDIO_PROBE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
   // Breaking for this opt-in only: outputs are created by the harness itself in the
   // root-owned system temp directory and written through held handles.
@@ -76,7 +81,7 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
     "its report and artifact bundle are harness-owned files in the root-owned system temp directory, printed at start");
   if (selectedApp && selectedApp !== "design-studio")
     throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} only runs --app design-studio, not ${selectedApp}`);
-  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath } };
+  return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath, probe } };
 }
 
 /**
@@ -309,12 +314,15 @@ export async function readFixtureDocument({ projectDirectory, relativePath, code
  * performed after the DOM selection and inspector geometry match the plan.
  * ------------------------------------------------------------------------- */
 export const INTERACTION_PLAN = Object.freeze([
+  // run2: the app snaps a move to its 8-unit grid and then to stationary node edges
+  // within 6/zoom (app.js:2994-3010, geometry.mjs snapValue/snapBoundsToNodes). x=400
+  // is on the grid and on underlay's left edge, so the result is exact at any zoom.
   { operation: "drag", targetId: "move-target", before: { x: 120, y: 140 }, selectAt: { x: 180, y: 180 },
-    grab: { x: 180, y: 180 }, drop: { x: 440, y: 180 }, after: { x: 380, y: 140 }, tolerance: 20,
+    grab: { x: 180, y: 180 }, drop: { x: 460, y: 180 }, after: { x: 400, y: 140 }, tolerance: 0,
     clicks: [{ label: "new-position", world: { x: 440, y: 180 }, expected: ["move-target"] },
       { label: "old-position", world: { x: 180, y: 180 }, expected: [] },
       { label: "underlay-only", world: { x: 545, y: 250 }, expected: ["underlay"] }] },
-  { operation: "inspector-x", targetId: "move-target", before: { x: 380, y: 140 }, beforeTolerance: 20, selectAt: { x: 440, y: 180 },
+  { operation: "inspector-x", targetId: "move-target", before: { x: 400, y: 140 }, selectAt: { x: 440, y: 180 },
     set: { x: 200 }, after: { x: 200, y: 140 }, tolerance: 0,
     clicks: [{ label: "new-position", world: { x: 260, y: 180 }, expected: ["move-target"] },
       { label: "old-position", world: { x: 470, y: 180 }, expected: ["underlay"] }] },
@@ -415,6 +423,8 @@ export function judgeLowZoomPerformance(observation) {
   const evidence = { frames: observation.frames, cpu: observation.cpu, renderer: observation.renderer ?? null, camera: observation.camera };
   const reasons = [];
   if (!(observation.textNodeCount >= 1000)) reasons.push(`fixture has ${observation.textNodeCount} text nodes; 1000+ real text nodes are required`);
+  if (!(observation.openedTextLayerCount >= 1000))
+    reasons.push(`large document is not open in the DOM (${observation.openedTextLayerCount ?? "no"} text layers listed)`);
   const camera = observation.camera;
   if (!camera || ![camera.zoom, camera.panX, camera.panY, camera.dpr].every(finite)) reasons.push("camera was not observed");
   else {
@@ -499,6 +509,29 @@ export function judgeSaveReopen(observation) {
 }
 
 const REQUIRED_VISUAL_ROUTES = ["gpu", "browser", "html"];
+/** Readback of the overlay transform is float32; this is its precision, not a visual allowance. */
+export const ZOOM_TOLERANCE = 1e-6;
+export const zoomMatches = (actual, target) => finite(actual) && finite(target) && target > 0 && Math.abs(actual / target - 1) <= ZOOM_TOLERANCE;
+
+/**
+ * Device-pixel crop of the design page for one capture: world page bounds through the
+ * shared camera (CSS = zoom*world + pan; device = CSS*dpr), clipped to the capture.
+ * Visible app overlays (toolbar, toast, hints; CSS px relative to the stage) that touch
+ * the crop make it ineligible for comparison rather than being mixed in.
+ */
+export function pageCropRect({ camera, pageBounds, capture, overlays = [] }) {
+  const { zoom, panX, panY, dpr } = camera;
+  const x0 = (zoom * pageBounds.x + panX) * dpr, y0 = (zoom * pageBounds.y + panY) * dpr;
+  const x1 = (zoom * (pageBounds.x + pageBounds.width) + panX) * dpr, y1 = (zoom * (pageBounds.y + pageBounds.height) + panY) * dpr;
+  const left = Math.max(0, Math.floor(x0)), top = Math.max(0, Math.floor(y0));
+  const right = Math.min(capture.width, Math.ceil(x1)), bottom = Math.min(capture.height, Math.ceil(y1));
+  const touching = overlays.filter(overlay => overlay.x * dpr < right && (overlay.x + overlay.width) * dpr > left &&
+    overlay.y * dpr < bottom && (overlay.y + overlay.height) * dpr > top).map(overlay => overlay.name);
+  return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top),
+    clipped: left > Math.floor(x0) || top > Math.floor(y0) || right < Math.ceil(x1) || bottom < Math.ceil(y1),
+    comparisonEligible: right > left && bottom > top && touching.length === 0, overlays: touching,
+    transform: { deviceScale: zoom * dpr, originX: x0, originY: y0 } };
+}
 export function judgeVisualCaptureGroup(group) {
   const captures = Array.isArray(group?.captures) ? group.captures : [];
   const reasons = [];
@@ -511,6 +544,22 @@ export function judgeVisualCaptureGroup(group) {
   const first = captures[0]?.camera;
   if (first && captures.some(capture => ["zoom", "panX", "panY", "dpr"].some(key => Math.abs(capture.camera?.[key] - first[key]) > 1e-9)))
     reasons.push("routes do not share one camera");
+  // run2: the "100"/"200" groups were captured at zoom 0.1. A labelled target must be reached.
+  if (finite(group?.targetZoom)) {
+    if (group.zoom?.reached !== true) reasons.push(`target zoom ${group.targetZoom} was not reached: ${JSON.stringify(group.zoom?.reasons ?? null)}`);
+    for (const capture of captures)
+      if (!zoomMatches(capture.camera?.zoom, group.targetZoom))
+        reasons.push(`${capture.route}: camera zoom ${capture.camera?.zoom} is not the target zoom ${group.targetZoom}`);
+  }
+  const crop = captures[0]?.pageCrop;
+  for (const capture of captures) {
+    const value = capture.pageCrop;
+    if (!value || ![value.x, value.y, value.width, value.height].every(finite)) reasons.push(`${capture.route}: no page crop`);
+    else {
+      if (value.comparisonEligible !== true) reasons.push(`${capture.route}: page crop overlaps app overlays ${JSON.stringify(value.overlays ?? [])}`);
+      if (crop && ["x", "y", "width", "height"].some(key => value[key] !== crop[key])) reasons.push(`${capture.route}: page crop differs from the other routes`);
+    }
+  }
   if (reasons.length) return verdict(FIDELITY_STATUS.UNVERIFIED, reasons);
   return verdict(FIDELITY_STATUS.EVIDENCE_ONLY, ["visual equivalence needs reviewed comparison; captures are evidence only"]);
 }
@@ -527,6 +576,10 @@ export function judgeSvgCornerProbe(observation) {
 export function planDesignStudioFidelityScenarios({ sample = false } = {}) {
   const P = FIDELITY_FIXTURE_PATHS;
   return [
+    { id: "low-zoom-fractional-performance", fixture: P.largeText, fixtures: [P.largeText],
+      steps: ["Ctrl+wheel to a non-integer zoom < 1", "fractional wheel pans", "record rAF frame intervals and CDP Performance.getMetrics deltas"],
+      observables: ["requestAnimationFrame intervals in the guest", "CDP Performance.getMetrics ScriptDuration/TaskDuration/LayoutDuration"],
+      knownGaps: ["CanvasKit renderer stats() (deviceTextSamplingBuilds, tile builds/hits, renderMode, lastRenderSubmitMs) are not exposed to DOM/window in the installed app; device sampling misses and tile bypass remain UNVERIFIED without a reviewed read-only surface"] },
     { id: "open-without-edit", fixture: P.legacyReceipts, fixtures: [P.legacyReceipts, ...(sample ? ["sample"] : [])],
       steps: ["open via #open-files → #files-dialog .file-row", `sample #save-state and file bytes/mtime for >= ${OPEN_WAIT_MIN_MS}ms without input`],
       observables: ["file sha256/mtime/size (Node, temp project)", "#save-state[data-kind] + text", "#path value"],
@@ -542,10 +595,6 @@ export function planDesignStudioFidelityScenarios({ sample = false } = {}) {
         "second #save confirmed saved; bytes stable and canonical"],
       observables: ["file sha256/mtime/size", "installed codec read of disk", "#prop-x/#prop-y/#prop-text after reload", "layer ids/order", "#save-state"],
       knownGaps: ["whether webview reload keeps the Host binding is unverified; a failed reload is UNVERIFIED"] },
-    { id: "low-zoom-fractional-performance", fixture: P.largeText, fixtures: [P.largeText],
-      steps: ["Ctrl+wheel to a non-integer zoom < 1", "fractional wheel pans", "record rAF frame intervals and CDP Performance.getMetrics deltas"],
-      observables: ["requestAnimationFrame intervals in the guest", "CDP Performance.getMetrics ScriptDuration/TaskDuration/LayoutDuration"],
-      knownGaps: ["CanvasKit renderer stats() (deviceTextSamplingBuilds, tile builds/hits, renderMode, lastRenderSubmitMs) are not exposed to DOM/window in the installed app; device sampling misses and tile bypass remain UNVERIFIED without a reviewed read-only surface"] },
     { id: "same-camera-visual", fixture: P.rotationStrips, fixtures: [P.rotationStrips],
       steps: ["GPU and browser renderer captures at ~100%, ~200% (Ctrl+wheel) and fit", "HTML reference from installed frontend-export in an owned hidden BrowserWindow of the same Electron"],
       observables: ["capturePage PNG + sha256", "#stage transform for every route"],

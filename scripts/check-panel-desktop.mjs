@@ -374,7 +374,7 @@ app.on("session-created", session => {
             guestWebContentsId, app,
             projectDirectory: fidelityProject, packageDirectory: selected.installPath, fixtures: fidelitySeed.fixtures,
             seededStates: fidelitySeed.seededStates, sampleReceipt: fidelitySeed.sampleReceipt,
-            artifactSink: fidelityOutputs, log: message => console.log(message) });
+            artifactSink: fidelityOutputs, probe: designStudioFidelity.probe, log: message => console.log(message) });
           fidelityReport.installedPackageDigest = selected.packageDigest;
           console.log(`Design Studio fidelity summary: ${JSON.stringify(fidelityReport.summary)}`);
         }, { requiresOwnedHostCleanup: () => Boolean(fidelityReport?.cleanup?.requiresOwnedHostCleanup) });
@@ -712,7 +712,7 @@ app.on("session-created", session => {
   assert.ok(guardReceipts.some(value => value.pid === process.pid && value.negativeProbes === 7));
   assert.ok(guardReceipts.some(value => value.pid === app.process().pid && value.negativeProbes === 7));
   const keychainReceipt = JSON.parse(await readFile(join(isolated.home, "electron-keychain-context.json"), "utf8"));
-  const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
+  const runtime = await app.evaluate(() => ({ electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
   await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
   const nativeReceipts = await nativeFixture.receipts();
   const managedReceipts = await managedFixture.receipts();
