@@ -51,7 +51,7 @@ node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell --design-
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/design-studio-host-fidelity.mjs` | 纯模块，无顶层副作用，不 import electron、playwright 或 child_process。包含：参数解析和 opt-in 闸门；只读 preflight；样本复制；网络 allowlist；合成 fixture；各场景判定；报告汇总；create-only 输出检查 |
-| `scripts/design-studio-host-fidelity-runner.mjs` | 只在 Electron 里执行的步骤。它接收现有 harness 已经拥有的 guest 和 Electron app 句柄，自己不启动任何进程 |
+| `scripts/design-studio-host-fidelity-runner.mjs` | 只在 Electron 里执行的步骤。它接收现有 harness 已经拥有的 guest 和 Electron app 句柄，不启动 Electron、浏览器或任何窗口。唯一的子进程（2026-11-07 最终批次更正）：只在 probe 模式的 `probe-raster-backend` 步骤里，对 `app.getAppMetrics()` 列出的 owned GPU 进程和 guest renderer PID 执行只读的 `ps -o command= -p <pid>`（`execFileSync`，每次 5 s timeout，失败时记为 null），用来记录 owned 进程的 command line。非 probe 的 fidelity 场景不执行它 |
 | `scripts/check-panel-desktop.mjs` | 最小扩展。改用共享的参数解析器；preflight 和 fidelity 输出 claim（root-owned 系统临时目录内两个持有句柄的文件，见第三轮）放在 `mkdtemp` 之前；fidelity 使用独立的私有 project `desktop-fidelity`，fixture 在启动前写入；场景在原有 owned-cleanup 的 `try/finally` 里执行，位于 design-studio 的 CanvasKit 检查之后、通用 update/restore 之前 |
 | `tests/design-studio-host-fidelity.test.mjs` | 33 项单元测试（复审返修后），已登记到 `tests/suites.mjs` 的 `desktop-harness` 套件 |
 

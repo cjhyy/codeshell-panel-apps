@@ -8,6 +8,8 @@
 
 证据都在任务自有的仓库内副本 `.tmp/real-dsf-evidence/` 中（未提交，`SHA256SUMS` 覆盖每个文件，原始文件保持不变）。下文出现的 `.tmp/real-dsf-evidence/…` 都是相对仓库根的路径。
 
+最终交付说明见 [design-studio-render-fidelity-handoff-20261107.md](design-studio-render-fidelity-handoff-20261107.md)：review 448732e1 判 `15d8cf85` 代码 PASS，有限产品验收为 ACCEPTABLE_WITH_LIMITS，由主代理接受。严格 FAIL 不变。
+
 基线 `de5aaffa`；Host 只读 `19fbe3828`（工作区干净）；Electron 33.4.11 / Chromium 130.0.6723.191；离线对照用 Chromium 148.0.7778.96 headless。
 
 ## 1. 被推翻和被证实的假设
