@@ -14,7 +14,7 @@ import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-des
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
-import { runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
+import { createOwnedGuestCleanup, runDesignStudioHostFidelity } from "./design-studio-host-fidelity-runner.mjs";
 import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, claimFidelityOutputs, copyDesignStudioSample,
   parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
@@ -38,9 +38,10 @@ if (!hostPreflight.ok) {
   process.exit(2);
 }
 for (const warning of hostPreflight.warnings) console.warn(`Host preflight warning: ${warning}`);
-// Real-parent containment, lstat refusal of existing/dangling entries and an exclusive,
-// owned artifacts directory; claimed before any temporary HOME is created.
-const fidelityOutputs = designStudioFidelity ? await claimFidelityOutputs(reportArgument) : null;
+// Harness-owned outputs: two O_EXCL|O_NOFOLLOW files in the root-owned system temp
+// directory, held open and written only through their handles (no user path).
+const fidelityOutputs = designStudioFidelity ? await claimFidelityOutputs() : null;
+if (fidelityOutputs) console.log(`Design Studio fidelity outputs: ${fidelityOutputs.reportPath} ${fidelityOutputs.bundlePath}`);
 const appDir = join(hostRoot, "packages/desktop");
 const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -354,20 +355,29 @@ app.on("session-created", session => {
         const unboundFidelity = await binding(fidelityProject, id);
         await ipc("setPanelAppProjectBinding", fidelityProject, id, true, unboundFidelity.revision);
         const fidelityGuest = await attach(fidelityProject, id, "fidelity");
+        // Shared, idempotent and bounded: the runner's timeout path and this finally.
+        const guestCleanup = createOwnedGuestCleanup(fidelityGuest);
         try {
           await untilGuest(fidelityGuest, 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"');
           const core = await hostModule("packages/core/dist/index.js");
           const selected = (await core.listProjectPanelApps(fidelityProject, id)).find(value => value.id === id);
           assert.ok(selected?.installPath, "installed Design Studio package path not found for the fidelity project");
-          fidelityReport = await runDesignStudioHostFidelity({ enabled: true, guest: fidelityGuest,
+          fidelityReport = await runDesignStudioHostFidelity({ enabled: true, guest: fidelityGuest, guestCleanup,
             guestWebContentsId: await fidelityGuest.view.evaluate(view => view.getWebContentsId()), app,
             projectDirectory: fidelityProject, packageDirectory: selected.installPath, fixtures: fidelitySeed.fixtures,
             seededStates: fidelitySeed.seededStates, sampleReceipt: fidelitySeed.sampleReceipt,
-            artifactsDirectory: fidelityOutputs.artifactsDirectory, log: message => console.log(message) });
+            artifactSink: fidelityOutputs, log: message => console.log(message) });
           fidelityReport.installedPackageDigest = selected.packageDigest;
           console.log(`Design Studio fidelity summary: ${JSON.stringify(fidelityReport.summary)}`);
         } finally {
-          await fidelityGuest.remove().catch(() => {});
+          const removal = await guestCleanup.remove();
+          // Unsettled guest/reference work or a failed/pending remove is handed to the
+          // existing owned Electron cleanup (captured ChildProcess only) by failing here.
+          if (fidelityReport?.cleanup?.requiresOwnedHostCleanup || removal.requiresOwnedHostCleanup) {
+            await fidelityOutputs.writeReport(`${JSON.stringify({ partial: true, designStudioFidelity: fidelityReport,
+              guestCleanup: removal, reason: "unsettled owned fidelity work; owned Electron cleanup follows" }, null, 2)}\n`);
+            throw new Error(`Design Studio fidelity left unsettled owned work: ${JSON.stringify({ guest: removal, unsettled: fidelityReport?.cleanup?.unsettled })}`);
+          }
         }
       }
     }
@@ -769,11 +779,17 @@ app.on("session-created", session => {
     managedReceipts: await managedFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
-  cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
+  cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure })
+    .finally(async () => { if (failure) await fidelityOutputs?.close(); });
 }
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
-if (reportArgument) await writeFile(fidelityOutputs?.reportPath ?? resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+if (fidelityOutputs) {
+  report.designStudioFidelityOutputs = { reportPath: fidelityOutputs.reportPath, bundlePath: fidelityOutputs.bundlePath,
+    identity: fidelityOutputs.identity, rootChain: fidelityOutputs.rootChain, artifacts: fidelityOutputs.artifacts() };
+  await fidelityOutputs.writeReport(`${JSON.stringify(report, null, 2)}\n`);
+  await fidelityOutputs.close();
+} else if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 console.log(`PASS: ${results.length}/${cases.length} selected real installed Panel Desktop IPC scenarios${selectedApp ? ` (${selectedApp} only)` : " (all six packages)"}; owned Electron exit and HOME cleanup verified`);
 if (designStudioFidelity) {
   // Not goal completion: FAIL exits 1; any UNVERIFIED/EVIDENCE_ONLY/not-run exits 3.

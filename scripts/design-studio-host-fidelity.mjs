@@ -8,16 +8,17 @@
  * The CLI flag is only a technical opt-in. It is not user approval to open a Host
  * window; that approval must be obtained separately before anyone runs the command.
  */
-import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { copyFile, lstat, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DESIGN_STUDIO_FIDELITY_FLAG = "--design-studio-fidelity";
 export const DESIGN_STUDIO_SAMPLE_FLAG = "--design-studio-sample";
-const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] " +
-  `[${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]]`;
+const USAGE = "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>] | " +
+  `<built-host-checkout> ${DESIGN_STUDIO_FIDELITY_FLAG} [${DESIGN_STUDIO_SAMPLE_FLAG} <absolute.codesign.json>]`;
 
 /** Build outputs hashed by the existing desktop gate (unchanged list). */
 export const HASHED_HOST_BUILD_FILES = Object.freeze([
@@ -69,7 +70,10 @@ export function parsePanelDesktopArguments(argv, _environment = {}) {
   }
   if (sampleSeen && !fidelity) throw new Error(`${DESIGN_STUDIO_SAMPLE_FLAG} requires ${DESIGN_STUDIO_FIDELITY_FLAG}`);
   if (!fidelity) return { hostArgument, reportArgument, selectedApp, designStudioFidelity: null };
-  if (!reportArgument) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} requires a new report path; ${USAGE}`);
+  // Breaking for this opt-in only: outputs are created by the harness itself in the
+  // root-owned system temp directory and written through held handles.
+  if (reportArgument) throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} does not accept a report path (${reportArgument}); ` +
+    "its report and artifact bundle are harness-owned files in the root-owned system temp directory, printed at start");
   if (selectedApp && selectedApp !== "design-studio")
     throw new Error(`${DESIGN_STUDIO_FIDELITY_FLAG} only runs --app design-studio, not ${selectedApp}`);
   return { hostArgument, reportArgument, selectedApp: "design-studio", designStudioFidelity: { samplePath } };
@@ -467,8 +471,20 @@ export function judgeSaveReopen(observation) {
   }
   if (!Array.isArray(o.layerIdsBefore) || !Array.isArray(o.layerIdsAfterReopen)) missing.push("layer ids");
   else if (JSON.stringify(o.layerIdsBefore) !== JSON.stringify(o.layerIdsAfterReopen)) failures.push("layer identity/order changed after reopen");
-  if (typeof o.dirtyAfterReopen !== "string") missing.push("save state after reopen");
-  else if (["dirty", "error"].includes(o.dirtyAfterReopen)) failures.push(`reopened document is ${o.dirtyAfterReopen}`);
+  // Reload must not write or dirty the saved document: every sample counts, and the
+  // file must still be the first save's bytes, mtime and size before the second save.
+  const samples = o.reopenSaveStates;
+  if (!Array.isArray(samples) || samples.length < 2 || samples.some(sample => typeof sample?.kind !== "string" || !finite(sample?.atMs)))
+    missing.push("complete #save-state samples after reload");
+  else for (const sample of samples)
+    if (["dirty", "error"].includes(sample.kind) || BUSY_SAVE_TEXT.test(sample.text ?? ""))
+      failures.push(`after reload #save-state was ${sample.kind} "${sample.text ?? ""}" at ${sample.atMs}ms`);
+  if (!finite(o.reopenWaitedMs)) missing.push("reload observation duration");
+  else if (o.reopenWaitedMs < OPEN_WAIT_MIN_MS || (Array.isArray(samples) && Math.max(...samples.map(sample => sample?.atMs ?? 0)) < OPEN_WAIT_MIN_MS))
+    missing.push(`at least ${OPEN_WAIT_MIN_MS}ms of reload observation (observed ${o.reopenWaitedMs}ms)`);
+  if (!validFileState(o.reopenedBeforeSecondSave)) missing.push("file snapshot after reload, before the second save");
+  else if (saveObserved(o.firstSave) && !sameFileState(o.reopenedBeforeSecondSave, o.firstSave.file))
+    failures.push(`reload changed the saved file before the second save: ${JSON.stringify(o.firstSave.file)} → ${JSON.stringify(o.reopenedBeforeSecondSave)}`);
   if (!saveObserved(o.secondSave)) missing.push("second save state and file");
   else {
     if (o.secondSave.kind !== "saved") failures.push(`second save ended as ${o.secondSave.kind}`);
@@ -556,41 +572,91 @@ export function summarizeFidelityReport(results, plan = planDesignStudioFidelity
     note: "A PASS here covers only these synthetic real-Host scenarios; it is not overall visual acceptance or goal completion." };
 }
 
-const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const entryExists = path => lstat(path).then(() => true, error => {
-  if (error.code === "ENOENT") return false;
-  throw error;
-});
-/**
- * Claim create-only outputs outside the repository. The real parent (all symlinks
- * resolved) must be outside the real repository; existing entries, including
- * dangling symlinks, are refused; the artifacts directory is created exclusively
- * (non-recursive mkdir) and returned as owned. Nothing else is ever removed.
+/*
+ * Output contract (breaking for --design-studio-fidelity only). Node has no openat,
+ * so any path-based write below a user-chosen directory can be redirected by
+ * replacing a parent with a symlink between a check and the write. Instead:
+ *   - the only output root is the system temp directory whose whole path chain is
+ *     root-owned, non-symlink and (where writable by others) sticky; a non-root
+ *     process cannot replace any component of it;
+ *   - exactly two files are created directly in it with O_CREAT|O_EXCL|O_NOFOLLOW
+ *     (no directory is ever created), and their handles are held;
+ *   - every PNG and the report are written only through those handles, so later
+ *     renames/symlink swaps of the paths cannot redirect a single byte.
+ * Unsupported platforms (no such root) are refused rather than given a weaker check.
  */
-export async function claimFidelityOutputs(reportPath, { beforeCreate } = {}) {
-  const requested = resolve(reportPath);
-  let realParent;
-  try { realParent = await realpath(dirname(requested)); }
-  catch (error) { throw new Error(`fidelity report parent must already exist: ${dirname(requested)} (${error.code})`); }
-  if (inside(await realpath(REPOSITORY_ROOT), realParent))
-    throw new Error(`fidelity report must be outside the repository: ${requested} resolves to ${realParent}`);
-  const report = join(realParent, basename(requested)), artifactsDirectory = `${report}.artifacts`;
-  for (const path of [report, artifactsDirectory])
-    if (await entryExists(path)) throw new Error(`fidelity output already exists: ${path}`);
-  if (beforeCreate) await beforeCreate();
-  try { await mkdir(artifactsDirectory, { mode: 0o700 }); }
+export const SYSTEM_OUTPUT_ROOTS = Object.freeze({ darwin: "/private/tmp", linux: "/tmp" });
+const ROOT_CHAIN_ERROR = "fidelity output root must be a root-owned, non-symlink directory chain";
+export async function verifyRootOwnedOutputRoot(root) {
+  if (typeof root !== "string" || !isAbsolute(root) || resolve(root) !== root) throw new Error(`${ROOT_CHAIN_ERROR}: ${root} is not a normalized absolute path`);
+  const chain = [], parts = root.split(sep).filter(Boolean);
+  for (let index = 0; index <= parts.length; index++) {
+    const path = sep + parts.slice(0, index).join(sep);
+    const value = await lstat(path);
+    if (value.isSymbolicLink()) throw new Error(`${ROOT_CHAIN_ERROR}: ${path} is a symlink`);
+    if (!value.isDirectory()) throw new Error(`${ROOT_CHAIN_ERROR}: ${path} is not a directory`);
+    if (value.uid !== 0) throw new Error(`${ROOT_CHAIN_ERROR}: ${path} is owned by uid ${value.uid}, not root-owned`);
+    if ((value.mode & 0o022) && !(value.mode & 0o1000)) throw new Error(`${ROOT_CHAIN_ERROR}: ${path} is writable by others without the sticky bit`);
+    chain.push({ path, uid: value.uid, mode: (value.mode & 0o7777).toString(8), symlink: false });
+  }
+  return chain;
+}
+
+const OUTPUT_FLAGS = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_CLOEXEC ?? 0);
+const ARTIFACT_LABEL = /^[a-z0-9][a-z0-9-]{0,80}$/u;
+export async function claimFidelityOutputs({ root = SYSTEM_OUTPUT_ROOTS[process.platform], name } = {}) {
+  if (!root) throw new Error(`no root-owned output root is defined for ${process.platform}; Design Studio fidelity outputs are refused`);
+  const chain = await verifyRootOwnedOutputRoot(root);
+  const outputName = name ?? `ds-host-fidelity-${Date.now()}-${randomBytes(8).toString("hex")}`;
+  if (!/^[a-z0-9][a-z0-9-]{0,120}$/u.test(outputName)) throw new Error(`invalid output name: ${outputName}`);
+  const reportPath = join(root, `${outputName}.report.json`), bundlePath = join(root, `${outputName}.artifacts.bin`);
+  const report = await open(reportPath, OUTPUT_FLAGS, 0o600);
+  let bundle;
+  try { bundle = await open(bundlePath, OUTPUT_FLAGS, 0o600); }
   catch (error) {
-    if (error.code === "EEXIST") throw new Error(`fidelity output already exists (EEXIST): ${artifactsDirectory}`);
+    // Remove only our own just-created report: the path must still name the held inode.
+    const held = await report.stat();
+    await report.close();
+    const current = await lstat(reportPath).catch(() => null);
+    if (current && current.dev === held.dev && current.ino === held.ino) await unlink(reportPath);
     throw error;
   }
-  const owned = await lstat(artifactsDirectory);
-  if (!owned.isDirectory() || owned.isSymbolicLink() || await realpath(artifactsDirectory) !== artifactsDirectory)
-    throw new Error(`claimed artifacts directory is not a plain owned directory: ${artifactsDirectory}`);
-  return { reportPath: report, artifactsDirectory, ownedArtifactsDirectory: { path: artifactsDirectory, dev: owned.dev, ino: owned.ino } };
-}
-/** O_CREAT|O_EXCL write: refuses existing files and (dangling) symlinks. */
-export function writeCreateOnly(path, content) {
-  return writeFile(path, content, { flag: "wx", mode: 0o600 });
+  const identity = { report: await report.stat(), bundle: await bundle.stat() };
+  const artifacts = [];
+  let offset = 0, queue = Promise.resolve(), reportWritten = false, closed = false;
+  const serial = task => (queue = queue.then(task, task));
+  return {
+    name: outputName, root, rootChain: chain, reportPath, bundlePath,
+    identity: { report: { dev: identity.report.dev, ino: identity.report.ino }, bundle: { dev: identity.bundle.dev, ino: identity.bundle.ino } },
+    artifacts: () => artifacts.map(value => ({ ...value })),
+    writeArtifact: (label, buffer) => serial(async () => {
+      if (closed) throw new Error("fidelity outputs are closed");
+      if (typeof label !== "string" || !ARTIFACT_LABEL.test(label)) throw new Error(`invalid artifact label: ${label}`);
+      if (artifacts.some(value => value.label === label)) throw new Error(`duplicate artifact label: ${label}`);
+      const bytes = Buffer.from(buffer);
+      const { bytesWritten } = await bundle.write(bytes, 0, bytes.length, offset);
+      if (bytesWritten !== bytes.length) throw new Error(`short artifact write for ${label}`);
+      const record = { label, offset, length: bytes.length, sha256: sha256(bytes) };
+      offset += bytes.length;
+      artifacts.push(record);
+      return { ...record };
+    }),
+    writeReport: text => serial(async () => {
+      if (closed) throw new Error("fidelity outputs are closed");
+      if (reportWritten) throw new Error("the fidelity report is written once");
+      reportWritten = true;
+      const bytes = Buffer.from(text, "utf8");
+      const { bytesWritten } = await report.write(bytes, 0, bytes.length, 0);
+      if (bytesWritten !== bytes.length) throw new Error("short report write");
+      await report.sync();
+      await bundle.sync();
+    }),
+    close: () => serial(async () => {
+      if (closed) return;
+      closed = true;
+      await Promise.allSettled([report.close(), bundle.close()]);
+    }),
+  };
 }
 
 /** Map authored world geometry into the exported SVG's original-size device pixels. */

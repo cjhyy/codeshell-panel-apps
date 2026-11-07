@@ -13,16 +13,16 @@
 
 ```sh
 # 1. 先在获授权的 Host checkout 里另行构建（本脚本绝不代为构建、下载或安装）
-# 2. 报告的真实父目录必须已存在且在本仓库之外；报告和 <report>.artifacts 都不能已存在（含 dangling symlink）
-node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell \
-  /absolute/outside-repo/ds-host-fidelity-report.json --design-studio-fidelity
+# 2. 第三轮复审起（breaking，仅影响本 opt-in）：fidelity 不再接受报告路径。
+#    报告和截图 bundle 由 harness 在 root-owned 的系统临时目录里自行创建，启动时打印路径
+node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell --design-studio-fidelity
 # 可选：显式传入一份真实样本（只读：记录 SHA 前后，复制到临时 project，原件不动）
-node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell \
-  /absolute/outside-repo/ds-host-fidelity-report.json --design-studio-fidelity \
+node scripts/check-panel-desktop.mjs /absolute/path/to/built/codeshell --design-studio-fidelity \
   --design-studio-sample /absolute/path/to/sample.codesign.json
 ```
 
-- 打开 flag 后只跑 `--app design-studio`；传入其他 `--app` 会报错。必须同时给出已构建的 Host 路径和新的报告路径。
+- 打开 flag 后只跑 `--app design-studio`；传入其他 `--app` 或报告路径都会报错。原有不带 flag 的 Desktop 检查仍然接受 `[new-report.json]`，行为不变。
+- 输出：`/private/tmp/ds-host-fidelity-<时间>-<随机>.report.json` 和 `.artifacts.bin`（Linux 为 `/tmp`）。bundle 是按顺序拼接的 PNG；报告里的 `designStudioFidelityOutputs.artifacts` 记录每张图的 `label/offset/length/sha256`，按 offset 和 length 切出即可，切出后的 sha256 应与记录一致。
 - 退出码：
   - Host preflight 缺件：2，此时还没有创建临时 HOME，也没有启动任何进程；
   - 通用 Desktop 断言失败：沿用原有行为；
@@ -171,3 +171,61 @@ npm run validate                                                              # 
 - 真实 Host 场景仍然**一个都没跑**。主 Host checkout 缺 `out/managed-runtimes/node/bin/node`，preflight 会 exit 2；需要先另行授权构建完整的 Host，并经 AskUser 取得窗口许可。
 - runner 的 Electron 专属步骤只在假句柄上测过。以下几点在真实环境中都没有验证：webview reload 后 Host 绑定是否保留；`guest.remove()` 能否让 pending 的 `executeJavaScript` settle；Electron 的 `mouseWheel` 和 `insertText` 语义。
 - 低 zoom 的 renderer stats 不可观测，仍判 UNVERIFIED。DPR1 的 SVG 角 AA 需要 DPR1 显示器。视觉结果仅作证据。
+
+## 第三轮复审返修（cf51e8e1：I1、I2 PASS；I3、I4、M BLOCKED）
+
+返修前核对：HEAD 为 `cf51e8e1`，工作区除 `.tmp/` 外干净。本轮仍然**没有**启动 Electron、GUI 或浏览器，没有构建 Host，没有安装 Panel，没有执行任何入口。I1 和 I2 没有重做。
+
+红：`node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs`，40 tests / 27 pass / 12 fail / 1 cancelled（`.tmp/host-harness/review3-red.log`）。cancelled 的是“operation 和 cancel 同时 pending”用例：原实现 `await cancel()` 没有上界，挂到 15 s 才被 test timeout 中止。
+
+### I3：输出改为由真实句柄绑定（breaking，仅影响本 opt-in）
+
+**为什么原来的做法不安全。** Node 没有 `openat`/`mkdirat`。只要按路径写到用户目录下，就存在 check→create 的窗口：在这个窗口里把父目录换成指向仓库的 symlink，`mkdir` 或 `open` 就会在仓库里创建条目。事后再做 lstat、realpath 或比对 dev/ino，最多只能发现问题，无法阻止写入。所以不再提供“用户指定路径加保守检查”这条路，而是缩小输出契约：
+
+1. **输出根只有一个：root-owned 的系统临时目录**。macOS 是 `/private/tmp`，Linux 是 `/tmp`。`verifyRootOwnedOutputRoot` 对路径链上的每一级做 lstat，要求：不是 symlink、是目录、uid 为 0、可被他人写的那一级必须带 sticky 位。本机实测 `/`、`/private` 均为 0755 root，`/private/tmp` 为 1777 root，满足要求。非 root 进程无法替换这条链上的任何一级，所以 check→create 之间不存在可被利用的父目录替换窗口。macOS 上的 `/tmp` 本身是 symlink，会被拒绝；仓库目录、用户目录也会被拒绝；没有这种根的平台直接拒绝运行，不退回较弱的检查。
+2. **只在该根下直接创建两个文件，不创建任何目录**。两个文件都用 `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW(|O_CLOEXEC)`、权限 0600 打开，文件名带随机部分。同名条目已存在（包括 dangling symlink 或普通文件）时报 EEXIST，且不会跟随 symlink。如果第二个文件创建失败，只有在路径仍指向我们持有的那个 inode（dev/ino 一致）时，才删除刚创建的第一个文件。
+3. **持有句柄，全部写入都经由句柄**。PNG 用带 offset 的 `FileHandle.write` 追加进 bundle；报告只写一次，写后 `sync`；`close` 幂等。之后即使有人对这两个路径做 rename 或换成 symlink，写入仍然落在原 inode 上，不会改写到别处。runner 里已经没有任何按路径的 `writeFile` 或 `mkdir`（有静态测试守护）。
+4. check-panel-desktop 在 `mkdtemp` 之前完成 claim；最终报告通过句柄写入；失败路径在 owned cleanup 的 `.finally` 中关闭句柄。不带 flag 的原有 Desktop 检查仍按 `[new-report.json]` 以 `wx` 写入，行为不变。
+
+负控（全部是 `/private/tmp` 里的真实 inode 和 symlink，测试结束后只删除自己创建的条目）：
+
+- 非 root 的 scratch 目录、指向 root 目录的 symlink、macOS 的 `/tmp`、仓库 `.tmp` 都不能作为输出根，`claim({ root: repo })` 也会被拒绝；
+- 在预定名称上放一个指向**仓库内 sentinel** 的 dangling symlink，claim 报 EEXIST，sentinel 没有被创建；已存在的普通文件同样报 EEXIST，内容不变，刚创建的另一个文件被撤回；
+- claim 之后把报告和 bundle 都 rename 走，原路径换成指向仓库 sentinel 的 symlink，再写两张图和报告：字节全部落在被 rename 走的原文件里（偏移 0/5、长度 5/6、sha 一致），两个仓库 sentinel 都不存在；
+- 重复的 label、包含 `../` 的 label、第二次写报告都会被拒绝；
+- 创建的条目恰好是两个普通文件，权限 0600，没有目录。
+
+### I4：reload 之后、第二次保存之前加入磁盘快照，且全部采样都纳入判定
+
+- runner 在 reload 并采样约 2.2 s 之后记录一次 `reopenedAfterSampling`（只作描述）；读完 DOM、**紧接第二次 save 之前**再拍 `reopenedBeforeSecondSave`。
+- 判据：
+  - `reopenedBeforeSecondSave` 必须与第一次保存的文件在 sha、mtime、size 上完全一致，否则判 FAIL。这覆盖了 Codex 给出的反例：reload 曾 dirty → autosave → saved，SHA 不变但 mtime 变了；
+  - `reopenSaveStates` 中**任意一个**样本是 dirty、error，或文本显示保存中、自动保存、有修改、失败，都判 FAIL；
+  - 样本少于 2 个、样本缺少 kind 或 atMs、观测时长或最大 atMs 不足 2000 ms、缺少快照、缺少采样，都判 UNVERIFIED，绝不默认 PASS。
+- 原有判据全部保留：预期内容、reload 后的 DOM、第二次 save 出错。
+- 负控：sha 相同但 mtime 变化、reload 改写字节、短暂出现 dirty、“正在自动保存”、只有 1 个样本、时长 1500 ms、样本缺 kind、缺少快照、缺少样本。
+- 覆盖局限：采样间隔是 250 ms，抓不到两次采样之间一闪而过的 dirty；但如果那次 dirty 导致了自动保存，会被 mtime 快照抓到。
+
+### M：截止时间同时覆盖 cancel 和 settle，未结清的工作交给 owned cleanup
+
+- `boundedOwnedOperation`：operation 超时之后，cancel 和“等待 operation settle”两件事共用同一个 settle 截止，所以整体在 `timeoutMs + settleTimeoutMs` 内一定返回，即使 operation 和 cancel 都永远挂着。错误对象带 `cleanup: { operationSettled, cancelState }`。当 operation 仍 pending、或 cancel 处于 pending 或 rejected 时，标记 `unsettled`；cancel 失败即使 operation 已经 settle，也算 unsettled。
+- `createOwnedGuestCleanup`：runner 的超时路径和 caller 的 finally 共用同一个实例，`guest.remove()` 最多调用一次，并且有界。remove 本身挂住或 reject 时，记为 `pending` 或 `rejected`，置 `requiresOwnedHostCleanup`。这里不单独依赖 remove，因为它走的也是同一条 renderer 通道。
+- 参照窗口：外层 evaluate 不再传 noop cancel。evaluate 未结清时，`referenceBound` 记入 `cleanup.unsettled` 并设置 abortReason，后续场景全部判 aborted，不会被吞掉。
+- runner 报告 `cleanup: { guest, unsettled, requiresOwnedHostCleanup }`。check-panel-desktop 的 finally 先执行一次有界的 remove；只要存在未结清的工作，就通过句柄写出 partial 报告，然后抛错，交给现有 `cleanupPanelDesktopFixture`（只关闭或信号捕获到的 Electron ChildProcess）。不会 kill 操作者的 Host，也不会 pkill。
+- 负控：operation 和 cancel 同时 pending（实测远低于 200 ms 返回）；cancel reject；cancel 失败但 operation 已 settle；remove 挂住时两次调用只执行一次且有界；guest 调用和 remove 同时挂住时 runner 有界返回、其余场景 aborted、`requiresOwnedHostCleanup`；参照窗口 evaluate 永不返回时记为 unsettled（label 为 reference window evaluation，operationSettled 为 false），abortReason 已设置，未运行的场景仍计入 notRun。为了让 runner 单测直接走到参照窗口这一步，新增了测试用的 `onlyScenarios` 筛选；被筛掉的场景在 summary 中计为 notRun，不会被当成 PASS。
+
+### 第三轮实际运行（TMPDIR=/tmp/ds-host-harness-tmp）
+
+```sh
+node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs   # 40/40 pass, exit 0 (.tmp/host-harness/review3-green.log)
+npm test -- --suite desktop-harness                                           # 53/53 pass, exit 0；套件只含 cleanup/native-fixture/本文件，无 Electron
+npm run validate                                                              # exit 0
+```
+
+运行后 `/private/tmp` 下没有遗留 `ds-host-fidelity*` 条目，仓库 `.tmp` 下也没有 sentinel。
+
+### 仍然不可实现或未执行
+
+- **跨平台的任意用户路径安全写入**：没有 openat 就做不到，因此已放弃，改为上述 root-owned 根加句柄绑定。Windows 等没有这种根的平台直接拒绝运行。
+- **root 或同 uid 的进程**：root 本身不在防护范围内。同 uid 的进程可以 rename 我们创建的文件，但写入仍然落在持有的 inode 上；这类进程本来也能直接写仓库，不属于这条边界要防的对象。
+- **真实 Host 场景仍然 0 个运行过**。主 Host checkout 缺 `out/managed-runtimes/node/bin/node`（preflight 会 exit 2），也没有获得窗口许可。性能 stats 没有出口，判 UNVERIFIED；视觉场景最多 EVIDENCE_ONLY；`goalComplete` 恒为 false。以下行为只在假句柄上验证过：`guest.remove()` 在真实 Electron 里能否让挂起的 `executeJavaScript` settle；Main 中 BrowserWindow 被 destroy 后，load 和 capture 是否会 reject。

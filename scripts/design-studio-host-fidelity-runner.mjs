@@ -9,7 +9,7 @@
  * Anything the installed app does not expose is reported UNVERIFIED.
  */
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
@@ -25,29 +25,62 @@ const worst = statuses => statuses.reduce((a, b) => (SEVERITY.indexOf(b) > SEVER
 const REFERENCE_PROTOCOLS = ["data:", "blob:", "about:"];
 
 /**
- * Run one owned operation with a local deadline. On timeout the caller's cancel()
- * terminates the owned resource (guest webview / reference window) so the pending
- * operation can settle; we then wait a bounded time for that settlement. If it
- * still has not settled the error is marked `unsettled` and the caller must stop
- * using that resource. Never signals processes other than the owned resource.
+ * Run one owned operation with a local deadline that covers the operation, its
+ * cancellation and the wait for settlement together: it returns or throws within
+ * timeoutMs + settleTimeoutMs even if both the operation and cancel() hang. On
+ * timeout the error carries `cleanup: { operationSettled, cancelState }`; it is
+ * `unsettled` when the operation is still pending or cancel did not resolve, and
+ * the caller must then abort and hand over to the existing owned-process cleanup.
+ * Never signals any process itself.
  */
 export async function boundedOwnedOperation(operation, { label, timeoutMs, settleTimeoutMs, cancel }) {
-  let settled = false, timer;
-  const pending = Promise.resolve().then(operation).finally(() => { settled = true; });
-  const deadline = new Promise(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs); });
-  try {
-    const first = await Promise.race([pending, deadline]);
-    if (first !== TIMED_OUT) return first;
-  } finally { clearTimeout(timer); }
+  let operationSettled = false;
+  const pending = Promise.resolve().then(operation).finally(() => { operationSettled = true; });
+  const first = await raceTimer(pending.then(value => ({ value }), error => ({ error })), timeoutMs);
+  if (first !== TIMED_OUT) {
+    if ("error" in first) throw first.error;
+    return first.value;
+  }
   const error = new Error(`${label} timed out after ${timeoutMs}ms`);
   error.timedOut = true;
-  try { await cancel?.(); } catch (cancelError) { error.cancelError = String(cancelError?.message ?? cancelError); }
-  let settleTimer;
-  await Promise.race([pending.catch(() => {}), new Promise(resolve => { settleTimer = setTimeout(resolve, settleTimeoutMs); })]);
-  clearTimeout(settleTimer);
-  error.unsettled = !settled;
-  if (error.unsettled) error.message += `; the cancelled operation did not settle within ${settleTimeoutMs}ms`;
+  let cancelState = cancel ? "pending" : "resolved";
+  const cancelled = cancel ? Promise.resolve().then(cancel).then(() => { cancelState = "resolved"; },
+    cancelError => { cancelState = `rejected: ${cancelError?.message ?? cancelError}`; }) : Promise.resolve();
+  await raceTimer(Promise.allSettled([cancelled, pending]), settleTimeoutMs);
+  error.cleanup = { operationSettled, cancelState };
+  error.unsettled = !operationSettled || cancelState !== "resolved";
+  if (error.unsettled) error.message += `; cleanup incomplete within ${settleTimeoutMs}ms (operation ${operationSettled ? "settled" : "pending"}, cancel ${cancelState})`;
   throw error;
+}
+async function raceTimer(promise, ms) {
+  let timer;
+  try { return await Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms); })]); }
+  finally { clearTimeout(timer); }
+}
+
+/**
+ * Idempotent, bounded removal of the one owned fidelity guest. The runner (on a
+ * timeout) and the caller's finally share this instance, so remove() is invoked at
+ * most once; a remove() that hangs on the same renderer channel is reported as
+ * pending (requiresOwnedHostCleanup) instead of blocking.
+ */
+export function createOwnedGuestCleanup(guest, { timeoutMs = 5_000 } = {}) {
+  let result = null, removeCalls = 0, removeState = "not-started";
+  const state = () => ({ removeCalls, removeState,
+    requiresOwnedHostCleanup: removeState === "pending" || removeState.startsWith("rejected") });
+  return {
+    state,
+    remove() {
+      if (!result) {
+        removeCalls++;
+        removeState = "pending";
+        const removal = Promise.resolve().then(() => guest.remove?.()).then(() => { removeState = "resolved"; },
+          error => { removeState = `rejected: ${error?.message ?? error}`; });
+        result = raceTimer(removal, timeoutMs).then(() => state());
+      }
+      return result;
+    },
+  };
 }
 const TIMED_OUT = Symbol("timed-out");
 
@@ -95,16 +128,13 @@ export async function captureReferenceHtml(app, { html, width, height, timeoutMs
     } finally {
       if (!window.isDestroyed()) window.destroy();
     }
-  }, argument), { label: "reference window evaluation", timeoutMs: 2 * timeoutMs + settleTimeoutMs + 2_000, settleTimeoutMs, cancel: async () => {} });
+  }, argument), { label: "reference window evaluation", timeoutMs: 2 * timeoutMs + settleTimeoutMs + 2_000, settleTimeoutMs });
 }
 
-/** Create-only PNG artifact inside the owned, already-claimed artifacts directory. */
-export async function writeArtifactPng(artifactsDirectory, label, buffer) {
-  if (typeof label !== "string" || !/^[a-z0-9][a-z0-9-]{0,80}$/u.test(label)) throw new Error(`invalid artifact label: ${label}`);
+/** PNG evidence appended through the held artifact-bundle handle (never by path). */
+export async function writeArtifactPng(sink, label, buffer) {
   const evidence = pngEvidence(buffer);
-  const path = join(artifactsDirectory, `${label}.png`);
-  await writeFile(path, buffer, { flag: "wx", mode: 0o600 });
-  evidence.summary.path = path;
+  evidence.summary.artifact = await sink.writeArtifact(label, buffer);
   return evidence;
 }
 
@@ -120,7 +150,7 @@ const hexRgb = value => [1, 3, 5].map(offset => Number.parseInt(value.slice(offs
 export async function runDesignStudioHostFidelity(options) {
   if (options?.enabled !== true) throw new Error("Design Studio fidelity requires explicit --design-studio-fidelity opt-in");
   const { guest, guestWebContentsId, app, projectDirectory, packageDirectory, fixtures, seededStates = {},
-    sampleReceipt = null, artifactsDirectory = null, log = () => {} } = options;
+    sampleReceipt = null, artifactSink = null, log = () => {}, onlyScenarios = null } = options;
   const wait = options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const now = options.now ?? (() => performance.now());
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -138,18 +168,38 @@ export async function runDesignStudioHostFidelity(options) {
 
   // Every guest-bound call has a local deadline. Timeout terminates only the owned
   // fidelity guest (guest.remove()), awaits settlement, then aborts later scenarios.
+  const guestCleanup = options.guestCleanup ?? createOwnedGuestCleanup(guest, { timeoutMs: settleTimeoutMs });
   let guestTerminated = false, abortReason = null;
+  const unsettled = [];
   const terminateGuest = async () => {
-    if (guestTerminated) return;
     guestTerminated = true;
-    await guest.remove?.();
+    const state = await guestCleanup.remove();
+    if (state.removeState !== "resolved") throw new Error(`owned guest remove ${state.removeState}`);
+  };
+  const recordTimeout = (label, error) => {
+    if (!error.timedOut) return;
+    abortReason = abortReason ?? `${error.message}; owned fidelity guest terminated`;
+    if (error.unsettled) unsettled.push({ label, message: error.message, cleanup: error.cleanup });
   };
   const guestBound = (label, operation) => {
     if (abortReason) return Promise.reject(new Error(`aborted: ${abortReason}`));
     return boundedOwnedOperation(operation, { label, timeoutMs, settleTimeoutMs, cancel: terminateGuest }).catch(error => {
-      if (error.timedOut) abortReason = `${error.message}; owned fidelity guest terminated`;
+      recordTimeout(label, error);
       throw error;
     });
+  };
+  // Reference windows live in the owned Electron Main: an unsettled evaluation is
+  // never swallowed; it aborts the rest and requires the owned process cleanup.
+  const referenceBound = async options_ => {
+    if (abortReason) throw new Error(`aborted: ${abortReason}`);
+    try { return await captureReferenceHtml(app, { ...options_, timeoutMs, settleTimeoutMs }); }
+    catch (error) {
+      if (error.timedOut) {
+        abortReason = abortReason ?? `${error.message}; owned reference evaluation did not finish`;
+        if (error.unsettled) unsettled.push({ label: "reference window evaluation", message: error.message, cleanup: error.cleanup });
+      }
+      throw error;
+    }
   };
   const dom = source => guestBound("guest DOM probe", () => guest.execute(source));
   const fileState = async relativePath => {
@@ -224,7 +274,7 @@ export async function runDesignStudioHostFidelity(options) {
     }, { id: guestWebContentsId, rect: { x: Math.round(cam.rect.x), y: Math.round(cam.rect.y), width: Math.round(cam.rect.width), height: Math.round(cam.rect.height) } });
     return saveArtifact(label, Buffer.from(result.pngBase64, "base64"));
   };
-  const saveArtifact = async (label, buffer) => artifactsDirectory ? writeArtifactPng(artifactsDirectory, label, buffer) : pngEvidence(buffer);
+  const saveArtifact = async (label, buffer) => artifactSink ? writeArtifactPng(artifactSink, label, buffer) : pngEvidence(buffer);
   const documentAt = relativePath => readFixtureDocument({ projectDirectory, relativePath, codec, documentIndex });
   const nodeSummary = node => ({ id: node.id, x: node.x, y: node.y, ...(node.type === "text" ? { text: node.text } : {}) });
   const fixtureById = new Map(fixtures.map(fixture => [fixture.relativePath, fixture]));
@@ -240,6 +290,7 @@ export async function runDesignStudioHostFidelity(options) {
   const results = [];
   async function scenario(id, body) {
     log(`design-studio fidelity: ${id}`);
+    if (onlyScenarios && !onlyScenarios.includes(id)) return;
     if (abortReason) { results.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`aborted: ${abortReason}`] }); return; }
     try { results.push({ id, ...(await body()) }); }
     catch (error) { results.push({ id, status: FIDELITY_STATUS.UNVERIFIED, reasons: [`harness step failed: ${error?.message ?? error}`] }); }
@@ -366,7 +417,7 @@ export async function runDesignStudioHostFidelity(options) {
     await guestBound("guest reload", () => guest.view.evaluate(view => view.reload()));
     await until(`Boolean(window.codeshellPanel) && document.querySelector("#path")?.value.trim() === ${JSON.stringify(P)} && ${rendererReady}`, "reopen after reload");
     const { samples, waitedMs } = await sampleSaveStates();
-    Object.assign(observation, { reopenSaveStates: samples, waitedMs, dirtyAfterReopen: samples.at(-1)?.kind ?? null, layerIdsAfterReopen: await layerIds() });
+    Object.assign(observation, { reopenSaveStates: samples, reopenWaitedMs: waitedMs, reopenedAfterSampling: await fileState(P), layerIdsAfterReopen: await layerIds() });
     const domAfterReload = [];
     for (const node of observation.expected) {
       await dom(`document.querySelector('#layers-list .layer-row[data-id=${JSON.stringify(node.id)}]')?.click(), true`);
@@ -377,6 +428,8 @@ export async function runDesignStudioHostFidelity(options) {
       domAfterReload.push({ id: node.id, x: geometry?.x, y: geometry?.y, ...(text === undefined ? {} : { text }) });
     }
     observation.domAfterReload = domAfterReload;
+    // Snapshot immediately before the second save: any reload-triggered autosave shows up here.
+    observation.reopenedBeforeSecondSave = await fileState(P);
     observation.secondSave = await save("second save");
     return verdictNow();
   });
@@ -448,7 +501,7 @@ export async function runDesignStudioHostFidelity(options) {
           })) });
       }
       const cam = captures[0].camera, rect = captures[0].rect;
-      const reference = await captureReferenceHtml(app, { html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height), timeoutMs, settleTimeoutMs });
+      const reference = await referenceBound({ html: referenceHtml(design, cam), width: Math.round(rect.width), height: Math.round(rect.height) });
       const evidence = await saveArtifact(`visual-${target.label}-html`, Buffer.from(reference.pngBase64, "base64"));
       captures.push({ route: "html", camera: { ...cam, dpr: evidence.summary.width / Math.round(rect.width) }, png: evidence.summary, rect,
         blockedRequests: reference.blockedRequests, crops: captures[0].crops });
@@ -470,8 +523,8 @@ export async function runDesignStudioHostFidelity(options) {
     const geometry = svgReferenceGeometry(svg);
     if (!geometry) return { status: FIDELITY_STATUS.UNVERIFIED, reasons: ["exported SVG has no parsable viewBox/width/height"] };
     const viewport = { width: Math.ceil(geometry.viewport.width), height: Math.ceil(geometry.viewport.height) };
-    const reference = await captureReferenceHtml(app, { html: `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:${design.canvas.background}}svg{display:block}</style>${svg.replace(/^<\?xml[^>]*>\s*/u, "")}`,
-      ...viewport, timeoutMs, settleTimeoutMs });
+    const reference = await referenceBound({ html: `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:${design.canvas.background}}svg{display:block}</style>${svg.replace(/^<\?xml[^>]*>\s*/u, "")}`,
+      ...viewport });
     const svgEvidence = await saveArtifact("svg-corner-aa-svg", Buffer.from(reference.pngBase64, "base64"));
     const svgDpr = svgEvidence.summary.width / viewport.width;
     const rows = [];
@@ -503,6 +556,8 @@ export async function runDesignStudioHostFidelity(options) {
 
   return { plan, packageModules, sampleReceipt, results, summary: summarizeFidelityReport(results, plan),
     terminatedGuest: guestTerminated, abortReason,
+    cleanup: { guest: guestCleanup.state(), unsettled,
+      requiresOwnedHostCleanup: unsettled.length > 0 || guestCleanup.state().requiresOwnedHostCleanup },
     fixtures: fixtures.map(({ relativePath, purpose, storage, sha256: digest, logicalSha256, files }) => ({ relativePath, purpose, storage, sha256: digest, logicalSha256,
       files: files.map(file => ({ relativePath: file.relativePath, sha256: file.sha256, bytes: Buffer.byteLength(file.bytes) })) })),
     approval: "The --design-studio-fidelity flag is a technical opt-in only; it is not user approval to open a Host window." };
