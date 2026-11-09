@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createLibraryProcess } from "../../../apps/video-download/app/library-process.js";
+import {
+  createLibraryProcess,
+  ENVIRONMENT_NOT_CONFIRMED_MESSAGE,
+  EXECUTION_NOT_CONFIRMED_MESSAGE,
+} from "../../../apps/video-download/app/library-process.js";
 import { normalizeVideoSearchUrl } from "../../../apps/video-download/app/video-search.js";
 import {
   listVideoSearchAccounts,
@@ -623,6 +627,37 @@ test("a known failed yt-dlp check cannot satisfy preflight, and cancellation sto
     }),
     /已取消/,
   );
+});
+
+test("refused node consent is reported once as missing permission, not as missing tools", async () => {
+  const notConfirmed = () =>
+    Object.assign(new Error(EXECUTION_NOT_CONFIRMED_MESSAGE), { code: "EXECUTION_NOT_CONFIRMED" });
+  const result = await searchVideoPlatforms(
+    { query: "owned query", platforms: ["youtube", "bilibili"] },
+    { directory: { handle: "directory" }, ytDlp: null, nodeAvailable: true },
+    {
+      async run() {
+        assert.fail("yt-dlp is not prepared");
+      },
+      async search() {
+        throw notConfirmed();
+      },
+    },
+  );
+  assert.deepEqual(result, { candidates: [], warnings: [EXECUTION_NOT_CONFIRMED_MESSAGE] });
+  assert.doesNotMatch(JSON.stringify(result), /安装 yt-dlp/);
+
+  // An environment check that stopped at consent leaves yt-dlp unverified, not missing.
+  const { input, calls } = cookieSourceFixture();
+  input.runtime.ytDlp = {
+    handle: "yt-dlp",
+    verified: false,
+    errorCode: "execution-not-confirmed",
+  };
+  await assert.rejects(prepareVideoSearchSource(input), {
+    message: ENVIRONMENT_NOT_CONFIRMED_MESSAGE,
+  });
+  assert.deepEqual(calls, []);
 });
 
 test("platform failures keep the reviewed error formatter and fall back to Node evidence", async () => {

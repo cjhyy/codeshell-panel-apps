@@ -16,7 +16,7 @@ import {
 } from "./download-library.js";
 import { createProjectStorage } from "./project-storage.js";
 import { createProjectBinding } from "./project-binding.js";
-import { createLibraryProcess } from "./library-process.js";
+import { createLibraryProcess, ENVIRONMENT_NOT_CONFIRMED_MESSAGE } from "./library-process.js";
 import { createDownloadService } from "./download-service.js";
 import {
   getTaskRecords,
@@ -202,6 +202,12 @@ let initializationPending = false;
 let initializationFailed = false;
 let environmentProgress = null;
 let environmentCheckError = "";
+// Set only from the structured EXECUTION_NOT_CONFIRMED code: tools unverified, not missing.
+let environmentConsentDeclined = false;
+// The progress object whose spawn has been waiting long enough to be a Host prompt.
+let consentWaitProgress = null;
+let consentWaitShown = false;
+let consentWaitTimer;
 let setupSubmissionPending = false;
 let directSetupRunning = false;
 let directSetupProcessJob = null;
@@ -308,6 +314,7 @@ const serviceProcesses = createLibraryProcess(panel, {
         ? "正在请求运行下载任务查询；如有确认，请在宿主界面完成。"
         : "正在读取下载任务与队列状态…",
     );
+    trackExecutionConsent(phase);
   },
   beforeStart() {
     // Also stop already queued automatic environment reads after list refusal.
@@ -742,7 +749,7 @@ function setTabIndicator(element, label = "", state = "") {
 }
 
 function updateTabIndicators() {
-  const setupNeeded = shouldOfferSetup({
+  const setupNeeded = !environmentConsentDeclined && shouldOfferSetup({
     dependenciesChecked,
     hasYtDlp: dependencyReady(runtime.ytDlp),
     hasFfmpeg: dependencyReady(runtime.ffmpeg),
@@ -751,8 +758,8 @@ function updateTabIndicators() {
   });
   setTabIndicator(
     elements.downloadTabIndicator,
-    setupNeeded ? "设置" : "",
-    setupNeeded ? "danger" : "",
+    executionConsentDeclined() ? "!" : setupNeeded ? "设置" : "",
+    executionConsentDeclined() || setupNeeded ? "danger" : "",
   );
 
   const taskState = elements.taskStateIcon.dataset.state;
@@ -790,6 +797,7 @@ function setRuntimeBadge(state, label) {
       "Local ready": "已就绪",
       "Setup needed": "待初始化",
       Unavailable: "不可用",
+      "Permission needed": "需要允许运行",
       Limited: "部分可用",
       Preview: "界面预览",
     }[label] || label;
@@ -805,28 +813,86 @@ function setEnvironmentProgress(kind, label, detail = label) {
   updateActionAvailability();
 }
 
+function trackExecutionConsent(phase) {
+  clearTimeout(consentWaitTimer);
+  consentWaitShown = false;
+  consentWaitProgress = phase === "starting" ? environmentProgress : null;
+  // An approved spawn resolves quickly; one still pending is waiting on the Host prompt.
+  if (consentWaitProgress)
+    consentWaitTimer = setTimeout(() => {
+      consentWaitShown = true;
+      renderExecutionConsentNotice();
+    }, 800);
+  renderExecutionConsentNotice();
+}
+
+function executionConsentWaiting() {
+  return (
+    consentWaitShown && Boolean(environmentProgress) && consentWaitProgress === environmentProgress
+  );
+}
+
+function executionConsentDeclined() {
+  return environmentConsentDeclined || Boolean(serviceConfirmationError);
+}
+
+function retryEnvironmentCheck() {
+  if (initializationPending) return;
+  if (initializationFailed) void initializeRuntime();
+  else if (serviceConfirmationError) void retryServiceObservation();
+  else void refreshRuntimeDependencies({ force: true });
+}
+
+function renderExecutionConsentNotice() {
+  const notice = document.querySelector("#execution-consent-notice");
+  if (!notice) return;
+  const waiting = executionConsentWaiting();
+  const declined = !waiting && !environmentProgress && executionConsentDeclined();
+  notice.hidden = !waiting && !declined;
+  notice.dataset.state = waiting ? "waiting" : "declined";
+  notice.querySelector("#execution-consent-title").textContent = waiting
+    ? "等待确认：允许 Mimi Download 运行 node"
+    : "需要先允许 Mimi Download 在电脑上运行 node";
+  notice.querySelector("#execution-consent-detail").textContent = waiting
+    ? "检测下载工具需要在电脑上运行 node。如果 CodeShell 显示了确认框，请点击「确认执行」；确认前 yt-dlp 与 ffmpeg 的状态不代表未安装。"
+    : "检测下载工具（yt-dlp、ffmpeg）需要运行 node，但这次运行未获允许。工具不一定未安装：点击下方按钮重新检测，并在确认框中点击「确认执行」。";
+  const button = notice.querySelector("#execution-consent-retry");
+  button.hidden = waiting;
+  button.disabled =
+    initializationPending || dependencyRefreshPending || Boolean(environmentProgress);
+}
+
 function renderEnvironmentProgress() {
   if (!environmentProgress && !environmentCheckError) return;
   const failed = !environmentProgress;
-  const label = environmentProgress?.label || "检查未完成";
-  const detail = environmentProgress?.detail || `${environmentCheckError}。请点击“重试检查”。`;
+  const notConfirmed = failed && executionConsentDeclined();
+  const label = environmentProgress?.label || (notConfirmed ? "需要允许运行" : "检查未完成");
+  const detail =
+    environmentProgress?.detail ||
+    (notConfirmed
+      ? ENVIRONMENT_NOT_CONFIRMED_MESSAGE
+      : `${environmentCheckError}。请点击“重试检查”。`);
   const summary = document.querySelector("#environment-status");
   summary.dataset.state = failed ? "error" : "checking";
   summary.textContent = label;
-  setRuntimeBadge(failed ? "error" : "loading", label);
+  setRuntimeBadge(failed ? "error" : "loading", notConfirmed ? "Permission needed" : label);
   for (const [dot, status] of [
     [elements.ytdlpDot, elements.ytdlpStatus],
     [elements.ffmpegDot, elements.ffmpegStatus],
   ]) {
     dot.dataset.state = failed ? "error" : "loading";
-    status.textContent = failed ? "检查未完成" : label;
+    status.textContent = failed ? (notConfirmed ? "未获允许运行" : "检查未完成") : label;
   }
   elements.installedYtDlpVersion.textContent = runtime.ytDlp?.version || "尚未确认";
   elements.versionComparison.dataset.state = failed ? "error" : "checking";
   elements.versionComparison.textContent = detail;
   document.querySelector("#download-readiness").textContent = detail;
   elements.refreshVersions.disabled = initializationPending || dependencyRefreshPending || !failed;
-  elements.refreshVersions.textContent = failed ? "重试检查" : label;
+  elements.refreshVersions.textContent = notConfirmed
+    ? "允许并重新检测"
+    : failed
+      ? "重试检查"
+      : label;
   // A pending or failed check is not evidence that an executable is missing.
   if (
     !setupTaskId && !directSetupRunning && !setupSubmissionPending &&
@@ -2546,7 +2612,7 @@ function renderSetupCard() {
   const missingFfmpeg = !dependencyReady(runtime.ffmpeg);
   const updateAvailable =
     compareYtDlpVersions(runtime.ytDlp?.version, runtime.latestYtDlpVersion) === -1;
-  const setupNeeded = shouldOfferSetup({
+  const setupNeeded = !environmentConsentDeclined && shouldOfferSetup({
     dependenciesChecked,
     hasYtDlp: !missingYtDlp,
     hasFfmpeg: !missingFfmpeg,
@@ -2815,6 +2881,7 @@ function updateActionAvailability() {
   renderVersionInfo();
   updateQueueControls();
   renderEnvironmentProgress();
+  renderExecutionConsentNotice();
   if (projectBinding?.invalidated) {
     document.querySelector("#download-readiness").textContent =
       document.querySelector("#project-binding-notice").textContent;
@@ -6332,7 +6399,11 @@ function dependencyCheckFailed(dependency) {
 }
 
 function dependencyCheckLabel(dependency) {
-  return dependency?.errorCode === "timeout" ? "检查超时" : "检查失败";
+  return dependency?.errorCode === "timeout"
+    ? "检查超时"
+    : dependency?.errorCode === "execution-not-confirmed"
+      ? "未获允许运行"
+      : "检查失败";
 }
 
 function renderDependencyHealth() {
@@ -6344,7 +6415,7 @@ function renderDependencyHealth() {
     ytReady,
     dependencyCheckFailed(runtime.ytDlp)
       ? dependencyCheckLabel(runtime.ytDlp)
-      : runtime.ytDlp?.version || (ytReady ? "Ready" : "Missing"),
+      : runtime.ytDlp?.version || (ytReady ? "已就绪" : "未安装"),
   );
   setDependency(
     elements.ffmpegDot,
@@ -6352,11 +6423,17 @@ function renderDependencyHealth() {
     ffReady,
     dependencyCheckFailed(runtime.ffmpeg)
       ? dependencyCheckLabel(runtime.ffmpeg)
-      : runtime.ffmpeg?.version || (ffReady ? "Ready" : "Limited"),
+      : runtime.ffmpeg?.version || (ffReady ? "已就绪" : "未安装"),
   );
   setRuntimeBadge(
     !ytReady ? "error" : ffReady ? "ready" : "loading",
-    !ytReady ? "Setup needed" : ffReady ? "Local ready" : "Limited",
+    !ytReady
+      ? environmentConsentDeclined
+        ? "Permission needed"
+        : "Setup needed"
+      : ffReady
+        ? "Local ready"
+        : "Limited",
   );
   renderQualityOptions(inspectedVideo);
 }
@@ -6562,6 +6639,7 @@ async function refreshRuntimeDependencies({ force = false, initialization = fals
   setupTaskActivity = setupTaskActivity.filter((item) => item?.message !== "下载环境复检完成");
   dependencyRefreshPending = true;
   environmentCheckError = "";
+  environmentConsentDeclined = false;
   setEnvironmentProgress("tools", "正在查找下载工具…");
   setRuntimeBadge("loading", "Checking");
   setDependency(elements.ytdlpDot, elements.ytdlpStatus, dependencyReady(runtime.ytDlp), "检测中…");
@@ -6606,6 +6684,7 @@ async function refreshRuntimeDependencies({ force = false, initialization = fals
               ? "正在请求运行下载环境检查；如有确认，请在宿主界面完成。"
               : "正在检测 yt-dlp 与 ffmpeg 的运行结果…",
           );
+          trackExecutionConsent(phase);
         },
       });
       applyEnvironmentSnapshot(snapshot);
@@ -6623,26 +6702,32 @@ async function refreshRuntimeDependencies({ force = false, initialization = fals
       restartMayBeRequired: false,
     };
   } catch (error) {
-    const message = sanitizeDiagnosticText(
-      error instanceof Error ? error.message : String(error),
-      500,
-    );
+    // Host consent refused or expired: the tools may be installed but are unverified.
+    const notConfirmed = error?.code === "EXECUTION_NOT_CONFIRMED";
+    const message = notConfirmed
+      ? ENVIRONMENT_NOT_CONFIRMED_MESSAGE
+      : sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), 500);
+    environmentConsentDeclined = notConfirmed;
     environmentCheckError = message;
     dependenciesChecked = true;
-    setupRequestError = message;
+    setupRequestError = notConfirmed ? "" : message;
     setupTaskResult = "";
     for (const dependency of [runtime.ytDlp, runtime.ffmpeg]) {
       if (dependency) {
         dependency.verified = false;
         dependency.version = null;
         dependency.error = message;
+        if (notConfirmed) dependency.errorCode = "execution-not-confirmed";
       }
     }
-    setRuntimeBadge("error", "Unavailable");
-    setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, "Unavailable");
-    setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "Unavailable");
+    const label = notConfirmed ? "未获允许运行" : "不可用";
+    setRuntimeBadge("error", notConfirmed ? "Permission needed" : "Unavailable");
+    setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, label);
+    setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, label);
     versionRefreshPending = false;
-    versionRefreshError = "依赖检查失败，暂时无法读取版本。";
+    versionRefreshError = notConfirmed
+      ? "尚未允许运行 node，暂时无法读取版本。"
+      : "依赖检查失败，暂时无法读取版本。";
     renderVersionInfo();
     return {
       ready: false,
@@ -6735,8 +6820,8 @@ async function initializeRuntimeOnce() {
     runtime.ytDlp = { handle: "preview-ytdlp" };
     runtime.ffmpeg = { handle: "preview-ffmpeg" };
     setDestination({ handle: "preview-directory", name: "当前项目（预览）", path: "项目目录" });
-    setDependency(elements.ytdlpDot, elements.ytdlpStatus, true, "Ready");
-    setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "Ready");
+    setDependency(elements.ytdlpDot, elements.ytdlpStatus, true, "已就绪");
+    setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "已就绪");
     dependenciesChecked = true;
     setRuntimeBadge("ready", "Preview");
     updateSessionContext({ apiVersion: 10 });
@@ -6879,8 +6964,8 @@ async function initializeRuntimeOnce() {
     environmentCheckError = sanitizeDiagnosticText(error?.message || String(error), 500);
     dependenciesChecked = false;
     setRuntimeBadge("error", "Unavailable");
-    setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, "Unavailable");
-    setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "Unavailable");
+    setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, "不可用");
+    setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "不可用");
     showError(error instanceof Error ? error.message : String(error));
   }
   searchScopeReadyResolve();
@@ -7000,12 +7085,10 @@ elements.chooseDirectory.addEventListener("click", chooseDirectory);
 elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
 elements.downloadButton.addEventListener("click", () => void startDownload());
 elements.enqueueButton.addEventListener("click", () => void startDownload({ start: false }));
-elements.refreshVersions.addEventListener("click", () => {
-  if (initializationPending) return;
-  if (initializationFailed) void initializeRuntime();
-  else if (serviceConfirmationError) void retryServiceObservation();
-  else void refreshRuntimeDependencies({ force: true });
-});
+elements.refreshVersions.addEventListener("click", retryEnvironmentCheck);
+document
+  .querySelector("#execution-consent-retry")
+  .addEventListener("click", retryEnvironmentCheck);
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
 elements.setupAiButton.addEventListener("click", requestAiSetup);
 elements.analyzeErrorButton.addEventListener("click", requestAiErrorAnalysis);

@@ -1,3 +1,12 @@
+// Shown wherever a refused or expired Host consent stops a node helper. The
+// helper tools may be installed; only permission to run them is missing.
+export const EXECUTION_NOT_CONFIRMED_MESSAGE =
+  "需要先允许 Mimi Download 在电脑上运行 node。请重试，并在 CodeShell 弹出的确认框中点击「确认执行」。";
+// The download tools are verified by a node helper. Without consent they are
+// unverified, not missing.
+export const ENVIRONMENT_NOT_CONFIRMED_MESSAGE =
+  "需要先允许 Mimi Download 在电脑上运行 node 来检测下载工具（yt-dlp、ffmpeg）。请在下载页点击「允许并重新检测」，并在确认框中点击「确认执行」。";
+
 // Auxiliary read-only processes use retained receipts so output emitted before
 // spawn resolves can never be mistaken for a download's progress.
 export function createLibraryProcess(
@@ -122,7 +131,7 @@ export function createLibraryProcess(
           cause?.message === "User denied running node" &&
           (cause.code === "OPERATION_FAILED" || cause.code === undefined)
         ) {
-          const error = Object.assign(new Error("运行未获确认，请手动重试。", { cause }), {
+          const error = Object.assign(new Error(EXECUTION_NOT_CONFIRMED_MESSAGE, { cause }), {
             code: "EXECUTION_NOT_CONFIRMED",
             confirmed: true,
           });

@@ -903,7 +903,7 @@ export function mountVideoSearch({
         clearPendingStorage();
         const emptyStatus = warnings.length ? "error" : "empty";
         const emptyMessage = warnings.length
-          ? `未能取得可核验的视频来源。${warnings.join("；")}`
+          ? `未能取得可核验的视频来源。${[...new Set(warnings)].join("；")}`
           : "没有找到可核验的公开视频。试试更短的关键词或调整搜索范围。";
         report(emptyMessage, emptyStatus);
         void recordSearch(emptyStatus, emptyMessage);
