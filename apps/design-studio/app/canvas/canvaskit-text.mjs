@@ -931,15 +931,26 @@ export async function createCanvasKitText({
     }
     const originY = currentNodes.get(node.id)?.y ?? node.y, strut = rasterBaseline(node, alias);
     if (!textRangeTypography(node, false).length) return textLineBoxBaselineY(node, index, strut, { originY, layoutScale });
-    let alpha = strut;
-    for (const group of rangeLineLayout(node, index, alias).groups) {
-      measure.font = rangeStyleFont(node, group.style, alias, group.style.fontSize * layoutScale);
-      const measured = measure.measureText("Hg");
-      alpha = Math.max(alpha, textLineBoxAlphabeticOffset({ ...node, fontSize: group.style.fontSize },
-        { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent }, layoutScale));
-    }
+    // Each line's baseline sits below its top by the largest run half-leading ascent (floor((lh_g + A_g - D_g) / 2)).
+    const lineAlpha = line => {
+      let alpha = strut;
+      for (const group of rangeLineLayout(node, line, alias).groups) {
+        measure.font = rangeStyleFont(node, group.style, alias, group.style.fontSize * layoutScale);
+        const measured = measure.measureText("Hg");
+        alpha = Math.max(alpha, textLineBoxAlphabeticOffset({ ...node, fontSize: group.style.fontSize },
+          { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent }, layoutScale));
+      }
+      return alpha;
+    };
+    // A browser receipt's lineOffsets are measured baseline deltas from line 0 (measuredRangeLineGeometry), not line
+    // tops: every line hangs off line 0's line-box baseline. Without a receipt the offsets are estimated line tops.
+    const receipt = currentTextMetrics(node);
+    const baseline = Array.isArray(receipt?.lineOffsets)
+      ? textLineBoxBaselineAt(node, 0, lineAlpha(0), { originY, layoutScale, baselineDelta: receipt.lineOffsets[index] - receipt.lineOffsets[0] })
+      : textLineBoxBaselineAt(node, textDisplayLineMetrics(node).offsets[index], lineAlpha(index),
+        { originY, layoutScale, precedingLineHeights: textDisplayLineMetrics(node).heights.slice(0, index) });
     configure(node, alias);
-    return textLineBoxBaselineAt(node, textDisplayLineMetrics(node).offsets[index], alpha, { originY, layoutScale });
+    return baseline;
   }
   /**
    * Auto underline as measured in HTML (Chromium 148 forced/emulated DSF2, sizes 13/14/18/24, all exact):
@@ -963,8 +974,9 @@ export async function createCanvasKitText({
   }
   let skipInkCanvas = null;
   // HTML never skips ink around CJK characters (measured: Han, Hiragana, Hangul, fullwidth Latin and CJK
-  // punctuation never open a gap, also in a CJK font; Latin descenders do, also in PingFang SC).
-  const SKIP_INK_EXEMPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}\u3000-\u303f\u31f0-\u31ff\uff00-\uffef]/u;
+  // punctuation never open a gap, also in a CJK font; Latin descenders do, also in PingFang SC). Enclosed CJK and
+  // compatibility (U+3200-33FF: ㈱㉑㊙㋐㍿㎎) and CJK compatibility forms (U+FE30-FE4F: ︳︴﹍﹏) reach the band without a gap.
+  const SKIP_INK_EXEMPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}\u3000-\u303f\u31f0-\u31ff\u3200-\u33ff\ufe30-\ufe4f\uff00-\uffef]/u;
   /**
    * Skip-ink (HTML auto) on the raster, from the part's own glyph alpha. Fitted on clean Chromium 148 probes
    * (Inter + Arial, 13/14/18/24, three texts, forced and emulated DSF2: 392/496 gap edges exact, worst 1 px):
@@ -1361,9 +1373,16 @@ export async function createCanvasKitText({
       }
     });
   }
+  /** Read-only diagnostic: the paint baselines a ranged node's lines are drawn on (raster and native share them). */
+  function rangePaintBaselines(sourceNode) {
+    const node = htmlLineBox(sourceNode), alias = rangeAlias(node);
+    try { return String(node.text).split("\n").map((_, index) => rangeBaseline(node, index, alias)); }
+    finally { configure(node, alias); }
+  }
   return {
     draw,
     beginScene,
+    rangePaintBaselines,
     fontsChanged: () => fontSnapshot() !== loadedFontSnapshot,
     setRasterScale,
     setDeviceSampling,

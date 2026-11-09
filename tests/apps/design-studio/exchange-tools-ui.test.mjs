@@ -1467,6 +1467,32 @@ test("small SVG export keeps the existing repository compare-and-set behavior", 
   assert.ok(Buffer.byteLength(write.content) <= MAX_WORKSPACE_DESIGN_TEXT_BYTES);
   assert.equal(downloads, 0);
   assert.match(await f.page.locator("#toast").textContent(), /SVG 已导出到/u);
+  assert.doesNotMatch(await f.page.locator("#toast").textContent(), /TEXT_LINE_BOX_SVG_UNMEASURED/u, "browser font metrics: no warning noise");
+  assert.deepEqual(f.errors, []);
+});
+
+test("SVG export without browser font metrics shows the unmeasured text warning in the export toast", async (t) => {
+  const f = await fixture(t);
+  // Only Canvas contexts created from now on (the export's per-call font context) lose font-box metrics.
+  await f.page.evaluate(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (...args) {
+      const context = getContext.apply(this, args);
+      if (context && args[0] === "2d" && !context.__noFontMetrics) {
+        const measureText = context.measureText.bind(context);
+        context.measureText = text => { const m = measureText(text); return { width: m.width, actualBoundingBoxLeft: m.actualBoundingBoxLeft, actualBoundingBoxRight: m.actualBoundingBoxRight,
+          actualBoundingBoxAscent: m.actualBoundingBoxAscent, actualBoundingBoxDescent: m.actualBoundingBoxDescent, fontBoundingBoxAscent: NaN, fontBoundingBoxDescent: NaN }; };
+        context.__noFontMetrics = true;
+      }
+      return context;
+    };
+  });
+  await toolbarAction(f.page, "#export-svg");
+  await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
+  const toast = await f.page.locator("#toast").textContent();
+  assert.match(toast, /SVG 已导出到 designs\/exchange\.svg/u, "the export still completes");
+  assert.match(toast, /个文字未取得浏览器字体度量.*TEXT_LINE_BOX_SVG_UNMEASURED/u, "and says which state the text is in");
+  assert.equal(await f.page.locator("#toast").getAttribute("data-kind"), "warning");
   assert.deepEqual(f.errors, []);
 });
 

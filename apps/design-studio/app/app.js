@@ -63,6 +63,7 @@ import {
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
+import { svgExportWarningNotice } from "./svg-export-warnings.mjs";
 import {
   createDesignPersistencePlan,
   MAX_WORKSPACE_DESIGN_TEXT_BYTES,
@@ -5894,10 +5895,14 @@ async function exportSvg() {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     assertScope();
+    // Unmeasured text line boxes are reported, never silently exported (normally none: the browser measures fonts).
+    const diagnostics = [];
     const svg = exportDesignSvg(saved.design, {
       resourceDataUrls: resources,
       maxBytes: MAX_LOCAL_SVG_EXPORT_BYTES,
+      diagnostics,
     });
+    const warning = svgExportWarningNotice(diagnostics);
     if (new TextEncoder().encode(svg).byteLength > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
       const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
       const link = document.createElement("a");
@@ -5905,11 +5910,11 @@ async function exportSvg() {
       link.download = path.split("/").at(-1);
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo`);
+      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo${warning ? `。${warning}` : ""}`, warning ? "warning" : undefined);
       return;
     }
     await writeRepoText(path, svg, operationWorkspaceEpoch, assertScope);
-    notify(`SVG 已导出到 ${path}`);
+    notify(warning ? `SVG 已导出到 ${path}。${warning}` : `SVG 已导出到 ${path}`, warning ? "warning" : undefined);
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     const message = error instanceof Error ? error.message : "SVG 导出失败";

@@ -1140,7 +1140,8 @@ export async function runDesignStudioHostFidelity(options) {
       { label: "100", targetZoom: 1, centre: { x: 235, y: 190 }, cases: COVERAGE_CASES.filter(item => item.region[1] < 330), editor: true },
       // Rows below y 500 sat under .canvas-meta at 100% (UNVERIFIED, never PASS): a third band centres them.
       { label: "100b", targetZoom: 1, centre: { x: 235, y: 420 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 330 && item.region[1] < 505) },
-      { label: "100c", targetZoom: 1, centre: { x: 235, y: 590 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 505) },
+      { label: "100c", targetZoom: 1, centre: { x: 235, y: 590 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 505 && item.region[1] < 670) },
+      { label: "100d", targetZoom: 1, centre: { x: 235, y: 750 }, cases: COVERAGE_CASES.filter(item => item.region[1] >= 670) },
       { label: "fit", targetZoom: null, cases: COVERAGE_CASES },
     ];
     for (const plan of coveragePlans) {

@@ -229,11 +229,14 @@ const SKIP_INK_CASES = [
   { id: "node-mixed", y: 110, text: "Node Big under", ranges: [{ start: 5, end: 8, fontSize: 24 }], nodeUnderline: true, size: 14 },
   { id: "arial-gpy", y: 160, text: "Arial gpy jog", ranges: [{ start: 0, end: 13, textDecoration: "underline" }], size: 24, family: "Arial" },
   { id: "cjk-mixed", y: 220, text: "中文 gyp 下划线 jump", ranges: [{ start: 0, end: 15, textDecoration: "underline" }], size: 20 },
+  // Cross-surface batch: enclosed CJK (U+3200-33FF) and CJK compatibility forms (U+FE30-FE4F) reach the band but
+  // HTML opens no gap around them (measured; probes/cjk-range-probe.out.txt).
+  { id: "cjk-compat", y: 270, text: "㈱ gyp ﹏ jump", ranges: [{ start: 0, end: 12, textDecoration: "underline" }], size: 24 },
 ];
 test("skip-ink batch: raster skip-ink gaps follow real HTML (Inter two lines, node underline over a mixed size, Arial gpy, CJK mixed)", async t => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
-  const value = await (await browser.newContext({ viewport: { width: 760, height: 300 }, deviceScaleFactor: 2 })).newPage();
+  const value = await (await browser.newContext({ viewport: { width: 760, height: 330 }, deviceScaleFactor: 2 })).newPage();
   const errors = [];
   value.on("pageerror", error => errors.push(error.message));
   await value.route("**/*", async route => {
@@ -267,7 +270,7 @@ test("skip-ink batch: raster skip-ink gaps follow real HTML (Inter two lines, no
   // Underline bands per case from HTML: row clusters whose dark-pixel count is high (one band per line).
   const dark = (img, x, y) => { const o = (y * img.width + x) * 4; return 1 - (img.data[o] + img.data[o + 1] + img.data[o + 2]) / 765; };
   const bands = SKIP_INK_CASES.map((item, i) => {
-    const y0 = item.y * 2, y1 = (SKIP_INK_CASES[i + 1]?.y ?? 300) * 2, counts = [];
+    const y0 = item.y * 2, y1 = (SKIP_INK_CASES[i + 1]?.y ?? 330) * 2, counts = [];
     for (let y = y0; y < y1; y++) { let n = 0; for (let x = 0; x < html.width; x++) if (dark(html, x, y) > 0.5) n++; counts.push([y, n]); }
     const max = Math.max(...counts.map(([, n]) => n)), rows = counts.filter(([, n]) => n > max * 0.3).map(([y]) => y), groups = [];
     for (const y of rows) { const last = groups.at(-1); if (last && y === last.at(-1) + 1) last.push(y); else groups.push([y]); }

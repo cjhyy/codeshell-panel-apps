@@ -24,6 +24,7 @@ import { exportDesignPrototype } from "../prototype.mjs";
 import { readSavedPrototype } from "./prototype-source.mjs";
 import { parseProductBrief, isSafeProductBriefPath } from "../product-brief.mjs";
 import { compareDesignDocuments } from "../design-compare.mjs";
+import { svgExportWarnings } from "../svg-export-warnings.mjs";
 import {
   createNodeProject,
   fail,
@@ -446,11 +447,14 @@ export async function runOperation(project, name, input) {
   );
   if (!page) throw fail("INVALID_ARGUMENT", "Page does not exist.");
   const document = { ...saved.document, activePageId: page.id, nodes: page.nodes };
+  // SVG export diagnostics (unmeasured text line boxes in Node) are returned as structured warnings, never printed.
+  const diagnostics = [];
   const content =
     name === "svg"
       ? exportDesignSvg(document, {
           resourceDataUrls: saved.resourceDataUrls,
           maxBytes: 4 * 1024 * 1024,
+          diagnostics,
         })
       : prototype
         ? exportDesignPrototype(saved.document, {
@@ -461,9 +465,12 @@ export async function runOperation(project, name, input) {
           pageId: page.id,
           resourceDataUrls: saved.resourceDataUrls,
         });
+  const exported = svgExportWarnings(diagnostics, { pageId: page.id });
   const provenance = { path: input.path, revision: saved.primary.revision,
     ...(prototype ? { prototype: prototype.summary, pageCount: saved.document.pages.length,
       startPageId: prototype.model.startPageId } : { pageId: page.id }),
+    ...(exported.warnings.length ? { warnings: exported.warnings } : {}),
+    ...(exported.truncatedWarningCount ? { truncatedWarningCount: exported.truncatedWarningCount } : {}),
   };
   if (!input.output) return { ...provenance, content, bytes: Buffer.byteLength(content) };
   const receipt = await project.withWriteLock(() => project.write(input.output, content, null));

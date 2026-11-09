@@ -106,3 +106,28 @@ test("native optical sizing uses only verified axes and never changes finite or 
   assert.deepEqual(canvasKitTextFontVariations(mixed,style,capabilities),[{axis:"wght",value:600}]);
   assert.deepEqual(canvasKitTextFontVariations(node,style,{...capabilities,status:"unsupported"}),[]);
 });
+
+/* Cross-surface batch (LH). The LayoutUnit of a line height follows the CSS form HTML export writes: a unitless
+ * multiplier is truncated, a px length rounded (Chromium 148, s1 and s2: 24/24 distinguishing pairs each way). 14/1.3 =
+ * 18.2px = 1164.8/64: trunc 18.1875 vs round 18.203125; at y 350.3 the second line paints at 380 instead of 381. */
+test("ratio line heights accumulate as truncated LayoutUnits, pixel line heights as rounded ones", async () => {
+  const { textLineBoxBaselineAt } = await import("../../../apps/design-studio/app/text-line-box.mjs");
+  const p = { ...node, y: 350.3, fontSize: 14, lineHeight: 1.3 };
+  assert.equal(textLineBoxBaselineY(p, 0, 12), 362);
+  assert.equal(textLineBoxBaselineY(p, 1, 12), 380, "350.296875 + 18.1875 + 12 = 380.48 -> 380 (round LH: 380.5 -> 381)");
+  assert.equal(textLineBoxBaselineY(p, 1, 12, { layoutScale: 2 }), 380.5, "s2: 700.59375 + 36.390625 + 24 -> 761 / 2 (unchanged)");
+  assert.equal(textLineBoxBaselineY({ ...p, fontSize: 16, lineHeight: 1.35 }, 3, 15), 430, "21.6 = 1382.4/64: round = trunc (control)");
+  // Finite transport steps by the same truncated line height.
+  assert.equal(textFiniteBaselineY({ ...p, layoutBaselineOffset: 0 }, 1, { ascent: 13, descent: 3, hangingToAlphabetic: 9.75 }), 378,
+    "trunc(350.3 + 9.75 - 13) + 18.1875 + 13 = 378.48 -> 378 (round LH: 378.5 -> 379)");
+  // Mixed sizes without a receipt: each line's height truncated, then summed (not the truncated sum).
+  assert.equal(textLineBoxBaselineAt(p, 23.4 + 18.2, 12, { precedingLineHeights: [23.4, 18.2] }),
+    Math.round(350.296875 + (Math.floor(23.4 * 64) + Math.floor(18.2 * 64)) / 64 + 12));
+  // A px line height keeps the rounded LayoutUnit (DOM oracle: 13.2px steps 13.203125).
+  const px = { ...p, lineHeight: 13.2, lineHeightUnit: "pixels" };
+  assert.equal(textLineBoxBaselineY({ ...px, y: 20.499 }, 5, 11), 98, "trunc(20.499) + 5 x 13.203125 + 11 = 97.5 -> 98 (trunc LH: 97.43 -> 97)");
+  // Half-leading uses the float line height: with integer (rounded) ascent/descent, floor((lh + A - D) / 2) equals
+  // floor((trunc64(lh) + A - D) / 2) for every lh (an even integer is crossed by lh iff by its 1/64 truncation).
+  for (let size = 8; size <= 40; size += 0.5) for (let ratio = 1; ratio <= 2.001; ratio += 0.05) for (const k of [-9, 0, 7, 10])
+    assert.equal(Math.floor((size * ratio + k) / 2), Math.floor((Math.floor(size * ratio * 64 + 1e-7) / 64 + k) / 2), `${size}/${ratio}/${k}`);
+});

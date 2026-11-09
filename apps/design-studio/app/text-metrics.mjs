@@ -91,8 +91,7 @@ export function validTextMetrics(metrics) {
 export function measuredTextInkBounds(node, context = {}) {
   const metrics = currentTextMetrics(node);
   if (!metrics) return null;
-  if (textHtmlFiniteLineBoxShift(node, context) !== null && !textRangeTypography(node, false).length) return null;
-  const shift = 0;
+  if (textHtmlFiniteLineBoxShift(node, context) !== null) return null;
   const lineOffsets = textDisplayLineMetrics(node).offsets;
   const snapped = textHasLineBoxOrigin(node) && Number.isFinite(metrics.alphabeticBaseline) && !textRangeTypography(node, false).length;
   const boxes = metrics.lineInkBounds
@@ -107,7 +106,7 @@ export function measuredTextInkBounds(node, context = {}) {
         x: box.x + offset,
         // Receipts stay in the logical line box. Consumers of this derived
         // union (SVG page bounds and explicit repair) need the painted extent.
-        y: box.y - shift + (snapped
+        y: box.y + (snapped
           ? textLineBoxBaselineY(node, index, metrics.alphabeticBaseline) - node.y - metrics.alphabeticBaseline
           : lineOffsets[index]),
         width: box.width,

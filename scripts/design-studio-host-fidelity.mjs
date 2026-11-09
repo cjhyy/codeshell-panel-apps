@@ -224,12 +224,20 @@ export const COVERAGE_CASES = Object.freeze([
   { id: "range-finite-typo", region: [246, 512, 208, 40], note: "finite origin + weight range (HTML lays it out as a plain line box)", range: true },
   // Range-final batch.
   { id: "finite-source-plain", region: [16, 580, 208, 40], note: "provenanced plain finite text: the import-contract offset (2.5938 = measured line-box offset, Arial 14/1.2)" },
-  { id: "node-underline-mixed", region: [246, 576, 208, 44], note: "node-level underline over an 18px run on 14px", range: true, decoration: true },
+  // Cross-surface batch (review I2): 40 px tall; the flow frame below moved so its label (drawn ~18-26 px above the
+  // frame) no longer falls inside this region (it sat at CSS 604-612.5, inside the old 44 px region).
+  { id: "node-underline-mixed", region: [246, 576, 208, 40], note: "node-level underline over an 18px run on 14px", range: true, decoration: true },
   { id: "arial-underline", region: [16, 624, 208, 36], note: "system font (Arial, no supplied bytes) range underline", range: true, decoration: true },
   // Skip-ink batch (review I2): flow-owned finite text in a vertical frame: a provenanced two-line child (contract offset)
   // and a non-provenanced finite typography child (HTML: line box at y - offset).
   // Region starts at the frame top: a frame label (drawn above the frame) never enters the crop.
-  { id: "flow-finite", region: [246, 630, 208, 70], note: "vertical frame: provenanced 2-line finite + flow finite typography", range: true },
+  { id: "flow-finite", region: [246, 652, 208, 94], note: "vertical frame: provenanced 2-line finite + 2-line flow finite typography (18px run)", range: true },
+  // Cross-surface batch (LH): ratio line heights step by truncated LayoutUnits. y 680.34375 puts line 3 of 14/1.3 on
+  // a phase where trunc and round paint differently at real-Host s2 (1 device px); 16/1.35 (21.6 = 1382.4/64) is the
+  // control where both agree. CJK + Latin skip-ink: CJK never opens a gap.
+  { id: "lh-14-130", region: [16, 676, 208, 64], note: "3 lines 14/1.3 (truncated LayoutUnit step; s2 line 3 differs from round)" },
+  { id: "lh-16-135", region: [16, 746, 208, 72], note: "3 lines 16/1.35 (control: trunc = round)" },
+  { id: "cjk-skip-ink", region: [246, 756, 208, 36], note: "CJK + Latin underline (skip-ink: Latin descenders gap, CJK never)", range: true, decoration: true },
 ].map(value => Object.freeze(value)));
 export const COVERAGE_BUILTIN_INTER_ITALIC = Object.freeze({ id: "builtin-inter-400-italic", family: "Inter", file: "fonts/InterVariable-Italic.woff2" });
 /** Deterministic 64x32 PNG: two colour fields and a dark diagonal, so cover/contain crops differ visibly. */
@@ -409,13 +417,17 @@ async function coverageFixture({ codec, textMetrics, resourceStore, readAppBytes
     fixtureText("finite-source-plain", 20.3, 586.3, 200, 24, "Source finite Hg", { layoutBaselineOffset: 2.5938, layoutBaselineSource: "html", lineHeight: 1.2 }),
     ranged("node-underline-mixed", 250.3, 582.3, 200, 32, "Node Big under", [{ start: 5, end: 8, fontSize: 18, fill: "#175cd3" }], { textDecoration: "underline" }),
     ranged("arial-underline", 20.3, 630.3, 200, 24, "Arial under line", [{ start: 6, end: 11, textDecoration: "underline", fill: "#175cd3" }], { fontRef: undefined, fontFamily: "Arial" }),
-    // Flow: frame top 630, padding 4, gap 4. Child tops 634 and 634 + 36.4 + 4; y = top + offset for both.
-    fixtureNode("flow-finite", "frame", 250, 630, 200, 66.6, { fill: "#ffffff", layout: "vertical", padding: 4, gap: 4, children: [
-      fixtureText("flow-finite-source", 254, 636.7969, 192, 36.4, "Flow first Hg\nsecond line", { ...bound, lineHeight: 1.3, layoutBaselineOffset: 2.7969, layoutBaselineSource: "html" }),
-      ranged("flow-finite-typo", 254, 677.9, 192, 18.2, "Flow bold run", [{ start: 5, end: 9, fontWeight: 700 }], { layoutBaselineOffset: 3.5 }),
+    // Flow: frame top 652, padding 4, gap 4. Child tops 656 and 656 + 36.4 + 4; y = top + offset for both. The second
+    // child has an 18px run on its second line (line heights 18.2 + 23.4 = 41.6).
+    fixtureNode("flow-finite", "frame", 250, 652, 200, 90, { fill: "#ffffff", layout: "vertical", padding: 4, gap: 4, children: [
+      fixtureText("flow-finite-source", 254, 658.7969, 192, 36.4, "Flow first Hg\nsecond line", { ...bound, lineHeight: 1.3, layoutBaselineOffset: 2.7969, layoutBaselineSource: "html" }),
+      ranged("flow-finite-typo", 254, 699.9, 192, 41.6, "Flow bold run\nnext Big one", [{ start: 5, end: 9, fontWeight: 700 }, { start: 19, end: 22, fontSize: 18 }], { layoutBaselineOffset: 3.5 }),
     ] }),
+    fixtureText("lh-14-130", 20.3, 680.34375, 200, 56, "Line height one Hg\nsecond line Hg\nthird line Hg", { ...bound, lineHeight: 1.3 }),
+    fixtureText("lh-16-135", 20.3, 750.3, 200, 66, "Line height one Hg\nsecond line Hg\nthird line Hg", { ...bound, fontSize: 16, lineHeight: 1.35 }),
+    ranged("cjk-skip-ink", 250.3, 760.3, 200, 28, "中文 gyp 下划线 jump", [{ start: 0, end: 15, textDecoration: "underline", fill: "#175cd3" }], { fontSize: 18 }),
   ];
-  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 720, background: "#ffffff" });
+  const raw = fixtureDocument("Host fidelity coverage", children, { width: 470, height: 830, background: "#ffffff" });
   raw.resources = [font.descriptor, image.descriptor, italic.descriptor];
   const entry = canonical(FIDELITY_FIXTURE_PATHS.coverage, "high-risk coverage: default vs bundled Inter, CJK center/right, ranges, finite multiline, PNG cover/contain, editor overlay", raw);
   entry.files.push(...[...font.parts, ...image.parts, ...italic.parts].map(part => fixtureFile(part.path, part.content)));

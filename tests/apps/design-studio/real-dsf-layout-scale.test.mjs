@@ -32,9 +32,13 @@ test("real-DSF line boxes reproduce the recorded DOM baselines (E1/E4: Arial 84.
 test("emulated DSF (layout scale 1) keeps the existing CSS-pixel line box exactly (E3: Arial 84, GPU Menlo 83)", () => {
   assert.equal(textLineBoxBaselineY(arial, 0, textLineBoxAlphabeticOffset(arial, METRICS.arial[1])), 84);
   assert.equal(textLineBoxBaselineY(menlo, 0, textLineBoxAlphabeticOffset(menlo, METRICS.menlo[1])), 83);
-  // The default and explicit scale 1 are the legacy formula, bit for bit, across phases and line heights.
+  // The default and explicit scale 1 are the legacy formula across phases and line heights, except that a ratio line
+  // height now steps by its truncated LayoutUnit (cross-surface batch: unitless multipliers measured floor 24/24, px
+  // lengths round 24/24). Predicted from the two formulas: 11 of 420 sweep cells move up 1px, all on line >= 1.
   const legacyOffset = (node, { ascent, descent }) => Math.floor((textLineHeightPixels(node) + Math.round(ascent) - Math.round(descent)) / 2);
-  const legacyBaseline = (node, index, offset, originY = node.y) => Math.round(Math.trunc(originY * 64) / 64 + index * (Math.round(textLineHeightPixels(node) * 64) / 64) + offset) + (node.y - originY);
+  const legacyBaseline = (node, index, offset, originY = node.y) => Math.round(Math.trunc(originY * 64) / 64 + index * (Math.floor(textLineHeightPixels(node) * 64 + 1e-7) / 64) + offset) + (node.y - originY);
+  const roundStep = (node, index, offset) => Math.round(Math.trunc(node.y * 64) / 64 + index * (Math.round(textLineHeightPixels(node) * 64) / 64) + offset);
+  const changed = [];
   for (const y of [-40.3, -0.01, 0, 0.25, 20.3, 70.5, 1033.77]) for (const lineHeight of [1, 1.15, 1.2, 1.4, 1.6]) for (const fontSize of [11, 13, 14, 32]) {
     const node = text("sweep", 0, y, { lineHeight, fontSize });
     const metrics = { ascent: fontSize * 0.905, descent: fontSize * 0.212 };
@@ -44,8 +48,12 @@ test("emulated DSF (layout scale 1) keeps the existing CSS-pixel line box exactl
     for (const index of [0, 1, 5]) {
       assert.equal(textLineBoxBaselineY(node, index, offset), legacyBaseline(node, index, offset));
       assert.equal(textLineBoxBaselineY(node, index, offset, { layoutScale: 1 }), legacyBaseline(node, index, offset));
+      if (legacyBaseline(node, index, offset) !== roundStep(node, index, offset)) changed.push(`${y} ${fontSize}/${lineHeight} ${index}: ${roundStep(node, index, offset)}->${legacyBaseline(node, index, offset)}`);
     }
   }
+  assert.deepEqual(changed, ["0.25 11/1.15 5: 74->73", "20.3 11/1.2 1: 44->43", "20.3 13/1.4 1: 52->51", "20.3 32/1.6 1: 108->107", "70.5 11/1.2 5: 147->146",
+    "70.5 32/1.2 5: 293->292", "70.5 11/1.4 5: 159->158", "70.5 13/1.4 5: 175->174", "70.5 14/1.6 5: 199->198", "70.5 32/1.6 5: 363->362", "1033.77 13/1.15 5: 1120->1119"],
+    "exactly the predicted cells move (1px up, line >= 1); line 0 never");
   // Finite imported text has no observed DSF dependency (E1/E3/E4 within 1/128); it stays unscaled.
   assert.equal(textFiniteBaselineY.length, 3);
 });

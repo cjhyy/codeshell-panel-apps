@@ -1,6 +1,16 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
 import { textRangeTypography } from "./text-ranges.mjs";
 
+/**
+ * The LayoutUnit (1/64 px) of one line height depends on the CSS form HTML export writes (textLineHeightCss):
+ * a unitless multiplier (fontSize x ratio) is truncated, a px length is rounded. Measured in Chromium 148 at layout
+ * scale 1 and 2: of 24 distinguishing size x ratio pairs, unitless matched floor 24/24 (round 0), px matched round
+ * 24/24 (floor 0); the real-Host LH rows (14/1.3) were truncated, the DOM oracle's 13.2px steps rounded.
+ * The epsilon keeps exact 1/64 multiples from flooring down. Origins keep their own (trunc) quantization.
+ */
+const layoutUnitFloor = value => Math.floor(value * 64 + 1e-7) / 64;
+const layoutLineHeight = (node, value) => node.lineHeightUnit === "pixels" ? Math.round(value * 64) / 64 : layoutUnitFloor(value);
+
 /** Imported finite offsets (including zero) retain the historical hanging origin. */
 export const textHasLineBoxOrigin = (node) => !Number.isFinite(node.layoutBaselineOffset);
 
@@ -91,7 +101,7 @@ export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = 
   // the paint-origin rounding then live on that physical grid, before any CSS
   // transform. Scale 1 is the historical CSS-pixel replay, unchanged.
   const layoutTop = Math.trunc(originY * 64 * layoutScale) / 64;
-  const layoutHeight = Math.round(height * layoutScale * 64) / 64;
+  const layoutHeight = layoutLineHeight(node, height * layoutScale);
   return Math.round(layoutTop + index * layoutHeight + alphabeticOffset * layoutScale) / layoutScale + (node.y - originY);
 }
 
@@ -100,9 +110,13 @@ export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = 
  * `lineOffset` below the node (mixed-size range lines, where earlier lines may
  * be taller than one line height).
  */
-export function textLineBoxBaselineAt(node, lineOffset, alphabeticOffset, { originY = node.y, layoutScale = 1 } = {}) {
+export function textLineBoxBaselineAt(node, lineOffset, alphabeticOffset, { originY = node.y, layoutScale = 1, baselineDelta = 0, precedingLineHeights = null } = {}) {
+  // baselineDelta: a measured distance from line 0's baseline (receipt lineOffsets), applied before the paint rounding.
+  // precedingLineHeights: estimated heights of the lines above; each is a truncated LayoutUnit before they are summed.
   const layoutTop = Math.trunc(originY * 64 * layoutScale) / 64;
-  return Math.round(layoutTop + Math.round(lineOffset * layoutScale * 64) / 64 + alphabeticOffset * layoutScale) / layoutScale + (node.y - originY);
+  const layoutOffset = precedingLineHeights ? precedingLineHeights.reduce((sum, height) => sum + layoutLineHeight(node, height * layoutScale), 0)
+    : layoutLineHeight(node, lineOffset * layoutScale);
+  return Math.round(layoutTop + layoutOffset + alphabeticOffset * layoutScale + baselineDelta * layoutScale) / layoutScale + (node.y - originY);
 }
 
 /** Transport the historical hanging origin through the same CSS line box as
@@ -118,7 +132,7 @@ export function textFiniteBaselineY(node, index, metrics, { originY = node.y, la
   // Scale 1 is the historical CSS replay, unchanged.
   const layoutAlpha = layoutScale !== 1 && layoutMetrics ? textLineBoxAlphabeticOffset(node, layoutMetrics, layoutScale) : alpha;
   const top = Math.trunc((originY + metrics.hangingToAlphabetic - alpha) * 64 * layoutScale) / 64;
-  const height = Math.round(textLineHeightPixels(node) * layoutScale * 64) / 64;
+  const height = layoutLineHeight(node, textLineHeightPixels(node) * layoutScale);
   return Math.round(top + index * height + layoutAlpha * layoutScale) / layoutScale + (node.y - originY);
 }
 

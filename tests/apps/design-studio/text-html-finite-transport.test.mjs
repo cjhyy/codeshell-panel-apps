@@ -64,7 +64,7 @@ const frame = (id, extra) => ({ id, name: id, type: "frame", x: 0, y: 0, width: 
   rotation: 0, cornerRadius: 0, visible: true, locked: false, layout: "none", layoutWrap: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start", ...extra });
 const svgYs = (svg, id) => [...(svg.match(new RegExp(`data-node-id="${id}"[^]*?</g>`))?.[0] ?? "").matchAll(/<text x="[^"]*" y="([^"]*)"/g)].map(m => Number(m[1]));
 
-test("SVG text uses the HTML view: predicted per-branch baselines (transported, provenanced and typography unchanged; rotated/constrained/grid plain as line boxes)", () => {
+test("SVG text uses the HTML view: predicted per-branch baselines (transported and provenanced unchanged; rotated/constrained/grid/flow-typography as line boxes)", () => {
   const typoText = "Finite Bold";
   const typoReceiptNode = { ...base, id: "flow-typo", text: typoText, textRanges: { version: 1, sourceSignature: textRangeSourceSignature(typoText), ranges: [{ start: 7, end: 11, fontWeight: 700 }] } };
   const typoReceipt = { version: 1, signature: textMetricsSignature(typoReceiptNode), lineWidths: [80], lineInkBounds: [{ x: 0, y: 2, width: 80, height: 14 }], height: 16.8,
@@ -84,15 +84,18 @@ test("SVG text uses the HTML view: predicted per-branch baselines (transported, 
     ] })] }] });
   const byId = new Map(design.nodes.map(n => [n.id, n]));
   const ids = ["transported", "source", "source-multi", "rotated", "centered", "grid-text", "flow-source", "flow-typo"];
-  const svg = exportDesignSvg(design, { textLineBoxMetrics: new Map(ids.map(id => [id, svgMetrics])) });
+  // flow-typo has a bold run: a plain value only measures the node's own font (SVG warning egress fix), so its runs
+  // get a per-run resolver (same metrics for every run here); the plain-value case is unmeasured (svg-warning-egress).
+  const svg = exportDesignSvg(design, { textLineBoxMetrics: new Map(ids.map(id => [id, id === "flow-typo" ? () => svgMetrics : svgMetrics])) });
   const table = ids.map(id => { const n = byId.get(id), lines = String(n.text).split("\n").length;
     // Layout-owned boxes (vertical flow and grid cells alike) start at y - offset. Provenanced plain text keeps the
     // contract transport (unchanged output): source, source-multi and flow-source are negative controls.
     const transport = ["transported", "source", "source-multi", "flow-source"].includes(id);
-    // flow-typo: the SVG typography branch keeps its receipt geometry (no second shift): unchanged too.
-    const shift = ["grid-text"].includes(id) ? 3.5 : 0;
+    // Cross-surface batch (review I1): non-provenanced flow typography is the HTML line box at y - offset, with the
+    // mixed-font line box (supplied metrics: alpha floor((16.8 + 13 - 4) / 2) = 12), as GPU and DOM: 467.5 - 3.5 + 12 -> 476.
+    const shift = ["grid-text", "flow-typo"].includes(id) ? 3.5 : 0;
     const old = id === "flow-typo" ? [n.y + 12.5] : Array.from({ length: lines }, (_, i) => textFiniteBaselineY(n, i, svgMetrics));
-    const predicted = transport || id === "flow-typo" ? old : Array.from({ length: lines }, (_, i) => lineBoxY(n.y - shift, i));
+    const predicted = transport ? old : Array.from({ length: lines }, (_, i) => lineBoxY(n.y - shift, i));
     return { id, y: n.y, shift, old, predicted, actual: svgYs(svg, id) }; });
   for (const row of table) assert.deepEqual(row.actual.map(v => Math.round(v * 1000) / 1000), row.predicted.map(v => Math.round(v * 1000) / 1000), JSON.stringify(row));
   assert.equal(textLineBoxAlphabeticOffset({ ...base, lineHeight: 1.2 }, svgMetrics), alpha);
@@ -106,7 +109,7 @@ test("an infinite-canvas root keeps the hanging transport in SVG even with a non
   assert.deepEqual(svgYs(svg, "root"), [textFiniteBaselineY(n, 0, svgMetrics)]);
 });
 
-test("derived ink bounds per branch: transported/provenanced/typography receipts keep their origin, unknown plain origins are not certified", () => {
+test("derived ink bounds per branch: transported/provenanced receipts keep their origin; line-box views (plain or typography) are not certified", () => {
   const receipt = node => ({ version: 1, signature: textMetricsSignature(node), lineWidths: [60], lineInkBounds: [{ x: 0, y: 2, width: 60, height: 14 }], height: 16.8, fontAvailable: true });
   const plain = { ...base, id: "a", x: 0, y: 40.3, text: "Ink Hg", layoutBaselineOffset: 3.5 };
   const transported = { ...plain, textMetrics: receipt(plain) };
@@ -120,8 +123,12 @@ test("derived ink bounds per branch: transported/provenanced/typography receipts
   const typoText = "Ink Hg";
   const typo = { ...plain, textRanges: { version: 1, sourceSignature: textRangeSourceSignature(typoText), ranges: [{ start: 0, end: 3, fontWeight: 700 }] } };
   const typoReceipt = { ...receipt(typo), alphabeticBaseline: 12.5, lineHeights: [16.8], lineOffsets: [0] };
-  assert.deepEqual(measuredTextInkBounds({ ...typo, textMetrics: typoReceipt }), { x: 0, y: 2, width: 60, height: 14 }, "absolute typography: receipt geometry");
-  assert.deepEqual(measuredTextInkBounds({ ...typo, textMetrics: typoReceipt }, { parent: { type: "frame", layout: "vertical" } }), { x: 0, y: 2, width: 60, height: 14 },
-    "flow typography: the receipt geometry the SVG typography branch also keeps (no second shift)");
+  // Cross-surface batch (review I1): a finite typography receipt is measured at the hanging origin; HTML/GPU/SVG paint
+  // the line box, so the receipt geometry is not certified (callers estimate at the view origin).
+  assert.equal(measuredTextInkBounds({ ...typo, textMetrics: typoReceipt }), null, "absolute typography: line-box view, receipt not certified");
+  assert.equal(measuredTextInkBounds({ ...typo, textMetrics: typoReceipt }, { parent: { type: "frame", layout: "vertical" } }), null, "flow typography likewise");
+  const provTypo = { ...typo, layoutBaselineSource: "html" };
+  assert.deepEqual(measuredTextInkBounds({ ...provTypo, textMetrics: { ...typoReceipt, signature: textMetricsSignature(provTypo) } }), { x: 0, y: 2, width: 60, height: 14 },
+    "provenanced typography keeps its contract receipt (negative control)");
   assert.deepEqual(transported.textMetrics.lineInkBounds, [{ x: 0, y: 2, width: 60, height: 14 }], "receipts are never rewritten");
 });
