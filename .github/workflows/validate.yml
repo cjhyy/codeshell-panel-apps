@@ -88,6 +88,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: Install the explicit Chinese text fixture dependency
+        run: sudo apt-get install --no-install-recommends -y fonts-noto-cjk
       - run: npm run check
         env:
           CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR: artifacts/design-studio-ci/native-line-boxes
@@ -96,7 +98,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: design-studio-font-comparisons
-          path: artifacts/design-studio-ci
+          path: |
+            artifacts/design-studio-ci
+            .tmp/render-fidelity-r002/center-gpu
+            .tmp/render-fidelity-r003/transform
+            .tmp/render-fidelity-r003/font-weight
+            .tmp/render-fidelity-r002/spike
+          include-hidden-files: true
           if-no-files-found: ignore
 
   video-ui:

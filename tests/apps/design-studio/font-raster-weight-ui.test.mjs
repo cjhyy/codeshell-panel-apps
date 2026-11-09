@@ -5,6 +5,7 @@ import { resolve, extname, sep } from "node:path";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
+import { fontRasterObservation, neutralTextColorObservation } from "./font-raster-observation.mjs";
 
 const app = resolve("apps/design-studio/app"), origin = "https://font-raster.test";
 const node = (size, weight, index) => ({ id: `inter-${size}-${weight}`, type: "text", name: "Inter weight probe",
@@ -57,6 +58,8 @@ test("supplied Inter plain text matches HTML across weights 400/600/700, sizes 1
         await document.fonts.ready;
       }, nodes);
       const html = PNG.sync.read(await page.screenshot({ path: resolve(output, `dpr${dpr}-w${weight}-html.png`) }));
+      states.at(-1).fonts = await fontRasterObservation(page, "main");
+      states.at(-1).colors = { gpu: neutralTextColorObservation(gpu), html: neutralTextColorObservation(html) };
       for (const value of nodes) {
         const roi = { x: 16 * dpr, y: (value.y - 1) * dpr, width: 720 * dpr, height: 44 * dpr };
         const actual = inkGeometry(gpu, { roi }), reference = inkGeometry(html, { roi });

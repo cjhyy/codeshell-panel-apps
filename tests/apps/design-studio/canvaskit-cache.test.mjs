@@ -10,6 +10,7 @@ import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometry
 import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { importFigmaJson } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
+import { fontRasterObservation, localFontObservation, cjkFontObservation, assertCjkCoverage } from "./font-raster-observation.mjs";
 
 const root = resolve(process.env.DESIGN_CACHE_APP_DIR ?? fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
@@ -556,16 +557,15 @@ test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} z
   const page = await harness(t, { width: 850, height: 220, dpr, tileCacheEnabled: false, background: "#ffffff" });
   const output = resolve(process.env.DESIGN_CENTER_TEXT_EVIDENCE ?? ".tmp/render-fidelity-r002/center-gpu", `dpr${dpr}-zoom${zoom}`);
   await mkdir(output, { recursive: true });
-  const font = await page.evaluate(async () => {
-    const face = await new FontFace("CenterLabelFontProof", 'local("PingFangSC-Regular")').load();
-    await document.fonts.ready;
-    return { status: face.status };
-  });
-  assert.equal(font.status, "loaded", "the requested PingFang face must be available");
+  const font = await localFontObservation(page);
+  assert.equal(font.missingFaceNegativeControl, false, "local face probes must reject missing fonts rather than report a fallback");
+  if (process.platform === "darwin") assert.equal(font.available, true, "macOS must retain the original PingFang font coverage");
   const design = { canvas: { width: 600, height: 900, background: "#ffffff" }, resources: [], nodes: [
     base("center-label", "text", 244, 785.5, 124, 21, { text: "GitHub 仓库地址", fontFamily: "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif",
       fontSize: 13, fontWeight: 500, fontStyle: "normal", lineHeight: 1.6, textAlign: "center", fill: "#252824" }),
   ] };
+  const cjk = await cjkFontObservation(page, design.nodes[0].fontFamily);
+  assertCjkCoverage(cjk);
   const results = [];
   for (const [name, x] of [["original", 244], ["integer-move", 245], ["negative-fraction", -88.499], ["negative-integer-move", -87.499], ["changed-fraction", -87.501]]) {
     design.nodes[0].x = x;
@@ -591,6 +591,7 @@ test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} z
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     }, { node: design.nodes[0], viewport });
     const expected = PNG.sync.read(await page.screenshot({ scale: "device", path: resolve(output, `${name}-html.png`) }));
+    const fonts = await fontRasterObservation(page, "#center-html-reference");
     await page.evaluate(() => {
       document.querySelector("#center-html-reference").remove();
       document.querySelector("canvas").style.visibility = "visible";
@@ -600,9 +601,9 @@ test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} z
       width: (n.width + 8) * scale, height: (n.height + 8) * scale };
     const metric = symmetricPixelDifference(expected, actual, { roi });
     const geometry = geometryDifference(inkGeometry(expected, { roi, foreground: [37, 40, 36] }), inkGeometry(actual, { roi, foreground: [37, 40, 36] }));
-    results.push({ name, x, viewport, dom, metric, geometry, geometryFailures: textGeometryFailures(geometry, { scale, align: "center" }), stats });
+    results.push({ name, x, viewport, dom, metric, geometry, geometryFailures: textGeometryFailures(geometry, { scale, align: "center" }), stats, fonts });
   }
-  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ dpr, zoom, font, results }, null, 2));
+  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ dpr, zoom, font, cjk, results }, null, 2));
   const failures = results.filter(row => row.metric.mismatchRatio > .005 || row.metric.largestCluster > 6 || row.geometryFailures.length);
   assert.deepEqual(failures.map(row => ({ name: row.name, metric: row.metric, geometry: row.geometry, geometryFailures: row.geometryFailures })), [], "actual HTML pixel and geometry thresholds must hold without relaxing the cluster gate");
   for (const [before, after] of [[0, 1], [2, 3]])
@@ -944,6 +945,7 @@ for (const { dpr, zoom, pan } of [
     document.body.append(wrapper);await document.fonts.ready;
   },{design,viewport});
   const expected=PNG.sync.read(await page.screenshot({scale:"device",path:resolve(output,"html.png")}));
+  const fonts=await fontRasterObservation(page,"#phase-html");
   const nodes=[design.nodes[0],child,{...child,id:"instance-text",x:child.x+instance.x-component.x,y:child.y+instance.y-component.y}];
   const rows=nodes.map(n=>{
     const scale=dpr*zoom,roi={x:(pan.x+(n.x-3)*zoom)*dpr,y:(pan.y+(n.y-3)*zoom)*dpr,width:(n.width+6)*scale,height:(n.height+6)*scale};
@@ -951,7 +953,7 @@ for (const { dpr, zoom, pan } of [
     const geometry=geometryDifference(inkGeometry(expected,{roi,foreground:[15,23,42]}),inkGeometry(actual,{roi,foreground:[15,23,42]}));
     return {id:n.id,pixel,geometry,failures:textGeometryFailures(geometry,{scale,align:"left"})};
   });
-  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,pan,rows,stats},null,2));
+  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,pan,rows,stats,fonts},null,2));
   assert.equal(JSON.stringify(design),source,"viewport sampling must not write design geometry");
   assert.deepEqual(rows.filter(row=>row.failures.length||row.pixel.mismatchRatio>.005||row.pixel.largestCluster>6),[],"fractional pan/fit-view and translation instances keep strict text geometry and pixels");
   assert(stats.deviceTextNodes>=2,"an instance cannot disable unrelated text device sampling");
