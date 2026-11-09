@@ -17,11 +17,11 @@
 
 [跨表面验收](design-studio-cross-surface-line-height-fix-20261107.md)记录真实 Host R1 的 open/hit/save/SVG 圆角 PASS、coverage 51/52 PASS，以及 finite/LH 修复用例；不据此宣称全像素 PASS。run9 的[补充收据][supplemental]证明普通 paint 与颜色往返，H0/H1 整图及 PNG 字节不变，未证明 glyph cache 重建。原清理收据为 child exit 0、owned 5 / remaining 0、HOME 已删除，属于历史运行证据。
 
-独立 CC review：最终候选及门禁复核 PASS 来自本次根协调交接记录；本 worktree 未找到该最终签字原文。本地可追溯旧 review `448732e1` 及 [Node SVG Important／混合 metric Minor 的修复](design-studio-svg-warning-egress-20261107.md)，不把旧提交的 PASS 冒充当前 25 文件签字。Host 接受记录另记 CC session `52c8963a-1e8c-4ac4-9dfa-e65227db3722` / job `cc-gjqda3pzq` 对 paint 分支收拢无 Critical/Important。本轮分工只读复查未发现新增可见阻断问题。
+独立 CC 最终提交复审：job `cc-hl3o0wcn3`（session `067aa930-e88f-4cc7-95d8-cd23b6a4d08d`）逐段审查 `e10eac15` 的 diff，未发现 Critical/Important，允许按本说明范围作为已验证修复候选交付；[完整原始回报](../../.tmp/candidate-delivery-20261109/cc-final-review.raw.json)已归档。非阻断 follow-up 保留：旧/外部收据缺 `lineOffsets` 时的 SVG 混合字号健壮性、行高注释、layoutScale 2 的 DOM 单测，以及保守墨迹边界的已知取舍。本地可追溯旧 review `448732e1` 及 [Node SVG Important／混合 metric Minor 的修复](design-studio-svg-warning-egress-20261107.md)，不把旧提交的 PASS 冒充当前 25 文件签字。Host 接受记录另记 CC session `52c8963a-1e8c-4ac4-9dfa-e65227db3722` / job `cc-gjqda3pzq` 对 paint 分支收拢无 Critical/Important。本轮分工只读复查未发现新增可见阻断问题。
 
 ## 历史门禁绑定（本次没有重跑应用测试）
 
-本次重算历史归档 SHA **91/91**、门禁后快照 **24/24**一致。门禁时清单的 **22 个非文档文件全部匹配当前内容**；唯一变化的 SVG 说明只追加最终门禁记录／历史段标题，第 25 项 CJK followup 也是纯文档。按 CONTRIBUTING，本轮仅审阅文档 diff/链接，无需重跑应用套件。旧 SVG 说明 §5.2 的失败叙述是历史，最终结果以其 §5.1 及下表为准。
+最终 CC 复审后，根代理执行 `shasum -c .tmp/candidate-delivery-20261109/task-files.sha256`：**25/25 文件匹配，exit 0**，补齐复审者未自行重算的磁盘身份环节。本次重算历史归档 SHA **91/91**、门禁后快照 **24/24**一致。门禁时清单的 **22 个非文档文件全部匹配当前内容**；唯一变化的 SVG 说明只追加最终门禁记录／历史段标题，第 25 项 CJK followup 也是纯文档。按 CONTRIBUTING，本轮仅审阅文档 diff/链接，无需重跑应用套件。旧 SVG 说明 §5.2 的失败叙述是历史，最终结果以其 §5.1 及下表为准。
 
 | 历史门禁（2026-11-07 UTC／本地 11-08） | 收据结果 |
 | --- | --- |
