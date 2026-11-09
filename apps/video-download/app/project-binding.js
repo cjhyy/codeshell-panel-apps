@@ -6,6 +6,10 @@ const projectKeys = ["cwd", "host", "appId"];
 const changedMessage =
   "项目或执行位置已变化，请先复制未保存内容，再重新打开面板。已接收的后台任务请回原项目核对。";
 const sessionMessage = "当前会话已变化，请重新打开面板后再提交会话任务或修改自动化。";
+// Host REVOKED means project trust, Panel binding or the reviewed package no
+// longer authorizes this call. Keep the code; replace the Host's English text.
+export const REVOKED_MESSAGE =
+  "这个项目还没有在桌面端获得信任，或面板未绑定到该项目。请在电脑上信任该项目（若刚更新面板，请重新打开面板）后重试。";
 const sessionMethod = (method) =>
   method === "agent.submitPrompt" || method.startsWith("automations.");
 
@@ -117,6 +121,11 @@ export function createProjectBinding(host, { onInvalidated = () => {} } = {}) {
           return result;
         } catch (error) {
           assertCurrent(method);
+          if (error?.code === "REVOKED")
+            throw Object.assign(new Error(REVOKED_MESSAGE, { cause: error }), {
+              code: "REVOKED",
+              hostMessage: typeof error.message === "string" ? error.message : "",
+            });
           throw error;
         }
       },

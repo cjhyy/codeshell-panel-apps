@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProjectBinding } from "../../../apps/video-download/app/project-binding.js";
+import { createProjectBinding, REVOKED_MESSAGE } from "../../../apps/video-download/app/project-binding.js";
 import { createProjectStorage } from "../../../apps/video-download/app/project-storage.js";
 
 function deferred() {
@@ -278,3 +278,27 @@ for (const outcome of ["resolve", "reject"]) {
     assert.throws(() => f.tools.get("read-async")(), { code: "PROJECT_CHANGED" });
   });
 }
+
+test("Host REVOKED errors keep their code but explain trust and binding in Chinese", async () => {
+  const f = fixture();
+  await f.binding.panel.getContext();
+  const host = Object.assign(new Error("Tool task authorization was revoked"), { code: "REVOKED" });
+  f.host.call = async () => {
+    throw host;
+  };
+  await assert.rejects(f.binding.panel.call("tasks.start", {}), (error) => {
+    assert.equal(error.code, "REVOKED");
+    assert.equal(error.message, REVOKED_MESSAGE);
+    assert.equal(error.hostMessage, "Tool task authorization was revoked");
+    assert.equal(error.cause, host);
+    return true;
+  });
+  // Only the structured code is mapped; other failures keep their own message.
+  const other = Object.assign(new Error("Tool task authorization was revoked"), {
+    code: "OPERATION_FAILED",
+  });
+  f.host.call = async () => {
+    throw other;
+  };
+  await assert.rejects(f.binding.panel.call("tasks.start", {}), (error) => error === other);
+});
