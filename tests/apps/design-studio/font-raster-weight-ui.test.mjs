@@ -5,7 +5,7 @@ import { resolve, extname, sep } from "node:path";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
-import { fontRasterObservation, neutralTextColorObservation } from "./font-raster-observation.mjs";
+import { fontRasterObservation, neutralTextColorObservation, fontComparisonRasterMode, fontComparisonRasterArgs } from "./font-raster-observation.mjs";
 
 const app = resolve("apps/design-studio/app"), origin = "https://font-raster.test";
 const node = (size, weight, index) => ({ id: `inter-${size}-${weight}`, type: "text", name: "Inter weight probe",
@@ -16,7 +16,9 @@ const node = (size, weight, index) => ({ id: `inter-${size}-${weight}`, type: "t
 test("supplied Inter plain text matches HTML across weights 400/600/700, sizes 11–32, and DPR 1/2", async t => {
   const output = resolve(process.env.DESIGN_FONT_RASTER_EVIDENCE ?? ".tmp/render-fidelity-r003/font-weight");
   await mkdir(output, { recursive: true });
-  const browser = await chromium.launch({ args: process.platform === "darwin" ? ["--use-angle=metal"] : ["--enable-webgl", "--enable-unsafe-swiftshader"] });
+  const rasterMode = fontComparisonRasterMode();
+  const browser = await chromium.launch({ args: [...(process.platform === "darwin" ? ["--use-angle=metal"] : ["--enable-webgl", "--enable-unsafe-swiftshader"]),
+    ...fontComparisonRasterArgs(rasterMode)] });
   t.after(() => browser.close());
   const rows = [], states = [];
   for (const dpr of [1, 2]) {
@@ -58,7 +60,7 @@ test("supplied Inter plain text matches HTML across weights 400/600/700, sizes 1
         await document.fonts.ready;
       }, nodes);
       const html = PNG.sync.read(await page.screenshot({ path: resolve(output, `dpr${dpr}-w${weight}-html.png`) }));
-      states.at(-1).fonts = await fontRasterObservation(page, "main");
+      states.at(-1).fonts = await fontRasterObservation(page, "main > div");
       states.at(-1).colors = { gpu: neutralTextColorObservation(gpu), html: neutralTextColorObservation(html) };
       for (const value of nodes) {
         const roi = { x: 16 * dpr, y: (value.y - 1) * dpr, width: 720 * dpr, height: 44 * dpr };
@@ -73,8 +75,11 @@ test("supplied Inter plain text matches HTML across weights 400/600/700, sizes 1
   const summary = { samples: rows.length, geometryFailures: rows.filter(row => row.geometryFailures.length).length,
     pixelFailures: rows.filter(row => !row.pixelPass).length, maxMismatchRatio: Math.max(...rows.map(row => row.pixels.mismatchRatio)),
     maxCluster: Math.max(...rows.map(row => row.pixels.largestCluster)), maxAbsCentroid: Math.max(...rows.map(row => Math.abs(row.delta.centroidY))) };
-  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ summary, states, rows }, null, 2));
+  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ summary, states, rows, rasterMode,
+    textRasterArgs: fontComparisonRasterArgs(rasterMode), browserDefaultLcdCertification: "not-certified" }, null, 2));
   t.diagnostic(JSON.stringify({ output, summary }));
+  if (rasterMode === "grayscale") assert(states.every(row => row.colors.gpu.nonNeutralPixels === 0 && row.colors.html.nonNeutralPixels === 0),
+    "the grayscale comparison contract requires observed neutral black-text coverage in both paths, not merely a browser flag");
   assert.equal(rows.length, 132);
   assert.equal(summary.geometryFailures, 0);
   assert.equal(summary.pixelFailures, 0);

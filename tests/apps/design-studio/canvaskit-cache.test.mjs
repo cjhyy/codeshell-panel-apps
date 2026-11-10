@@ -10,7 +10,7 @@ import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometry
 import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { importFigmaJson } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
-import { fontRasterObservation, localFontObservation, cjkFontObservation, assertCjkCoverage } from "./font-raster-observation.mjs";
+import { fontRasterObservation, localFontObservation, cjkFontObservation, assertCjkCoverage, fontComparisonRasterMode, fontComparisonRasterArgs } from "./font-raster-observation.mjs";
 
 const root = resolve(process.env.DESIGN_CACHE_APP_DIR ?? fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
@@ -90,12 +90,14 @@ const fixture = () => ({
   ],
 });
 
-async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, width = 900, height = 600, dpr = 1, background } = {}) {
+async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, width = 900, height = 600, dpr = 1, background, textRasterMode = "browser-default" } = {}) {
   const browser = await chromium.launch({
-    args:
-      process.platform === "darwin"
+    args: [
+      ...(process.platform === "darwin"
         ? ["--use-angle=metal"]
-        : ["--enable-webgl", "--enable-unsafe-swiftshader"],
+        : ["--enable-webgl", "--enable-unsafe-swiftshader"]),
+      ...fontComparisonRasterArgs(textRasterMode),
+    ],
   });
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr });
   const page = await context.newPage();
@@ -554,7 +556,8 @@ test(`integer physical text phase ${dpr} DPR × ${zoom} zoom preserves native de
 
 for (const { dpr, zoom } of [{ dpr: 1, zoom: 1 }, { dpr: 2, zoom: 1 }, { dpr: 1, zoom: 2 }])
 test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} zoom across cached world origins`, async t => {
-  const page = await harness(t, { width: 850, height: 220, dpr, tileCacheEnabled: false, background: "#ffffff" });
+  const rasterMode = fontComparisonRasterMode();
+  const page = await harness(t, { width: 850, height: 220, dpr, tileCacheEnabled: false, background: "#ffffff", textRasterMode: rasterMode });
   const output = resolve(process.env.DESIGN_CENTER_TEXT_EVIDENCE ?? ".tmp/render-fidelity-r002/center-gpu", `dpr${dpr}-zoom${zoom}`);
   await mkdir(output, { recursive: true });
   const font = await localFontObservation(page);
@@ -591,7 +594,7 @@ test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} z
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     }, { node: design.nodes[0], viewport });
     const expected = PNG.sync.read(await page.screenshot({ scale: "device", path: resolve(output, `${name}-html.png`) }));
-    const fonts = await fontRasterObservation(page, "#center-html-reference");
+    const fonts = await fontRasterObservation(page, "#center-html-reference > div");
     await page.evaluate(() => {
       document.querySelector("#center-html-reference").remove();
       document.querySelector("canvas").style.visibility = "visible";
@@ -603,7 +606,8 @@ test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} z
     const geometry = geometryDifference(inkGeometry(expected, { roi, foreground: [37, 40, 36] }), inkGeometry(actual, { roi, foreground: [37, 40, 36] }));
     results.push({ name, x, viewport, dom, metric, geometry, geometryFailures: textGeometryFailures(geometry, { scale, align: "center" }), stats, fonts });
   }
-  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ dpr, zoom, font, cjk, results }, null, 2));
+  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ dpr, zoom, font, cjk, rasterMode,
+    textRasterArgs: fontComparisonRasterArgs(rasterMode), browserDefaultLcdCertification: "not-certified", results }, null, 2));
   const failures = results.filter(row => row.metric.mismatchRatio > .005 || row.metric.largestCluster > 6 || row.geometryFailures.length);
   assert.deepEqual(failures.map(row => ({ name: row.name, metric: row.metric, geometry: row.geometry, geometryFailures: row.geometryFailures })), [], "actual HTML pixel and geometry thresholds must hold without relaxing the cluster gate");
   for (const [before, after] of [[0, 1], [2, 3]])
@@ -921,7 +925,8 @@ for (const { dpr, zoom, pan } of [
   {dpr:1,zoom:.66,pan:{x:17.125,y:8.375}},
   {dpr:1,zoom:2,pan:{x:.25,y:.5}},
 ]) test(`fractional viewport ${dpr} DPR / ${zoom} zoom uses actual screen phase beside component instances`, async t => {
-  const page = await harness(t, {width:1500,height:700,dpr,tileCacheEnabled:true,background:"#ffffff"});
+  const rasterMode = fontComparisonRasterMode();
+  const page = await harness(t, {width:1500,height:700,dpr,tileCacheEnabled:true,background:"#ffffff",textRasterMode:rasterMode});
   const design = phaseFixture(); design.canvas.width=1500; design.canvas.height=700;
   design.nodes[0].x=36.375;design.nodes[0].y=41.41;
   design.nodes[0].fontSize=20;
@@ -945,7 +950,7 @@ for (const { dpr, zoom, pan } of [
     document.body.append(wrapper);await document.fonts.ready;
   },{design,viewport});
   const expected=PNG.sync.read(await page.screenshot({scale:"device",path:resolve(output,"html.png")}));
-  const fonts=await fontRasterObservation(page,"#phase-html");
+  const fonts=await fontRasterObservation(page,"#phase-html .cs-text");
   const nodes=[design.nodes[0],child,{...child,id:"instance-text",x:child.x+instance.x-component.x,y:child.y+instance.y-component.y}];
   const rows=nodes.map(n=>{
     const scale=dpr*zoom,roi={x:(pan.x+(n.x-3)*zoom)*dpr,y:(pan.y+(n.y-3)*zoom)*dpr,width:(n.width+6)*scale,height:(n.height+6)*scale};
@@ -953,7 +958,8 @@ for (const { dpr, zoom, pan } of [
     const geometry=geometryDifference(inkGeometry(expected,{roi,foreground:[15,23,42]}),inkGeometry(actual,{roi,foreground:[15,23,42]}));
     return {id:n.id,pixel,geometry,failures:textGeometryFailures(geometry,{scale,align:"left"})};
   });
-  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,pan,rows,stats,fonts},null,2));
+  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,pan,rows,stats,fonts,rasterMode,
+    textRasterArgs:fontComparisonRasterArgs(rasterMode),browserDefaultLcdCertification:"not-certified"},null,2));
   assert.equal(JSON.stringify(design),source,"viewport sampling must not write design geometry");
   assert.deepEqual(rows.filter(row=>row.failures.length||row.pixel.mismatchRatio>.005||row.pixel.largestCluster>6),[],"fractional pan/fit-view and translation instances keep strict text geometry and pixels");
   assert(stats.deviceTextNodes>=2,"an instance cannot disable unrelated text device sampling");

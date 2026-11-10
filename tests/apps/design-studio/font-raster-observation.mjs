@@ -1,10 +1,26 @@
-// Synthetic browser evidence only. These observations do not alter rendering or acceptance gates.
+// Fixture-only evidence and explicit comparison raster mode; no production changes,
+// document/PNG rewriting, or relaxed acceptance thresholds.
+export function fontComparisonRasterMode() {
+  const mode = process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "grayscale";
+  if (!["grayscale", "browser-default"].includes(mode)) throw Error(`Unknown fixture raster mode: ${mode}`);
+  return mode;
+}
+
+export function fontComparisonRasterArgs(mode = fontComparisonRasterMode()) {
+  if (!["grayscale", "browser-default"].includes(mode)) throw Error(`Unknown fixture raster mode: ${mode}`);
+  // An RGBA glyph texture carries one coverage value, not LCD's independent RGB coverages.
+  // Use the same explicit grayscale contract for these Canvas/DOM comparisons on every OS.
+  // browser-default remains a raw diagnostic/replay mode; its LCD parity is not certified.
+  return mode === "grayscale" ? ["--disable-lcd-text"] : [];
+}
+
 export async function fontRasterObservation(page, selector) {
   const browser = page.context().browser();
   const observation = await page.evaluate(selector => {
-    const root = document.querySelector(selector);
-    if (!root) throw Error(`Missing font observation root: ${selector}`);
-    const elements = [root, ...root.querySelectorAll("*")].filter(element =>
+    const roots = [...document.querySelectorAll(selector)];
+    if (!roots.length) throw Error(`Missing font observation root: ${selector}`);
+    const elements = [...new Set(roots.flatMap(root => [root, ...root.querySelectorAll("*")]))].filter(element =>
+      !["STYLE", "SCRIPT"].includes(element.tagName) &&
       [...element.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim()));
     const aliases = [...document.fonts].filter(face => face.family.startsWith("ck-font-")).map(face => face.family);
     const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
@@ -36,8 +52,16 @@ export async function platformFontObservation(page, selector) {
   try {
     await session.send("DOM.enable"); await session.send("CSS.enable");
     const { root } = await session.send("DOM.getDocument");
-    const { nodeId } = await session.send("DOM.querySelector", { nodeId: root.nodeId, selector });
-    return (await session.send("CSS.getPlatformFontsForNode", { nodeId })).fonts;
+    const { nodeIds } = await session.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector });
+    if (!nodeIds.length) throw Error(`Missing platform font observation node: ${selector}`);
+    const results = await Promise.all(nodeIds.map(nodeId => session.send("CSS.getPlatformFontsForNode", { nodeId })));
+    const fonts = new Map();
+    for (const font of results.flatMap(result => result.fonts)) {
+      const key = JSON.stringify([font.familyName, font.postScriptName, font.isCustomFont]);
+      const previous = fonts.get(key);
+      fonts.set(key, { ...font, glyphCount: font.glyphCount + (previous?.glyphCount ?? 0) });
+    }
+    return [...fonts.values()];
   } finally { await session.detach(); }
 }
 
@@ -71,9 +95,14 @@ export async function cjkFontObservation(page, fontFamily) {
 
 export function assertCjkCoverage(observation) {
   const actual = observation.platformFonts;
-  // CI installs this explicit CJK dependency. A last-resort/tofu face cannot count as Chinese coverage.
-  if (process.platform === "linux" && !actual.some(font => /Noto.*CJK/iu.test(font.familyName) && font.glyphCount === observation.text.length))
-    throw Error(`Expected the installed Noto CJK font to cover every Chinese probe glyph: ${JSON.stringify(observation)}`);
+  // Playwright's pinned Linux dependencies include WenQuanYi. Noto CJK is also
+  // a verified system CJK family, but fontconfig may legitimately prefer WQY.
+  // Keep exact family/PostScript pairs: an unknown/tofu face cannot count as coverage.
+  const knownCjk = font => !font.isCustomFont && (
+    font.familyName === "WenQuanYi Zen Hei" && font.postScriptName === "WenQuanYiZenHei" ||
+    /^Noto Sans CJK (?:SC|TC|JP|KR|HK)$/u.test(font.familyName) && /^NotoSansCJK(?:sc|tc|jp|kr|hk)-(?:Regular|Medium|Bold)$/u.test(font.postScriptName));
+  if (process.platform === "linux" && !actual.some(font => knownCjk(font) && font.glyphCount === observation.text.length))
+    throw Error(`Expected a verified installed CJK face to cover every Chinese probe glyph: ${JSON.stringify(observation)}`);
   if (actual.reduce((sum, font) => sum + font.glyphCount, 0) !== observation.text.length)
     throw Error(`Chinese font observation did not cover all glyphs: ${JSON.stringify(observation)}`);
 }
