@@ -177,9 +177,9 @@ export function inheritedNodeRotation(nodes, node, excludedIds = new Set()) {
     .reduce((rotation, ancestor) => rotation + (ancestor.rotation ?? 0), 0);
 }
 
-export function transformedNodeCornersInTree(nodes, node, nodeIndex = null) {
+export function transformedNodeCornersInTree(nodes, node, nodeIndex = null, rotationPivots = null) {
   if (!validBounds(node)) return null;
-  const nodeCenter = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+  const nodeCenter = rotationPivots?.get(node.id) ?? { x: node.x + node.width / 2, y: node.y + node.height / 2 };
   return [
     { x: node.x, y: node.y },
     { x: node.x + node.width, y: node.y },
@@ -190,7 +190,7 @@ export function transformedNodeCornersInTree(nodes, node, nodeIndex = null) {
     for (const ancestor of ancestorNodes(nodes, node, nodeIndex)) {
       transformed = rotatePoint(
         transformed,
-        { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
+        rotationPivots?.get(ancestor.id) ?? { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
         ancestor.rotation ?? 0,
       );
     }
@@ -198,8 +198,8 @@ export function transformedNodeCornersInTree(nodes, node, nodeIndex = null) {
   });
 }
 
-export function transformedNodeBoundsInTree(nodes, node, nodeIndex = null) {
-  const corners = transformedNodeCornersInTree(nodes, node, nodeIndex);
+export function transformedNodeBoundsInTree(nodes, node, nodeIndex = null, rotationPivots = null) {
+  const corners = transformedNodeCornersInTree(nodes, node, nodeIndex, rotationPivots);
   if (!corners) return null;
   const left = Math.min(...corners.map((point) => point.x));
   const top = Math.min(...corners.map((point) => point.y));
@@ -213,7 +213,7 @@ export function transformedNodeBoundsInTree(nodes, node, nodeIndex = null) {
   };
 }
 
-export function pointToNodeSpace(nodes, node, point, nodeIndex = null) {
+export function pointToNodeSpace(nodes, node, point, nodeIndex = null, rotationPivots = null) {
   if (!validBounds(node) || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
     return null;
   }
@@ -221,31 +221,31 @@ export function pointToNodeSpace(nodes, node, point, nodeIndex = null) {
   for (const ancestor of ancestorNodes(nodes, node, nodeIndex).reverse()) {
     local = rotatePoint(
       local,
-      { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
+      rotationPivots?.get(ancestor.id) ?? { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
       -(ancestor.rotation ?? 0),
     );
   }
   local = rotatePoint(
     local,
-    { x: node.x + node.width / 2, y: node.y + node.height / 2 },
+    rotationPivots?.get(node.id) ?? { x: node.x + node.width / 2, y: node.y + node.height / 2 },
     -(node.rotation ?? 0),
   );
   return local;
 }
 
-export function pointFromNodeSpace(nodes, node, point, nodeIndex = null) {
+export function pointFromNodeSpace(nodes, node, point, nodeIndex = null, rotationPivots = null) {
   if (!validBounds(node) || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
     return null;
   }
   let transformed = rotatePoint(
     point,
-    { x: node.x + node.width / 2, y: node.y + node.height / 2 },
+    rotationPivots?.get(node.id) ?? { x: node.x + node.width / 2, y: node.y + node.height / 2 },
     node.rotation ?? 0,
   );
   for (const ancestor of ancestorNodes(nodes, node, nodeIndex)) {
     transformed = rotatePoint(
       transformed,
-      { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
+      rotationPivots?.get(ancestor.id) ?? { x: ancestor.x + ancestor.width / 2, y: ancestor.y + ancestor.height / 2 },
       ancestor.rotation ?? 0,
     );
   }

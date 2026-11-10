@@ -79,6 +79,19 @@ const changedProperties = (comparison, id) =>
   comparison.differences.find((entry) => entry.id === id)?.styles.map((style) => style.property) ??
   [];
 
+test("line-box text and finite zero hanging origins remain semantically distinct", () => {
+  const lineBox = fixture(), hanging = structuredClone(lineBox);
+  label(hanging).layoutBaselineOffset = 0;
+  for (const [expected, actual] of [[lineBox, hanging], [hanging, lineBox]]) {
+    const comparison = compareDesignDocuments(expected, actual);
+    assert.equal(comparison.passed, false);
+    assert.equal(comparison.maximumGeometryDelta, 0);
+    assert.deepEqual(changedProperties(comparison, "label"), ["layoutBaselineOffset"]);
+  }
+  for (const value of [lineBox, hanging])
+    assert.equal(compareDesignDocuments(value, structuredClone(value)).passed, true);
+});
+
 test("same geometry and stable IDs cannot hide changed editable text or lost source text", () => {
   const expected = fixture(),
     actual = structuredClone(expected);
@@ -207,7 +220,6 @@ test("equivalent shorthand and omitted optional defaults do not introduce semant
     gridColumnSpan: 1,
     gridRowSpan: 1,
     textSource: label(actual).text,
-    layoutBaselineOffset: 0,
   });
   assert.equal(compareDesignDocuments(expected, actual).passed, true);
   assert.equal(compareDesignDocuments(actual, expected).passed, true);

@@ -236,6 +236,60 @@ export function parseCssBoxShadow(value) {
   };
 }
 
+function capturedFrontendStroke(element, style) {
+  const hint = element.getAttribute("data-codeshell-stroke");
+  if (!["legacy-shadow-v1", "center-shadow-v1", "legacy-outline-v1", "center-outline-v1"].includes(hint) ||
+      !["frame", "rectangle", "component"].includes(element.getAttribute("data-codeshell-node-type")) ||
+      !element.hasAttribute("data-codeshell-id") || borderSides(style).length) return null;
+  if (hint.endsWith("-outline-v1")) {
+    const width = pixelValue(style.outlineWidth), offset = pixelValue(style.outlineOffset), color = parseCssColor(style.outlineColor);
+    const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
+    // The hint contains no coordinates. Accept only the same bounded single
+    // ring emitted above; ordinary or edited outlines retain normal capture.
+    if (style.outlineStyle !== "solid" || !(width > 0 && width <= 100) || !Number.isInteger(width / 2) ||
+        offset !== -width / 2 || !color || !(color.alpha > 0) ||
+        (hint === "legacy-outline-v1" && color.alpha !== 1) ||
+        !radii.every(radius => /^\d+(?:\.\d+)?px$/u.test(radius) && radius === radii[0] && pixelValue(radius) >= width / 2) ||
+        element.children.length) return null;
+    const stroke = { stroke: color.hex, strokeWidth: width };
+    if (hint === "center-outline-v1") {
+      stroke.strokeAlign = "center";
+      if (color.alpha !== 1) stroke.strokeSides = Array.from({ length: 4 }, () => ({ width, color: color.hex, opacity: color.alpha }));
+    }
+    return { stroke, boxShadow: style.boxShadow };
+  }
+  if (style.outlineStyle !== "none" && pixelValue(style.outlineWidth) > 0) return null;
+  const layers = style.boxShadow.split(/,(?![^()]*\))/u);
+  if (layers.length < 2) return null;
+  const pair = layers.slice(0, 2).map(layer => {
+    const colorMatch = layer.match(/rgba?\([^)]*\)/iu);
+    const color = parseCssColor(colorMatch?.[0] ?? "");
+    const inner = /\binset\b/u.test(layer);
+    const geometry = layer.replace(colorMatch?.[0] ?? "", "").replace(/\binset\b/u, "").trim();
+    const lengths = geometry.match(/-?(?:\d+(?:\.\d*)?|\.\d+)px/gu);
+    if (!color || !lengths || lengths.length !== 4 || geometry.replace(/-?(?:\d+(?:\.\d*)?|\.\d+)px/gu, "").trim()) return null;
+    const [x, y, blur, spread] = lengths.map(Number.parseFloat);
+    return { color, inner, x, y, blur, spread };
+  });
+  const [outer, inner] = pair;
+  // The hint carries no geometry or arbitrary document data. Recover only a
+  // bounded, visibly identical pair; edited/forged hints keep normal CSS capture.
+  if (!outer || !inner || outer.inner || !inner.inner ||
+      pair.some(layer => layer.x !== 0 || layer.y !== 0 || layer.blur !== 0 ||
+        !(layer.spread > 0 && layer.spread <= 50) || !(layer.color.alpha > 0)) ||
+      outer.spread !== inner.spread || outer.color.hex !== inner.color.hex ||
+      outer.color.alpha !== inner.color.alpha ||
+      (hint === "legacy-shadow-v1" && outer.color.alpha !== 1)) return null;
+  const stroke = { stroke: outer.color.hex, strokeWidth: outer.spread * 2 };
+  if (hint === "center-shadow-v1") {
+    stroke.strokeAlign = "center";
+    if (outer.color.alpha !== 1) stroke.strokeSides = Array.from({ length: 4 }, () => ({
+      width: stroke.strokeWidth, color: stroke.stroke, opacity: outer.color.alpha,
+    }));
+  }
+  return { stroke, boxShadow: layers.slice(2).join(",") || "none" };
+}
+
 function capturedCornerProperties(style, borderBox, inset = 0) {
   const radii = cssCornerRadii([
     style.borderTopLeftRadius, style.borderTopRightRadius,
@@ -693,10 +747,11 @@ function elementNeedsFrame(element, style, forceFrame = false) {
   );
 }
 
-function appendSurfaceLayers(frame, style, rect, nextId) {
+function appendSurfaceLayers(frame, style, rect, nextId, exportedStroke) {
   const fill = parseCssColor(style.backgroundColor);
   const radius = representativeCornerRadius(style, rect);
-  const shadow = parseCssBoxShadow(style.boxShadow);
+  const shadow = parseCssBoxShadow(exportedStroke?.boxShadow ?? style.boxShadow);
+  if (exportedStroke) Object.assign(frame, exportedStroke.stroke);
   let hasManualLayers = false;
   if (fill?.alpha === 1) {
     frame.fill = fill.hex;
@@ -1248,7 +1303,7 @@ export async function captureHtmlToDesign(root, options = {}) {
         })
       : { name, children: [] };
     const hasManualLayers = needsFrame
-      ? appendSurfaceLayers(holder, style, rect, nextId)
+      ? appendSurfaceLayers(holder, style, rect, nextId, capturedFrontendStroke(element, style))
       : false;
     if (hasManualLayers && holder.layout !== "none") {
       // Multiple paint layers still fall back conservatively: they are represented as

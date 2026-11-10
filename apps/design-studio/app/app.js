@@ -11,6 +11,7 @@ import { createDocumentAutosave } from "./document-autosave.mjs";
 import { createRendererController } from "./renderer-controller.mjs";
 import {
   canvasNodeMatrix,
+  inlineTextEditorPlacement,
   drawCanvasInteraction,
   hitTestCanvasNode,
   hitTestCanvasLabel,
@@ -62,6 +63,7 @@ import {
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
+import { svgExportWarningNotice } from "./svg-export-warnings.mjs";
 import {
   createDesignPersistencePlan,
   MAX_WORKSPACE_DESIGN_TEXT_BYTES,
@@ -596,6 +598,8 @@ function rendererResources() {
 }
 
 function syncGpuRenderer() {
+  const interactive = viewportGesture;
+  viewportGesture = false;
   const bounds = elements.stage.getBoundingClientRect();
   elements.stageWrap.dataset.grid = String(showGrid);
   const renderDesign = inlineTextEdit && rendererMode === "gpu"
@@ -622,6 +626,7 @@ function syncGpuRenderer() {
       dpr: canvasPixelRatio(bounds),
       pan,
       zoom,
+      interactive,
     },
   });
 }
@@ -1754,6 +1759,7 @@ function shouldRenderCanvasLabel(node, options = {}) {
 
 let viewportRenderFrame = 0;
 let interactionRenderFrame = 0;
+let viewportGesture = false;
 
 function scheduleViewportRender() {
   if (viewportRenderFrame) return;
@@ -1850,7 +1856,8 @@ function canvasHit(point) {
   const viewDesign = interactionDesign();
   const label = hitTestCanvasLabel(viewDesign, point, zoom, selectedIds, elements.stage.getContext("2d"));
   if (label) return nodeById(label.id);
-  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
+  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point))
+    : gpuRenderer.state().active ? nodeById(gpuRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
 }
 
 function renderSelectionSize(nodes, allNodes = design.nodes) {
@@ -1937,7 +1944,10 @@ function updateInlineTextEditorPosition() {
   const matrix = box ? [box.matrix[0]*zoom,box.matrix[1]*zoom,box.matrix[2]*zoom,box.matrix[3]*zoom,pan.x+box.matrix[4]*zoom,pan.y+box.matrix[5]*zoom]
     : canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
+  const placement = inlineTextEditorPlacement(matrix, pan, zoom);
   Object.assign(elements.inlineTextEditor.style, {
+    left: `${placement.left}px`,
+    top: `${placement.top}px`,
     width: `${Math.max(28, box?.boxWidth ?? node.width)}px`,
     height: `${Math.max(24, box?.boxHeight ?? node.height)}px`,
     fontFamily: box?.fontFamily ?? (font
@@ -1949,7 +1959,7 @@ function updateInlineTextEditorPosition() {
     lineHeight: textLineHeightCss(node),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
-    transform: `matrix(${matrix.join(",")})`,
+    transform: `matrix(${placement.matrix.join(",")})`,
   });
 }
 
@@ -2949,6 +2959,7 @@ function pointerMove(event) {
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
     pan.y = interaction.startPan.y + event.clientY - interaction.startClient.y;
+    viewportGesture = true;
     scheduleViewportRender();
     return;
   }
@@ -5884,10 +5895,14 @@ async function exportSvg() {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     assertScope();
+    // Unmeasured text line boxes are reported, never silently exported (normally none: the browser measures fonts).
+    const diagnostics = [];
     const svg = exportDesignSvg(saved.design, {
       resourceDataUrls: resources,
       maxBytes: MAX_LOCAL_SVG_EXPORT_BYTES,
+      diagnostics,
     });
+    const warning = svgExportWarningNotice(diagnostics);
     if (new TextEncoder().encode(svg).byteLength > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
       const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
       const link = document.createElement("a");
@@ -5895,11 +5910,11 @@ async function exportSvg() {
       link.download = path.split("/").at(-1);
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo`);
+      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo${warning ? `。${warning}` : ""}`, warning ? "warning" : undefined);
       return;
     }
     await writeRepoText(path, svg, operationWorkspaceEpoch, assertScope);
-    notify(`SVG 已导出到 ${path}`);
+    notify(warning ? `SVG 已导出到 ${path}。${warning}` : `SVG 已导出到 ${path}`, warning ? "warning" : undefined);
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     const message = error instanceof Error ? error.message : "SVG 导出失败";
@@ -6914,6 +6929,7 @@ elements.stage.addEventListener(
   "wheel",
   (event) => {
     event.preventDefault();
+    viewportGesture = true;
     if (event.ctrlKey || event.metaKey) {
       setZoom(zoom * Math.exp(-event.deltaY * 0.006), { x: event.clientX, y: event.clientY });
     } else {

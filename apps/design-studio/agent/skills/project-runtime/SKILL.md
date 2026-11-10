@@ -55,7 +55,7 @@ any Host concurrently using that project must still support the shared protocol.
 | `inspect` | `path`; saved primary-file SHA-256 `revision`, canvas, tokens, resources and page catalog. |
 | `read` | `path`, optional `page_id` or `node_id`; a complete saved v3 document, page or node subtree. For a node, optional `max_depth` is 0–32. `descendantsTruncated` marks omitted descendants. |
 | `validate` | `path`; shared document/all-page audit and existing prototype companion diagnostics. Invalid companions contribute to error/blocking counts. Up to400 issues plus100 companion diagnostics are returned with truncation counts. |
-| `svg` | `path`, optional `page_id`, optional `output`; one saved page's SVG. Without `output`, content is returned in JSON. |
+| `svg` | `path`, optional `page_id`, optional `output`; one saved page's SVG. Without `output`, content is returned in JSON. When a text baseline could not be measured (no font metrics in Node), the result (inline or output receipt) carries `warnings` (`code`, `severity`, `nodeId`, `pageId`, `message`); it is absent when nothing was unmeasured. |
 | `frontend` | `path`, optional `page_id`, optional `output`, optional strict boolean `prototype`; defaults to single-page static HTML. `prototype:true` exports all saved pages with the saved prototype companion and verified resources, and cannot be combined with `page_id`. |
 | `brief` | `path` to a project-local Markdown, MDX or text PRD; structured goals, requirements and acceptance criteria. |
 | `compare` | `path`, `actual_path`, optional `page_id` / `actual_page_id`; geometry and style comparison of two saved design pages. This does not measure pixels. |

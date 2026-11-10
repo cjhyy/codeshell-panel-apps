@@ -93,7 +93,7 @@ export function createRendererController({
         }
         if (!isCurrent(token, target) || blockedReason()) return;
         stage = "render";
-        await current.instance.render({ pan: view.pan, zoom: view.zoom });
+        await current.instance.render({ pan: view.pan, zoom: view.zoom, ...(view.interactive ? { interactive: true } : {}) });
         if (!isCurrent(token, target) || blockedReason()) return;
         if (version !== viewportVersion) continue;
         current.drawnVersion = version;
@@ -150,7 +150,12 @@ export function createRendererController({
         stage = "create";
         const create = loaded?.createRenderer ?? (typeof loaded === "function" ? loaded : null);
         if (typeof create !== "function") throw new Error("GPU module has no createRenderer function");
-        instance = await create({ canvas, assetsBaseUrl });
+        instance = await create({ canvas, assetsBaseUrl, onError(error) {
+          if (disposed || slot?.instance !== instance) return;
+          fail(error, generation, document, "render");
+          slot.invalid = true;
+          void clearSlot();
+        } });
         for (const method of ["setScene", "resize", "render", "dispose"])
           if (typeof instance?.[method] !== "function") throw new Error(`GPU renderer has no ${method} method`);
         slot = { instance, document: target, ready: false, drawnVersion: -1 };
@@ -196,7 +201,7 @@ export function createRendererController({
   function updateViewport(next) {
     if (!next) return;
     const view = { ...viewport, ...next, pan: { ...viewport.pan, ...next.pan } };
-    if (["width", "height", "dpr", "zoom"].some((key) => view[key] !== viewport[key]) ||
+    if (["width", "height", "dpr", "zoom", "interactive"].some((key) => view[key] !== viewport[key]) ||
       view.pan.x !== viewport.pan.x || view.pan.y !== viewport.pan.y) {
       viewport = view;
       viewportVersion += 1;

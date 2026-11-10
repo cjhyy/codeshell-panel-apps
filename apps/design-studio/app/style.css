@@ -2327,6 +2327,8 @@ dialog::backdrop {
   resize: none;
   transform-origin: 0 0;
   color: var(--text);
+  /* Draw glyphs like the canvas/HTML text (the browser route resets inherited chrome styles). */
+  -webkit-font-smoothing: auto;
 }
 .inline-text-editor[hidden] {
   display: none;

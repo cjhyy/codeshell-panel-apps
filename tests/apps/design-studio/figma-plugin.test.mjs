@@ -2729,21 +2729,24 @@ test("production Text unit transitions use explicit setters and invalid pixel tr
   }
 });
 
-test("generated native runtime recognizes pixel9 provenance without erasing an authored explicit newline", async () => {
-  for (const sourceEdit of [false, true]) {
-    const imported = importFigmaJson(nativeTextFixture("Alpha Beta")), text = imported.document.nodes.find(node => node.type === "text");
-    Object.assign(text, { fontSize: 16, lineHeight: 20, lineHeightUnit: "pixels", textSource: "Alpha Beta" });
-    recordWrappedCopy(text, "Alpha \nBeta");
-    assert.equal(JSON.parse(text.textMetrics.signature).length, 9);
-    text.fontSize = 24;
-    if (sourceEdit) text.textSource = "Edited source\nwith explicit LF";
-    else text.text = "Alpha\n Beta";
-    const runtime = harness(page([]));
-    await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(imported.document)) });
-    assert.equal(runtime.messages.at(-1).type, "imported");
-    const created = [...runtime.all.values()].find(node => node.type === "TEXT");
-    assert.equal(created.characters, sourceEdit ? "Edited source\nwith explicit LF" : "Alpha\n Beta");
-    assert.deepEqual(clone(created.lineHeight), { unit: "PIXELS", value: 20 });
+test("generated native runtime recognizes legacy and line-box pixel provenance without erasing an authored explicit newline", async () => {
+  for (const layoutBaselineOffset of [undefined, 0]) {
+    for (const sourceEdit of [false, true]) {
+      const imported = importFigmaJson(nativeTextFixture("Alpha Beta")), text = imported.document.nodes.find(node => node.type === "text");
+      Object.assign(text, { fontSize: 16, lineHeight: 20, lineHeightUnit: "pixels", textSource: "Alpha Beta" });
+      if (layoutBaselineOffset !== undefined) text.layoutBaselineOffset = layoutBaselineOffset;
+      recordWrappedCopy(text, "Alpha \nBeta");
+      assert.equal(JSON.parse(text.textMetrics.signature).length, layoutBaselineOffset === undefined ? 10 : 9);
+      text.fontSize = 24;
+      if (sourceEdit) text.textSource = "Edited source\nwith explicit LF";
+      else text.text = "Alpha\n Beta";
+      const runtime = harness(page([]));
+      await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(imported.document)) });
+      assert.equal(runtime.messages.at(-1).type, "imported");
+      const created = [...runtime.all.values()].find(node => node.type === "TEXT");
+      assert.equal(created.characters, sourceEdit ? "Edited source\nwith explicit LF" : "Alpha\n Beta");
+      assert.deepEqual(clone(created.lineHeight), { unit: "PIXELS", value: 20 });
+    }
   }
 });
 

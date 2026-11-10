@@ -1,4 +1,5 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textHtmlFiniteLineBoxShift } from "./text-line-box.mjs";
 import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
@@ -17,6 +18,7 @@ export function textMetricsSignature(node) {
     node.lineHeight,
     ...(node.lineHeightUnit === undefined ? [] : [node.lineHeightUnit]),
     ...(typography.length ? [{ typography }] : []),
+    ...(textHasLineBoxOrigin(node) && !typography.length ? [{ origin: "line-box-v1" }] : []),
   ]);
 }
 
@@ -77,9 +79,21 @@ export function validTextMetrics(metrics) {
   );
 }
 
-export function measuredTextInkBounds(node) {
+/**
+ * Derived painted ink extent relative to the node origin. `context` ({ parent, infiniteRoot }) decides whether HTML
+ * lays finite text out as a plain line box (textHtmlFiniteLineBoxShift); receipts themselves are never rewritten:
+ * - transported and provenanced receipts keep their hanging origin (for provenance the import proved the measured
+ *   line-box offset reproduces it: see textHtmlFiniteLineBoxShift);
+ * - typography receipts keep the SVG typography geometry (measured line offsets), which the SVG export also keeps;
+ * - other non-transported plain finite receipts (rotation, constraints, grid, flow) are hanging-relative without
+ *   line-box metrics: their painted origin is unknown here, so no measured bound is certified (callers estimate).
+ */
+export function measuredTextInkBounds(node, context = {}) {
   const metrics = currentTextMetrics(node);
   if (!metrics) return null;
+  if (textHtmlFiniteLineBoxShift(node, context) !== null) return null;
+  const lineOffsets = textDisplayLineMetrics(node).offsets;
+  const snapped = textHasLineBoxOrigin(node) && Number.isFinite(metrics.alphabeticBaseline) && !textRangeTypography(node, false).length;
   const boxes = metrics.lineInkBounds
     .map((box, index) => {
       const offset =
@@ -90,7 +104,11 @@ export function measuredTextInkBounds(node) {
             : 0;
       return {
         x: box.x + offset,
-        y: box.y + textDisplayLineMetrics(node).offsets[index],
+        // Receipts stay in the logical line box. Consumers of this derived
+        // union (SVG page bounds and explicit repair) need the painted extent.
+        y: box.y + (snapped
+          ? textLineBoxBaselineY(node, index, metrics.alphabeticBaseline) - node.y - metrics.alphabeticBaseline
+          : lineOffsets[index]),
         width: box.width,
         height: box.height,
       };
@@ -133,6 +151,8 @@ export function textDisplayLineMetrics(node) {
 }
 
 export function measuredRangeLineGeometry(node, metrics) {
+  if (!textRangeTypography(node, false).length && textHasLineBoxOrigin(node) && Number.isFinite(metrics[0]?.alphabeticBaseline))
+    return { alphabeticBaseline: metrics[0].alphabeticBaseline };
   if (!textRangeTypography(node, false).length || !metrics.every(metric => Number.isFinite(metric.lineHeight) && Number.isFinite(metric.baselineOffset))) return {};
   let position = 0;
   const baseline = metrics[0]?.baselineOffset ?? 0;
@@ -160,7 +180,6 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
   documentValue.body.append(lineBox);
   const range = documentValue.createRange();
   range.selectNodeContents(lineBox);
-  const baselineOffsets = new Map();
   const context = documentValue.createElement("canvas").getContext("2d");
   if (!context) {
     svg.remove();
@@ -212,11 +231,18 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       context.textBaseline = "alphabetic";
       const alphabetic = context.measureText("Hg");
       alphabeticBaseline = alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
-      context.textBaseline = "hanging";
+      const lineBoxOrigin = textHasLineBoxOrigin(node) && !typographyRuns.length;
+      if (lineBoxOrigin) {
+        // measureText already ran above. Reuse its current loaded-font metrics,
+        // not an earlier fallback retained under the same CSS font shorthand.
+        const metrics = { ascent: alphabetic.fontBoundingBoxAscent, descent: alphabetic.fontBoundingBoxDescent };
+        alphabeticBaseline = textLineBoxAlphabeticOffset(node, metrics);
+      }
+      context.textBaseline = lineBoxOrigin ? "alphabetic" : "hanging";
       // All SVG runs share the parent's alphabetic baseline. A hanging parent
       // would align smaller runs to their own hanging table and lift domains.
-      text.setAttribute("dominant-baseline", typographyRuns.length ? "alphabetic" : "hanging");
-      text.setAttribute("y", String(typographyRuns.length ? alphabeticBaseline : 0));
+      text.setAttribute("dominant-baseline", typographyRuns.length || lineBoxOrigin ? "alphabetic" : "hanging");
+      text.setAttribute("y", String(typographyRuns.length || lineBoxOrigin ? alphabeticBaseline : 0));
       actualInkAvailable = !node.letterSpacing || "letterSpacing" in context;
       if ("letterSpacing" in context) context.letterSpacing = `${node.letterSpacing ?? 0}px`;
       Object.assign(lineBox.style, {
@@ -226,8 +252,9 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       });
     },
     lineBoxOffset(node) {
-      const key = textSourceMetricsSignature(node);
-      if (baselineOffsets.has(key)) return baselineOffsets.get(key);
+      // FontFace.load()/FontFaceSet.add() can replace a fallback without a
+      // loadingdone event. Read the current DOM geometry instead of retaining
+      // a fallback result under a font-independent source signature.
       Object.assign(lineBox.style, {
         fontFamily: designFontFamilyCss(node.fontFamily),
         fontSize: `${node.fontSize}px`,
@@ -242,11 +269,15 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       const source = node.textSource ?? node.text;
       populate(typographyRuns.length ? source.split("\n")[0] : "Hg");
       range.selectNodeContents(lineBox);
+      // This method transports imported HTML/native coordinates into the old
+      // hanging convention even when configure() started with no finite offset.
+      const savedBaseline = text.getAttribute("dominant-baseline"), savedY = text.getAttribute("y");
+      if (!typographyRuns.length) { text.setAttribute("dominant-baseline", "hanging"); text.setAttribute("y", "0"); }
       const offset = range.getBoundingClientRect().top - lineBox.getBoundingClientRect().top -
         text.getBoundingClientRect().top;
+      text.setAttribute("dominant-baseline", savedBaseline); text.setAttribute("y", savedY);
       if (!Number.isFinite(offset) || Math.abs(offset) > 100)
         throw Error("浏览器文字行框与 hanging 基线差值超过支持范围");
-      baselineOffsets.set(key, offset);
       return offset;
     },
     measure(value, sourceStart = 0) {
@@ -270,13 +301,14 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
         ].every(Number.isFinite)
           ? {
               x: -actual.actualBoundingBoxLeft,
-              y: -actual.actualBoundingBoxAscent,
+              y: -actual.actualBoundingBoxAscent + (textHasLineBoxOrigin(configuredNode) ? alphabeticBaseline : 0),
               width: actual.actualBoundingBoxLeft + actual.actualBoundingBoxRight,
               height: actual.actualBoundingBoxAscent + actual.actualBoundingBoxDescent,
             }
           : bounds;
       return {
         width: round(advance),
+        ...(!typographyRuns.length && textHasLineBoxOrigin(configuredNode) ? { alphabeticBaseline } : {}),
         ...(typographyRuns.length ? (() => {
           range.selectNodeContents(lineBox);
           return { lineHeight: lineBox.getBoundingClientRect().height,
@@ -442,6 +474,11 @@ export async function measureFigmaTextDocument(
             node.y = nextY;
             node.layoutBaselineOffset = round(nextY - logicalY);
             node.layoutBaselineSource = "native";
+            // The origin convention just changed. Subsequent glyph receipts
+            // must use the imported hanging frame and its unchanged signature.
+            measurement.configure(node.textOverflow === "ellipsis"
+              ? { ...node, textFlow: undefined }
+              : autoResize === "WIDTH_AND_HEIGHT" ? node : { ...node, textFlow: "wrap" });
           } catch (error) {
             unsupportedBaselines.push({ nodeId: node.id, reason: error.message });
           }

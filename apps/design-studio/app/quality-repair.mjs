@@ -13,6 +13,7 @@ import {
   pointFromNodeSpace,
 } from "./geometry.mjs";
 import { measuredTextInkBounds } from "./text-metrics.mjs";
+import { textHtmlFiniteContextIn, textHtmlFiniteLineBoxNode } from "./text-line-box.mjs";
 
 const round = (value) => Math.round(value * 10000) / 10000;
 const mix = (color, target, amount) =>
@@ -47,7 +48,10 @@ function descendantsOf(parent, childrenById) {
 
 function visibleEffectBounds(view, node, byId) {
   if (node.type === "group") return null;
-  const ink = measuredTextInkBounds(node);
+  const context = textHtmlFiniteContextIn(byId, node, view.canvas?.mode);
+  const ink = measuredTextInkBounds(node, context);
+  // Uncertified text falls back to its box at the painted (HTML view) origin.
+  const viewShift = node.type === "text" ? textHtmlFiniteLineBoxNode(node, context).y - node.y : 0;
   const stroke =
     !["group", "instance"].includes(node.type)
       ? designStrokeOutset(node)
@@ -70,9 +74,9 @@ function visibleEffectBounds(view, node, byId) {
     stroke,
     shadow ? stroke + blur + Math.max(0, shadow.y) : 0,
   );
-  if (!ink && Math.max(left, right, top, bottom) === 0)
+  if (!ink && !viewShift && Math.max(left, right, top, bottom) === 0)
     return clipNodeBoundsToClippingAncestors(view.nodes, node, byId);
-  const base = ink ?? { x: 0, y: 0, width: node.width, height: node.height };
+  const base = ink ?? { x: 0, y: viewShift, width: node.width, height: node.height };
   const x = node.x + base.x - left,
     y = node.y + base.y - top;
   const width = base.width + left + right,
@@ -235,3 +239,6 @@ export function repairDesignQuality(input) {
   const issues = auditDesignPages(document);
   return { document, before, after: summarizeAudit(issues), changes, unresolved: issues };
 }
+
+/** Test/diagnostic access to the bounds the repair uses for one node (no document change). */
+export { visibleEffectBounds as qualityRepairVisibleBounds };

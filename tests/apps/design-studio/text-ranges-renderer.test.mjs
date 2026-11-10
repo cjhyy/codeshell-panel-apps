@@ -223,10 +223,17 @@ test("software CanvasKit supplied Paragraph preserves AV/fi/combining shaping ac
     const bytes = new Uint8Array(await (await fetch("/fonts/InterVariable.woff2")).arrayBuffer());
     const make = (text, ranges) => ({ id: "copy", name: "copy", type: "text", x: 20, y: 20, width: 600, height: 100,
       text, fill: "#123456", stroke: "transparent", strokeWidth: 0, fontFamily: "Inter", fontRef: "inter", fontSize: 24,
-      fontWeight: 400, lineHeight: 1.25, textAlign: "left", ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
+      // Keep this shaping oracle on the historical native path for both inputs;
+      // ordinary no-offset resource text has its separate browser-raster oracle.
+      // Range-final batch: finite typography and line-through now follow HTML onto the range raster; a node-level
+      // line-through over a (base-equal) typography range is unmeasured (line-through-mixed-typography) and stays native.
+      fontWeight: 400, lineHeight: 1.25, textAlign: "left", layoutBaselineOffset: 0, textDecoration: "line-through",
+      ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
     const rows = [];
     for (const [text, start, end] of [["AVATAR", 1, 2], ["office", 2, 3], ["e\u0301lan", 1, 2], ["A\u00a0V\nExplicit LF", 2, 5]]) {
-      const nodes = [make(text), make(text, [{ start, end, fill: "#123456" }]), make(text, [{ start, end, fill: "#991122" }])];
+      // The reference is one whole-text run (no paint boundary) on the same native range paragraph.
+      const nodes = [make(text, [{ start: 0, end: text.length, fill: "#123456", fontWeight: 400 }]), make(text, [{ start, end, fill: "#123456", fontWeight: 400 }]),
+        make(text, [{ start, end, fill: "#991122", fontWeight: 400 }])];
       const design = { nodes: [nodes[0]], resources: [{ id: "inter", kind: "font", family: "Inter" }] }, before = JSON.stringify(design);
       const resources = new Map([["inter", { bytes, mimeType: "font/woff2", descriptor: design.resources[0] }]]);
       const counters = { textLines: 0, rasterTextNodes: 0, nativeTextNodes: 0, gradientPaints: 0 }, warnings = [];
@@ -253,8 +260,10 @@ test("software CanvasKit supplied Paragraph preserves AV/fi/combining shaping ac
           } finally { surface.delete(); }
         }
         const unsupported = make(text, [{ start, end, textDecoration: "underline", textUnderlineOffset: { unit: "em", value: 0.1578 } }]);
-        let refusal;
-        try { renderer.draw({ drawParagraph() { throw Error("must refuse before drawing"); } }, unsupported); } catch (error) { refusal = error.code; }
+        // The refusal is per node: reported and left unrendered, never drawn and never a scene-wide throw.
+        let refusal; const refusalStart = warnings.length;
+        try { renderer.draw({ drawParagraph() { throw Error("must refuse before drawing"); } }, unsupported); refusal = warnings.slice(refusalStart).join(); }
+        catch (error) { refusal = `threw ${error.code ?? error.message}`; }
         rows.push({ text, samePixels: outputs[0].pixels.every((v,i) => v === outputs[1].pixels[i]),
           sameShaping: JSON.stringify(outputs[0].shapes) === JSON.stringify(outputs[1].shapes) && JSON.stringify(outputs[1].shapes) === JSON.stringify(outputs[2].shapes),
           actualColorChangedPixels: outputs[0].pixels.reduce((sum,v,i) => sum + (v !== outputs[2].pixels[i]), 0),
@@ -270,14 +279,15 @@ test("software CanvasKit supplied Paragraph preserves AV/fi/combining shaping ac
     assert.equal(row.samePixels, true, row.text);
     assert.equal(row.sameShaping, true, row.text);
     assert(row.actualColorChangedPixels > 0, row.text);
-    assert.equal(row.refusal, "TEXT_RANGES_UNSUPPORTED");
+    assert.equal(row.refusal, "text-ranges-unsupported");
+    assert.ok(row.stats.unrenderedTextLines > 0, "the refused node is reported unrendered");
     assert.equal(row.stats.rasterTextImages, 0);
     assert.equal(row.stats.rasterTextCacheBytes, 0);
     assert.equal(row.counters.rasterTextNodes, 0);
     assert.equal(row.counters.nativeTextNodes, 3);
     assert.equal(row.stateUnchanged, true);
     assert.equal(row.bytesUnchanged, true);
-    assert.deepEqual(row.warnings, []);
+    assert.deepEqual(row.warnings, ["text-ranges-unsupported"], "only the refused node is reported");
   }
   for (let index = 0; index < result.length; index++) {
     const row = result[index];

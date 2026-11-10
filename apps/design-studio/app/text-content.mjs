@@ -4,6 +4,13 @@ import { validateTextRanges, mapTextDisplay } from "./text-ranges.mjs";
 const recordedText = (signature) => {
   try {
     const value = JSON.parse(signature);
+    // The origin marker changes the measurement frame, not authored content.
+    // Accept only the exact current marker, leaving unknown extensions invalid.
+    if (Array.isArray(value)) {
+      const origin = value.at(-1);
+      if (origin && typeof origin === "object" && !Array.isArray(origin) &&
+          Object.keys(origin).length === 1 && origin.origin === "line-box-v1") value.pop();
+    }
     return Array.isArray(value) && (value.length === 8 || (value.length === 9 && value[8] === "pixels")) && typeof value[0] === "string"
       ? value[0]
       : undefined;

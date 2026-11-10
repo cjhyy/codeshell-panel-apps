@@ -97,6 +97,26 @@ Adaptive imported text may also preserve `textSource`, the last measured `textFl
 parent changes width. `textOverflow: "ellipsis"` regenerates a single truncated line ending in
 `…`. These fields keep the source copy editable while the materialized `text` remains the rendered
 fallback.
+For ordinary text and ranges without typography overrides, an absent
+`layoutBaselineOffset` means `y` is the first line-box top. SVG and CanvasKit
+place the alphabetic baseline using the line height and loaded font ascent/descent;
+the browser raster path caches the browser's font-box metrics per CSS font.
+A finite offset, including zero, retains the previous hanging-origin rendering
+without changing `y`, adding offsets or upgrading the document format. Mixed
+typography ranges retain their existing measured-baseline behavior in this round.
+Fresh glyph receipts for line-box text include an origin marker in their signature
+so old hanging-relative `lineInkBounds` cannot be reused under the new convention.
+Browser SVG export uses actual loaded metrics; offline callers need supplied
+metrics or a current measurement receipt for the same baseline. An unmeasured
+offline SVG uses an explicitly marked central-baseline fallback and is not evidence
+of font-accurate rendering. Inline editor alignment and complete mixed-typography
+range parity remain separate work.
+Measured SVG Text groups record `data-text-line-box="alphabetic"`, their
+`data-text-baseline-offset` and the source-bound `data-text-metrics-signature`.
+The signature covers typography, line height and origin, so a previous baseline
+cannot hide a changed single-line source. The offline preview checker replays this rendering
+context and compares the entire regenerated SVG, retaining source/body freshness
+checks. Those attributes do not establish font provenance or visual correctness.
 Newline-delimited text renders as explicit, independently positioned SVG lines so native preview
 renderers preserve the live canvas layout. Text fill and optional stroke render consistently in the
 live canvas and SVG preview.
@@ -295,6 +315,18 @@ Rectangles, Frames and Components may store optional `strokeAlign` (`inside`,
 clockwise top/right/bottom/left order. Each descriptor has only `width` (0–100px),
 `color` (six-digit RGB) and `opacity` (0–1). Side descriptors override compatibility
 `stroke`/`strokeWidth`; omitting the new fields preserves legacy centered strokes.
+Legacy strokes do not reserve content space or move child containing blocks.
+HTML/browser rendering paints their outer and inner halves without a CSS border,
+above any existing outer shadow; legacy Text strokes outline glyphs with
+`-webkit-text-stroke`, not the Text node's box. This changes rendering only: no
+coordinates, offsets or serialized format fields are rewritten. Ordered
+`shadowStack` remains limited to its existing supported inside-border geometry;
+combining a visible legacy centered stroke with that stack is still rejected.
+Explicit uniform `strokeAlign: "center"` also uses two exact half-width shadows:
+Chromium rounds fractional CSS outline widths, which otherwise makes a 3px
+centered stroke only 2.5px wide. Existing inside/outside paths are unchanged.
+Rounded centered strokes retain measured inner/outer shadow antialiasing seams;
+matching radius geometry alone does not establish strict pixel parity.
 Uniform edits recolor all sides or scale widths while preserving zero sides and
 relative widths. Unequal rounded sides and adjacent sides with different alpha
 are rejected explicitly. SVG/CanvasKit paint safe generated border geometry,

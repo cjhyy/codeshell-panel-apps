@@ -1,0 +1,52 @@
+// R007 production verification reuses the measured R006 angle/phase fixture.
+// Historical candidate evidence remains read-only; no renderer interception.
+import assert from 'node:assert/strict';
+import {readFile,mkdir,writeFile} from 'node:fs/promises';
+import {resolve,extname,sep} from 'node:path';
+import {createHash} from 'node:crypto';
+import {chromium} from 'playwright';
+import {PNG} from 'pngjs';
+import {rotationGeometry,rotationEndpointDisplacement} from './render-fidelity-geometry.mjs';
+const app=resolve('apps/design-studio/app'), out=resolve(process.env.DESIGN_ROTATION_EVIDENCE??'.tmp/render-fidelity-r007/rotation'),origin='https://rotation-paint.test';
+await mkdir(out,{recursive:true});
+const hash=x=>createHash('sha256').update(x).digest('hex');
+const browser=await chromium.launch({args:process.platform==='darwin'?['--use-angle=metal']:['--enable-webgl','--enable-unsafe-swiftshader']});
+const results=[];
+try { for(const dpr of [1,2]) {
+ const context=await browser.newContext({viewport:{width:360,height:320},deviceScaleFactor:dpr}),page=await context.newPage(),errors=[],blocked=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await context.route('**/*',async route=>{const url=new URL(route.request().url());if(url.origin!==origin){blocked.push(url.href);return route.abort();} if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:'<!doctype html><body style="margin:0;background:white"><canvas></canvas></body>'});const file=resolve(app,`.${decodeURIComponent(url.pathname)}`);if(!file.startsWith(app+sep))return route.abort();try{return route.fulfill({body:await readFile(file),contentType:{'.mjs':'text/javascript','.js':'text/javascript','.wasm':'application/wasm','.woff2':'font/woff2','.ttf':'font/ttf'}[extname(file)]});}catch{return route.fulfill({status:404,body:'missing'});}});
+ await page.goto(origin);
+ const setup=await page.evaluate(async()=>{
+  const {applyAllAutoLayouts}=await import('/layout.mjs');const {browserPaintBoxes}=await import('/canvas/browser-paint-box.mjs');
+  const nodes=[],cases=[],angles=[40,-40,45,-45],phases=[0,.3,.5,.65],dims=[[4.2,1],[3.4,1.19],[5.1,1.19]];
+  const base=(id,type,x,y,width,height,extra={})=>({id,name:id,type,x,y,width,height,fill:'#000000',stroke:'transparent',strokeWidth:0,opacity:1,rotation:0,cornerRadius:0,visible:true,...extra});
+  for(let a=0;a<4;a++)for(let p=0;p<4;p++){const id=`a${a}-p${p}`,flow=(a+p)%2===1,[width,height]=dims[(a+2*p)%3],x=40+p*75+phases[p],y=40+a*65+.3;
+   if(flow)nodes.push(base(`parent-${id}`,'frame',x-.17,y-.17,30,30,{fill:'transparent',layout:'horizontal',padding:.17,gap:.23,alignItems:'start',justifyContent:'start'}));
+   const node=base(id,'rectangle',x,y,width,height,{rotation:angles[a],...(flow?{parentId:`parent-${id}`}:{})});nodes.push(node);cases.push({id,flow,xPhase:phases[p],nominalX:x,width,height,rotation:angles[a]});
+  }
+  applyAllAutoLayouts(nodes);
+  const design={format:'codeshell.design',version:3,name:'R006 rotation L16',canvas:{width:360,height:320,background:'#ffffff'},resources:[],nodes,activePageId:'main',pages:[{id:'main',name:'Main',nodes}]};
+  const replay=browserPaintBoxes(nodes.map(n=>({...n,rotation:0})));
+  window.design=design;window.cases=cases;window.replays=Object.fromEntries(replay.layoutBoxes);
+  const {renderDesignFrontendPage,designFrontendCss}=await import('/frontend-export.mjs');
+  const wrapper=document.createElement('div');wrapper.id='html';wrapper.style.cssText='position:absolute;left:0;top:0;width:360px;height:320px';wrapper.innerHTML=`<style>${designFrontendCss(design)}.cs-page{margin:0!important}</style>${renderDesignFrontendPage(design)}`;document.body.append(wrapper);
+  const box=r=>({x:r.x,y:r.y,width:r.width,height:r.height});
+  const dom=cases.map(c=>{const el=wrapper.querySelector(`[data-codeshell-id="${c.id}"]`),style=getComputedStyle(el),transformed=box(el.getBoundingClientRect()),clone=wrapper.cloneNode(true);clone.id='unrotated';clone.style.visibility='hidden';document.body.append(clone);const target=clone.querySelector(`[data-codeshell-id="${c.id}"]`);target.style.transform='none';const unrotated=box(target.getBoundingClientRect());clone.remove();return {...c,saved:nodes.find(n=>n.id===c.id),replay:window.replays[c.id],computed:{transform:style.transform,transformOrigin:style.transformOrigin,width:style.width,height:style.height,left:style.left,top:style.top,position:style.position},transformed,unrotated};});
+  return {design,cases:dom};
+ });
+ await writeFile(resolve(out,`dpr${dpr}-source.json`),JSON.stringify(setup,null,2));
+ const reference=PNG.sync.read(await page.screenshot({path:resolve(out,`dpr${dpr}-html.png`),scale:'device'}));
+ await page.evaluate(async dpr=>{document.querySelector('#html').style.display='none';const {createRenderer}=await import('/canvas/canvaskit-renderer.mjs');window.renderer=await createRenderer({canvas:document.querySelector('canvas'),assetsBaseUrl:'/canvas/vendor/',tileCacheEnabled:false,background:'#ffffff'});renderer.resize(360,320,dpr);},dpr);
+ for(const candidate of ['production-e']){
+  const stats=await page.evaluate(async()=>{const before=JSON.stringify(window.design);await renderer.setScene(window.design);renderer.render({zoom:1});const assertDocumentUnchanged=JSON.stringify(window.design)===before;if(!assertDocumentUnchanged)throw Error('production renderer wrote author geometry');return renderer.stats();});
+  const image=PNG.sync.read(await page.screenshot({path:resolve(out,`dpr${dpr}-${candidate}.png`),scale:'device'}));
+  for(const c of setup.cases){const roi={x:(c.saved.x-6)*dpr,y:(c.saved.y-6)*dpr,width:20*dpr,height:20*dpr},expected=rotationGeometry(reference,{roi}),actual=rotationGeometry(image,{roi});assert(expected&&actual,`stable moments ${c.id}`);const centroid=Math.hypot(actual.centroidX-expected.centroidX,actual.centroidY-expected.centroidY),angle=((actual.angleDegrees-expected.angleDegrees+270)%180)-90,areaRatio=actual.mass/expected.mass,localLongEdgeCss=Math.max(Math.round(c.replay.width),Math.round(c.replay.height)),endpoint=rotationEndpointDisplacement(angle,{localLongEdgeCss,scale:dpr});results.push({dpr,candidate,...c,roi,reference:expected,actual,centroid,angle,localLongEdgeCss,endpoint,areaRatio,strictPass:centroid<=.1&&endpoint<=.5&&Math.abs(areaRatio-1)<=.02});}
+  await writeFile(resolve(out,`dpr${dpr}-${candidate}-stats.json`),JSON.stringify({stats,errors,blocked},null,2));
+ }
+ assert.deepEqual(errors,[]);assert.deepEqual(blocked,[]);await context.close();
+} } finally {await browser.close();}
+const summaries=['production-e'].map(candidate=>{const rows=results.filter(r=>r.candidate===candidate);return {candidate,rows:rows.length,strictPass:rows.filter(r=>r.strictPass).length,maxCentroid:Math.max(...rows.map(r=>r.centroid)),maxAngle:Math.max(...rows.map(r=>Math.abs(r.angle))),maxEndpoint:Math.max(...rows.map(r=>r.endpoint)),minAreaRatio:Math.min(...rows.map(r=>r.areaRatio)),maxAreaRatio:Math.max(...rows.map(r=>r.areaRatio))};});
+const report={created:new Date().toISOString(),matrix:'16 angle×phase orthogonal rows, balanced absolute/flow and three dimensions; DPR1/2',definitions:{production:'production browserPaintBoxes LU replay; rounded global translation, independently rounded local dimensions; unchanged LU center pivot; unmodified renderer bytes'},sourceHash:hash(await readFile(import.meta.filename)),thresholds:{centroidDevicePx:.1,endpointDevicePx:.5,areaRelative:.02},summaries,results};
+await writeFile(resolve(out,'spike.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(summaries,null,2));
+assert.equal(results.length,32);assert.equal(results.filter(row=>!row.strictPass).length,0,'production rotation e must pass all 32 physical geometry probes');

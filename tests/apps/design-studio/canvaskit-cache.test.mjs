@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
+import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
+import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import { importFigmaJson } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import { longFigmaSource } from "./fixtures/long-canvas.mjs";
+import { fontRasterObservation, localFontObservation, cjkFontObservation, assertCjkCoverage, fontComparisonRasterMode, fontComparisonRasterArgs } from "./font-raster-observation.mjs";
 
-const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
+const root = resolve(process.env.DESIGN_CACHE_APP_DIR ?? fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
 const csp =
   "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:";
@@ -66,7 +71,7 @@ const fixture = () => ({
     }),
     base("rotate", "rectangle", 1450, 100, 100, 24, { fill: "#00cc00", rotation: 90 }),
     base("system-text", "text", 70, 350, 300, 40, {
-      text: "Browser font glyphs",
+      text: "Browser font glyphs", layoutBaselineOffset: 0, // Tile-only tests disable device sampling; phase coverage has dedicated tests.
       fontFamily: "Arial",
       fontSize: 24,
       fontWeight: 400,
@@ -74,7 +79,7 @@ const fixture = () => ({
       textAlign: "left",
     }),
     base("native-text", "text", 70, 450, 300, 40, {
-      text: "Native Roboto",
+      text: "Native Roboto", layoutBaselineOffset: 0,
       fontFamily: "Roboto",
       fontRef: "roboto",
       fontSize: 24,
@@ -85,12 +90,14 @@ const fixture = () => ({
   ],
 });
 
-async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, width = 900, height = 600, dpr = 1 } = {}) {
+async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, width = 900, height = 600, dpr = 1, background, textRasterMode = "browser-default" } = {}) {
   const browser = await chromium.launch({
-    args:
-      process.platform === "darwin"
+    args: [
+      ...(process.platform === "darwin"
         ? ["--use-angle=metal"]
-        : ["--enable-webgl", "--enable-unsafe-swiftshader"],
+        : ["--enable-webgl", "--enable-unsafe-swiftshader"]),
+      ...fontComparisonRasterArgs(textRasterMode),
+    ],
   });
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr });
   const page = await context.newPage();
@@ -136,17 +143,18 @@ async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, 
   });
   await page.goto(origin);
   await page.evaluate(
-    async ({ tileCacheEnabled, deviceTextSampling, width, height, dpr }) => {
+    async ({ tileCacheEnabled, deviceTextSampling, width, height, dpr, background }) => {
       const { createRenderer } = await import("/canvas/canvaskit-renderer.mjs");
       window.renderer = await createRenderer({
         canvas: document.querySelector("canvas"),
         assetsBaseUrl: "/canvas/vendor/",
         tileCacheEnabled,
         deviceTextSampling,
+        background,
       });
       renderer.resize(width, height, dpr);
     },
-    { tileCacheEnabled, deviceTextSampling, width, height, dpr },
+    { tileCacheEnabled, deviceTextSampling, width, height, dpr, background },
   );
   return page;
 }
@@ -166,6 +174,29 @@ async function upload(page, design) {
     await renderer.setScene(design, { resources });
   }, design);
 }
+
+test("finite raster halfzoom uses device phase while native <=1x and no-offset admission remain unchanged", async t => {
+  const page = await harness(t, { tileCacheEnabled: false });
+  const text = { text: "Finite HMI", fontFamily: "Arial", fontSize: 24, fontWeight: 400, lineHeight: 1.6, textAlign: "left" };
+  const design = { canvas: { width: 900, height: 600, background: "#ffffff" }, resources: [], nodes: [
+    base("finite", "text", 40, 40, 260, 50, { ...text, layoutBaselineOffset: 5.25 }),
+    base("no-offset", "text", 40, 120, 260, 50, text),
+    base("native", "text", 40, 200, 260, 50, { ...text, fontFamily: "Roboto", fontRef: "roboto", layoutBaselineOffset: -3 }),
+  ] };
+  await upload(page, design);
+  const rows = await page.evaluate(() => {
+    const rows = [];
+    for (const [zoom, pan] of [[.5, { x: .25, y: .5 }], [1, { x: .25, y: .5 }], [1, { x: 0, y: 0 }], [2, { x: .25, y: .5 }], [.5, { x: .25, y: .5 }]]) {
+      renderer.render({ zoom, pan });
+      rows.push({ zoom, pan, nodes: renderer.stats().deviceRasterNodeScales.map(row => row.nodeId).sort() });
+    }
+    return rows;
+  });
+  assert.deepEqual(rows.map(row => row.nodes), [
+    ["finite", "no-offset"], ["no-offset"], ["finite", "no-offset"], ["finite", "native", "no-offset"], ["finite", "no-offset"],
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.design), design, "sampling does not mutate finite origins or saved geometry");
+});
 
 for (const dpr of [1, 2]) test(`retained canvas renderer recreation keeps CSS geometry at DPR ${dpr}`, async (t) => {
   const width = 900, height = 600, page = await harness(t, { width, height, dpr });
@@ -219,8 +250,8 @@ const near = (actual, expected, tolerance = 5) =>
   );
 
 test("GPU tile cache preserves nonzero-position gradients, ancestor clip/alpha and shadows across tile seams", async (t) => {
-  const cached = await harness(t),
-    reference = await harness(t, { tileCacheEnabled: false });
+  const cached = await harness(t, { deviceTextSampling: false }),
+    reference = await harness(t, { tileCacheEnabled: false, deviceTextSampling: false });
   const design = fixture();
   await upload(cached, design);
   await upload(reference, design);
@@ -310,7 +341,7 @@ test("CanvasKit invalidates resized CSS gradient pictures and matches freshly re
 });
 
 test("live scene revisions reuse font providers and local node pictures while invalidating GPU tiles", async (t) => {
-  const page = await harness(t),
+  const page = await harness(t, { deviceTextSampling: false }),
     design = fixture();
   design.nodes.push(
     ...Array.from({ length: 1000 }, (_, i) =>
@@ -352,17 +383,22 @@ test("live scene revisions reuse font providers and local node pictures while in
   assert.equal(after.drawnNodes, design.nodes.length);
 });
 
-test("visible system-font text gains physical zoom resolution without rebuilding native glyphs; context loss throws", async (t) => {
+test("visible text gains physical zoom resolution with finite resource device variants; context loss throws", async (t) => {
   const page = await harness(t, { width: 700, height: 400, dpr: 2 });
-  await upload(page, fixture());
+  const design = fixture(); delete design.nodes.find(node => node.id === "system-text").layoutBaselineOffset;
+  await upload(page, design);
   await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
   const before = await page.evaluate(() => renderer.stats());
   const png = await draw(page, { zoom: 4, pan: { x: -250, y: -1350 } });
   const after = await page.evaluate(() => renderer.stats());
   assert.equal(after.resourceBuilds, 1);
-  assert.equal(after.textQualityBuilds, 1);
-  assert.equal(after.nodePictureBuilds, before.nodePictureBuilds + 1);
-  assert.equal(after.rasterNodeScales.find((entry) => entry.nodeId === "system-text").scale, 8);
+  assert.equal(after.textQualityBuilds, 0);
+  assert.equal(after.nodePictureBuilds, before.nodePictureBuilds + 2,
+    "system text and the conservatively visible finite resource each gain an 8x device picture");
+  assert.equal(before.deviceRasterNodeScales.some((entry) => entry.nodeId === "native-text"), false);
+  assert.equal(after.deviceRasterNodeScales.find((entry) => entry.nodeId === "native-text").scale, 8);
+  assert.equal(after.rasterNodeScales.find((entry) => entry.nodeId === "system-text").scale, 2);
+  assert.equal(after.deviceRasterNodeScales.find((entry) => entry.nodeId === "system-text").scale, 8);
   assert.ok(after.rasterTextCacheBytes > before.rasterTextCacheBytes);
   assert.ok(after.rasterTextCacheBytes <= after.rasterTextCacheBudgetBytes);
   let dark = 0;
@@ -390,7 +426,7 @@ test("visible system-font text gains physical zoom resolution without rebuilding
 });
 
 test("GPU tile textures obey the LRU byte/pixel budget and scene/ancestor edits cannot reuse stale tiles", async (t) => {
-  const page = await harness(t);
+  const page = await harness(t, { deviceTextSampling: false });
   await upload(page, fixture());
   await page.evaluate(() => {
     for (let i = 0; i < 24; i++) renderer.render({ zoom: 0.5, pan: { x: -i * 1024, y: 0 } });
@@ -428,7 +464,8 @@ test("GPU tile textures obey the LRU byte/pixel budget and scene/ancestor edits 
 
 test("content edits start a safe text plan before high zoom, and cross-page instance scaling upgrades source glyphs", async (t) => {
   const page = await harness(t, { width: 700, height: 400, dpr: 2 });
-  await upload(page, fixture());
+  const design = fixture(); delete design.nodes.find(node => node.id === "system-text").layoutBaselineOffset;
+  await upload(page, design);
   await draw(page, { zoom: 4, pan: { x: -250, y: -1350 } });
   await page.evaluate(async () => {
     const next = structuredClone(design),
@@ -483,6 +520,103 @@ const phaseFixture = () => ({
   })],
 });
 
+for (const { dpr, zoom } of [{ dpr: 2, zoom: 1 }, { dpr: 1, zoom: 2 }])
+test(`integer physical text phase ${dpr} DPR × ${zoom} zoom preserves native device coverage`, async t => {
+  const page = await harness(t, { width: 700, height: 400, dpr, tileCacheEnabled: false });
+  const design = phaseFixture();
+  design.nodes[0].fontSize = 13; design.nodes[0].fontWeight = 400;
+  design.nodes[0].lineHeight = 1.6; design.nodes[0].text = "HMI 中文\nHMI 中文";
+  await upload(page, design);
+  await draw(page, { zoom, pan: { x: 0, y: 0 } });
+  const stats = await page.evaluate(() => renderer.stats());
+  assert.equal(stats.deviceTextNodes, 1, "Retina and CSS 2x must use a device-phase raster");
+  assert.equal(stats.deviceRasterNodeScales[0].scale, 2);
+  const actual = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  const reference = await page.evaluate(async ({ dpr, zoom }) => {
+    const { textLineBoxAlphabeticOffset, textLineBoxBaselineY } = await import("/text-line-box.mjs");
+    const n = design.nodes[0], canvas = document.createElement("canvas");
+    canvas.width = 700 * dpr; canvas.height = 400 * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr * zoom, dpr * zoom); ctx.font = 'normal 400 13px "Arial"';
+    ctx.fontKerning = "normal"; ctx.letterSpacing = "0px"; ctx.textBaseline = "alphabetic";
+    const m = ctx.measureText("Hg"), baseline = textLineBoxAlphabeticOffset(n, { ascent: m.fontBoundingBoxAscent, descent: m.fontBoundingBoxDescent });
+    ctx.fillStyle = n.fill;
+    n.text.split("\n").forEach((line, i) => ctx.fillText(line, n.x, textLineBoxBaselineY(n, i, baseline)));
+    return [...ctx.getImageData(0, 0, canvas.width, canvas.height).data];
+  }, { dpr, zoom });
+  let max = 0, error = 0;
+  actual.data.forEach((value, i) => { const delta = Math.abs(value - reference[i]); max = Math.max(max, delta); error += delta; });
+  t.diagnostic(JSON.stringify({ dpr, zoom, maxChannel: max, meanAbsoluteChannelError: error / reference.length, stats }));
+  assert(max <= 1, `native coverage must not be interpolated: maximum channel difference ${max}`);
+  await draw(page, { zoom, pan: { x: 10, y: 8 } });
+  assert.equal((await page.evaluate(() => renderer.stats())).rasterTextCacheMisses, stats.rasterTextCacheMisses);
+  assert(stats.rasterTextCacheBytes <= stats.rasterTextCacheBudgetBytes);
+});
+
+for (const { dpr, zoom } of [{ dpr: 1, zoom: 1 }, { dpr: 2, zoom: 1 }, { dpr: 1, zoom: 2 }])
+test(`centered raster labels match actual HTML layout at ${dpr} DPR × ${zoom} zoom across cached world origins`, async t => {
+  const rasterMode = fontComparisonRasterMode();
+  const page = await harness(t, { width: 850, height: 220, dpr, tileCacheEnabled: false, background: "#ffffff", textRasterMode: rasterMode });
+  const output = resolve(process.env.DESIGN_CENTER_TEXT_EVIDENCE ?? ".tmp/render-fidelity-r002/center-gpu", `dpr${dpr}-zoom${zoom}`);
+  await mkdir(output, { recursive: true });
+  const font = await localFontObservation(page);
+  assert.equal(font.missingFaceNegativeControl, false, "local face probes must reject missing fonts rather than report a fallback");
+  if (process.platform === "darwin") assert.equal(font.available, true, "macOS must retain the original PingFang font coverage");
+  const design = { canvas: { width: 600, height: 900, background: "#ffffff" }, resources: [], nodes: [
+    base("center-label", "text", 244, 785.5, 124, 21, { text: "GitHub 仓库地址", fontFamily: "-apple-system, BlinkMacSystemFont, PingFang SC, sans-serif",
+      fontSize: 13, fontWeight: 500, fontStyle: "normal", lineHeight: 1.6, textAlign: "center", fill: "#252824" }),
+  ] };
+  const cjk = await cjkFontObservation(page, design.nodes[0].fontFamily);
+  assertCjkCoverage(cjk);
+  const results = [];
+  for (const [name, x] of [["original", 244], ["integer-move", 245], ["negative-fraction", -88.499], ["negative-integer-move", -87.499], ["changed-fraction", -87.501]]) {
+    design.nodes[0].x = x;
+    const viewport = { zoom, pan: { x: x < 0 ? 160 * zoom : 0, y: -745 * zoom } };
+    await upload(page, design);
+    await page.evaluate(viewport => renderer.render(viewport), viewport);
+    const stats = await page.evaluate(() => renderer.stats());
+    assert.equal(stats.deviceTextNodes, 1);
+    assert.equal(stats.rasterTextNodes, 1);
+    assert.equal(stats.nativeTextNodes, 0);
+    const actual = PNG.sync.read(await page.screenshot({ scale: "device", path: resolve(output, `${name}-gpu.png`) }));
+    const dom = await page.evaluate(async ({ node, viewport }) => {
+      const { designFontFamilyCss } = await import("/font-css.mjs");
+      document.querySelector("canvas").style.visibility = "hidden";
+      const main = document.createElement("main"); main.id = "center-html-reference";
+      main.style.cssText = `position:absolute;left:0;top:0;transform-origin:0 0;transform:translate(${viewport.pan.x}px,${viewport.pan.y}px) scale(${viewport.zoom})`;
+      const label = document.createElement("div");
+      label.style.cssText = `position:absolute;left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px;white-space:pre;font:${node.fontWeight} ${node.fontSize}px/${node.fontSize*node.lineHeight}px ${designFontFamilyCss(node.fontFamily)};text-align:center;letter-spacing:0;color:${node.fill}`;
+      label.textContent = node.text; main.append(label); document.body.append(main);
+      await document.fonts.ready;
+      const range = document.createRange(); range.selectNodeContents(label);
+      const bounds = range.getBoundingClientRect();
+      return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    }, { node: design.nodes[0], viewport });
+    const expected = PNG.sync.read(await page.screenshot({ scale: "device", path: resolve(output, `${name}-html.png`) }));
+    const fonts = await fontRasterObservation(page, "#center-html-reference > div");
+    await page.evaluate(() => {
+      document.querySelector("#center-html-reference").remove();
+      document.querySelector("canvas").style.visibility = "visible";
+    });
+    const scale = dpr * zoom, n = design.nodes[0];
+    const roi = { x: (viewport.pan.x + n.x * zoom - 4 * zoom) * dpr, y: (viewport.pan.y + n.y * zoom - 4 * zoom) * dpr,
+      width: (n.width + 8) * scale, height: (n.height + 8) * scale };
+    const metric = symmetricPixelDifference(expected, actual, { roi });
+    const geometry = geometryDifference(inkGeometry(expected, { roi, foreground: [37, 40, 36] }), inkGeometry(actual, { roi, foreground: [37, 40, 36] }));
+    results.push({ name, x, viewport, dom, metric, geometry, geometryFailures: textGeometryFailures(geometry, { scale, align: "center" }), stats, fonts });
+  }
+  await writeFile(resolve(output, "metrics.json"), JSON.stringify({ dpr, zoom, font, cjk, rasterMode,
+    textRasterArgs: fontComparisonRasterArgs(rasterMode), browserDefaultLcdCertification: "not-certified", results }, null, 2));
+  const failures = results.filter(row => row.metric.mismatchRatio > .005 || row.metric.largestCluster > 6 || row.geometryFailures.length);
+  assert.deepEqual(failures.map(row => ({ name: row.name, metric: row.metric, geometry: row.geometry, geometryFailures: row.geometryFailures })), [], "actual HTML pixel and geometry thresholds must hold without relaxing the cluster gate");
+  for (const [before, after] of [[0, 1], [2, 3]])
+    assert.equal(results[after].stats.rasterTextCacheMisses, results[before].stats.rasterTextCacheMisses, "integer moves preserve both glyph caches");
+  for (const [before, after] of [[1, 2], [3, 4]])
+    assert(results[after].stats.rasterTextCacheMisses >= results[before].stats.rasterTextCacheMisses + 2, "a changed layout origin invalidates both master and device glyph coverage");
+  t.diagnostic(JSON.stringify({ output, dpr, zoom, cases: results.length, maxCluster: Math.max(...results.map(row => row.metric.largestCluster)) }));
+});
+
 test("device text coverage follows real browser pixel phase at physical 1x and integer pans reuse both master and device glyphs", async (t) => {
   const page = await harness(t, { width: 700, height: 400 });
   const control = await harness(t, { width: 700, height: 400, deviceTextSampling: false });
@@ -490,14 +624,17 @@ test("device text coverage follows real browser pixel phase at physical 1x and i
   await upload(page, design);
   await upload(control, design);
   const actual = await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
-  const reference = await page.evaluate(() => {
+  const reference = await page.evaluate(async () => {
+    const { textLineBoxAlphabeticOffset, textLineBoxBaselineY } = await import("/text-line-box.mjs");
     const reference = document.createElement("canvas");
     reference.width = 700; reference.height = 400;
     const ctx = reference.getContext("2d");
     ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 700, 400);
     ctx.font = 'normal 700 24px "Arial"'; ctx.fontKerning = "normal";
-    ctx.textBaseline = "hanging"; ctx.letterSpacing = "0px";
-    ctx.fillStyle = "#0f172a"; ctx.fillText("Editable Auto Layout", 36, 41.41);
+    ctx.textBaseline = "alphabetic"; ctx.letterSpacing = "0px";
+    const n = design.nodes[0], m = ctx.measureText("Hg");
+    const offset = textLineBoxAlphabeticOffset(n, { ascent: m.fontBoundingBoxAscent, descent: m.fontBoundingBoxDescent });
+    ctx.fillStyle = "#0f172a"; ctx.fillText(n.text, n.x, textLineBoxBaselineY(n, 0, offset));
     return [...ctx.getImageData(0, 0, 700, 400).data];
   });
   const exactError = (pixels) => pixels.reduce((sum, value, i) => sum + Math.abs(value - reference[i]), 0);
@@ -516,18 +653,19 @@ test("device text coverage follows real browser pixel phase at physical 1x and i
   assert.equal(panned.deviceTextSamplingBuilds, before.deviceTextSamplingBuilds);
   for (const viewport of [
     { zoom: 1, pan: { x: 31.5, y: 19 } }, { zoom: 1.25, pan: { x: 0, y: 0 } },
-    { zoom: 2, pan: { x: 0, y: 0 } }, { zoom: 4, pan: { x: 0, y: 0 } },
+    { zoom: 2, pan: { x: 0.25, y: 0 } }, { zoom: 4, pan: { x: 0.25, y: 0 } },
   ]) {
-    const fallback = await draw(page, viewport), expected = await draw(control, viewport);
-    assert.equal(Buffer.compare(fallback.data, expected.data), 0, "non-device transforms must retain the existing master pixels");
-    assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+    await draw(page, viewport);
+    const stats = await page.evaluate(() => renderer.stats());
+    assert.equal(stats.deviceTextNodes, 1, "fractional transforms retain a bounded screen-phase variant");
+    assert.equal(stats.deviceRasterNodeScales[0].scale, viewport.zoom);
   }
   const high = await page.evaluate(() => renderer.stats());
-  assert.equal(high.rasterNodeScales[0].scale, 4);
+  assert.equal(high.rasterNodeScales[0].scale, 2);
   await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
   const restored = await page.evaluate(() => renderer.stats());
   assert.equal(restored.deviceTextNodes, 1);
-  assert.equal(restored.rasterNodeScales[0].scale, 4);
+  assert.equal(restored.rasterNodeScales[0].scale, 2);
   assert(restored.rasterTextCacheBytes <= restored.rasterTextCacheBudgetBytes);
   await page.evaluate(() => {
     for (let i = 0; i < 30; i++) renderer.render({ zoom: 1, pan: { x: i, y: 0 } });
@@ -537,7 +675,7 @@ test("device text coverage follows real browser pixel phase at physical 1x and i
   assert.equal(repeated.nodePictureBuilds, restored.nodePictureBuilds);
 });
 
-test("device glyph phases follow canonical moves while rotations, instances and fractional DPR pans select masters", async (t) => {
+test("device glyph phases follow canonical moves while rotations fall back per node and translation instances retain their own phase", async (t) => {
   const page = await harness(t, { width: 700, height: 400 });
   const fresh = await harness(t, { width: 700, height: 400 });
   const design = phaseFixture();
@@ -550,7 +688,8 @@ test("device glyph phases follow canonical moves while rotations, instances and 
   assert.equal(Buffer.compare((await draw(page, { zoom: 1 })).data, (await draw(fresh, { zoom: 1 })).data), 0,
     "a moved fractional phase cannot reuse stale glyph coverage");
   const moved = await page.evaluate(() => renderer.stats());
-  assert.equal(moved.rasterTextCacheMisses, before.rasterTextCacheMisses + 1);
+  assert.equal(moved.rasterTextCacheMisses, before.rasterTextCacheMisses + 2,
+    "crossing a CSS paint baseline changes both the local master and device phase");
   assert.equal(moved.rasterTextImages, 2, "the prior phase is replaced rather than accumulated");
   design.nodes[0].x += 1; design.nodes[0].y += 2;
   await upload(page, design);
@@ -569,13 +708,16 @@ test("device glyph phases follow canonical moves while rotations, instances and 
   assert.equal(phases.deviceTextCacheVariants, 1);
   assert.equal(phases.rasterTextImages, 2, "many drag phases retain one master and one device variant");
   assert(phases.rasterTextCacheBytes <= phases.rasterTextCacheBudgetBytes);
-  design.nodes.push({ ...design.nodes[0], id: "native", y: 130, fontFamily: "Roboto", fontRef: "roboto", text: "Native font bytes" });
+  design.nodes.push({ ...design.nodes[0], id: "native", y: 130, fontFamily: "Roboto", fontRef: "roboto", layoutBaselineOffset: 0, text: "Native font bytes" });
   await upload(page, design);
   await draw(page, { zoom: 1 });
   const native = await page.evaluate(() => renderer.stats());
   assert.equal(native.nativeTextNodes, 1);
   assert.equal(native.deviceTextNodes, 1, "only the system font uses a device variant");
-  assert.equal(native.rasterNodeScales.some((entry) => entry.nodeId === "native"), false);
+  assert.equal(native.rasterNodeScales.find((entry) => entry.nodeId === "native").scale, 2,
+    "finite resource text registers a bounded candidate plan for optional >1x device coverage");
+  assert.equal(native.deviceRasterNodeScales.some((entry) => entry.nodeId === "native"), false,
+    "the candidate stays native at 1x without an active device variant");
   for (const kind of ["rotation", "instance"]) {
     const guarded = phaseFixture();
     const parent = base("parent", kind === "instance" ? "component" : "frame", 0, 0, 300, 200, { fill: "transparent", rotation: kind === "rotation" ? 15 : 0 });
@@ -584,16 +726,16 @@ test("device glyph phases follow canonical moves while rotations, instances and 
     if (kind === "instance") guarded.nodes.push(base("instance", "instance", 330, 0, 300, 200, { componentId: parent.id }));
     await upload(page, guarded);
     await draw(page, { zoom: 1 });
-    assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, 0, kind);
+    assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, kind === "rotation" ? 0 : 2, kind);
   }
   const dpr = await harness(t, { width: 700, height: 400, dpr: 2 });
   await upload(dpr, phaseFixture());
   await draw(dpr, { zoom: 0.5, pan: { x: 0.5, y: 0.5 } });
   assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 1);
   await draw(dpr, { zoom: 0.5, pan: { x: 0.25, y: 0.5 } });
-  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 1);
   await draw(dpr, { zoom: 1 });
-  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 1);
 });
 
 test("optional device variants yield their pixels to valid masters under the unchanged raster budget", async (t) => {
@@ -612,8 +754,31 @@ test("optional device variants yield their pixels to valid masters under the unc
   const full = await page.evaluate(() => renderer.stats());
   assert.equal(full.rasterTextNodes, count);
   assert(full.deviceTextNodes < count, "optional variants cannot displace required masters");
+  assert(full.deviceTextFallbacks.length > 0, "budget fallback must be observable");
+  assert(full.deviceTextFallbacks.every(entry => entry.reason === "device-scene-raster-budget"));
   assert(full.rasterTextCacheBytes <= full.rasterTextCacheBudgetBytes);
   assert.equal(full.unrenderedTextLines, 0);
+  await draw(page, { zoom: 2 });
+  const allFallback = await page.evaluate(() => renderer.stats());
+  assert.equal(allFallback.deviceTextNodes, 0, "no 2x variant fits beside the full master allocation");
+  assert.equal(allFallback.deviceTextFallbacks.length, count, "all-fallback statistics remain visible without a picture rebuild");
+  assert(allFallback.rasterTextCacheBytes <= allFallback.rasterTextCacheBudgetBytes);
+});
+
+test("integer device resolution falls back visibly when a per-line allocation exceeds its budget", async t => {
+  const page = await harness(t, { width: 700, height: 400, tileCacheEnabled: false });
+  const design = phaseFixture();
+  design.nodes[0].text = "M".repeat(105);
+  await upload(page, design);
+  await draw(page, { zoom: 3 });
+  const three = await page.evaluate(() => renderer.stats());
+  assert.equal(three.deviceRasterNodeScales[0].scale, 3, "3x must not first allocate an oversized 4x master");
+  await draw(page, { zoom: 4 });
+  const four = await page.evaluate(() => renderer.stats());
+  assert.equal(four.deviceTextNodes, 0);
+  assert.deepEqual(four.deviceTextFallbacks, [{ nodeId: "phase-text", scale: 4, reason: "device-line-raster-budget" }]);
+  assert.equal(four.rasterNodeScales[0].scale, 2);
+  assert(four.rasterTextCacheBytes <= four.rasterTextCacheBudgetBytes);
 });
 
 test("integer pans retain offscreen device pictures and return trips do not rebuild the whole scene", async (t) => {
@@ -752,4 +917,377 @@ test("CSS geometric shadow stacks keep transparent fill, colored order, border p
   design.nodes[0].shadowStack.layers[0].visible=false;await upload(page,design);image=await draw(page,viewport);assert.deepEqual(pixel(image,38,38),[220,38,38]);assert.deepEqual(pixel(image,60,38),[255,255,255]);
   design.nodes[0].shadowStack.layers[0]={...layers[0],kind:"outer",color:"#2563eb",visible:true,x:-10,y:0,blur:8};await upload(page,design);image=await draw(page,viewport);assert.notDeepEqual(pixel(image,18,70),[255,255,255],"blurred outer mask survives raw-picture culling");assert.deepEqual(pixel(image,60,70),[255,255,255],"outer knockout never colors the transparent box interior");
   const blur=await page.evaluate(()=>renderer.stats());assert(blur.unsupported.some(issue=>issue.code==="css-shadow-raster-kernel"),"kernel parity remains explicitly unverified");
+});
+
+
+for (const { dpr, zoom, pan } of [
+  {dpr:2,zoom:1,pan:{x:-3.25,y:0}},
+  {dpr:1,zoom:.66,pan:{x:17.125,y:8.375}},
+  {dpr:1,zoom:2,pan:{x:.25,y:.5}},
+]) test(`fractional viewport ${dpr} DPR / ${zoom} zoom uses actual screen phase beside component instances`, async t => {
+  const rasterMode = fontComparisonRasterMode();
+  const page = await harness(t, {width:1500,height:700,dpr,tileCacheEnabled:true,background:"#ffffff",textRasterMode:rasterMode});
+  const design = phaseFixture(); design.canvas.width=1500; design.canvas.height=700;
+  design.nodes[0].x=36.375;design.nodes[0].y=41.41;
+  design.nodes[0].fontSize=20;
+  const component=base("phase-component","component",30.125,110.25,310,100,{fill:"transparent",layout:"none"});
+  const child={...design.nodes[0],id:"phase-child",x:40.375,y:128.41,width:280,parentId:component.id};
+  const instance=base("phase-instance","instance",420.375,200.75,310,100,{componentId:component.id});
+  design.nodes.push(component,child,instance);
+  const source=JSON.stringify(design), viewport={zoom,pan};
+  await upload(page,design); await page.evaluate(viewport=>renderer.render(viewport),viewport);
+  const output=resolve(process.env.DESIGN_TRANSFORM_EVIDENCE??".tmp/render-fidelity-r003/transform",`dpr${dpr}-zoom${zoom}`);
+  await mkdir(output,{recursive:true});
+  const actual=PNG.sync.read(await page.screenshot({scale:"device",path:resolve(output,"gpu.png")}));
+  const stats=await page.evaluate(()=>renderer.stats());
+  await page.evaluate(async({design,viewport})=>{
+    const {renderDesignFrontendPage,designFrontendCss}=await import("/frontend-export.mjs");
+    design={...design,format:"codeshell.design",version:3,name:"Phase fixture",activePageId:"main",pages:[{id:"main",name:"Main",nodes:design.nodes}]};
+    document.querySelector("canvas").style.visibility="hidden";
+    const wrapper=document.createElement("div");wrapper.id="phase-html";
+    wrapper.style.cssText=`position:absolute;left:0;top:0;width:1500px;height:700px;transform-origin:0 0;transform:translate(${viewport.pan.x}px,${viewport.pan.y}px) scale(${viewport.zoom})`;
+    wrapper.innerHTML=`<style>${designFrontendCss(design)}.cs-page{margin:0!important}</style>${renderDesignFrontendPage(design)}`;
+    document.body.append(wrapper);await document.fonts.ready;
+  },{design,viewport});
+  const expected=PNG.sync.read(await page.screenshot({scale:"device",path:resolve(output,"html.png")}));
+  const fonts=await fontRasterObservation(page,"#phase-html .cs-text");
+  const nodes=[design.nodes[0],child,{...child,id:"instance-text",x:child.x+instance.x-component.x,y:child.y+instance.y-component.y}];
+  const rows=nodes.map(n=>{
+    const scale=dpr*zoom,roi={x:(pan.x+(n.x-3)*zoom)*dpr,y:(pan.y+(n.y-3)*zoom)*dpr,width:(n.width+6)*scale,height:(n.height+6)*scale};
+    const pixel=symmetricPixelDifference(expected,actual,{roi});
+    const geometry=geometryDifference(inkGeometry(expected,{roi,foreground:[15,23,42]}),inkGeometry(actual,{roi,foreground:[15,23,42]}));
+    return {id:n.id,pixel,geometry,failures:textGeometryFailures(geometry,{scale,align:"left"})};
+  });
+  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,pan,rows,stats,fonts,rasterMode,
+    textRasterArgs:fontComparisonRasterArgs(rasterMode),browserDefaultLcdCertification:"not-certified"},null,2));
+  assert.equal(JSON.stringify(design),source,"viewport sampling must not write design geometry");
+  assert.deepEqual(rows.filter(row=>row.failures.length||row.pixel.mismatchRatio>.005||row.pixel.largestCluster>6),[],"fractional pan/fit-view and translation instances keep strict text geometry and pixels");
+  assert(stats.deviceTextNodes>=2,"an instance cannot disable unrelated text device sampling");
+  assert(stats.rasterTextCacheBytes<=stats.rasterTextCacheBudgetBytes);
+});
+
+
+test("loaded FontFace invalidates retained glyph pictures on render without a document edit", async t => {
+  const page=await harness(t,{width:700,height:200,tileCacheEnabled:false,background:"#ffffff"});
+  const design=phaseFixture(); design.nodes[0].fontFamily='"LatePhaseFont", Arial, sans-serif';
+  await upload(page,design); const before=await draw(page,{zoom:1});
+  const first=await page.evaluate(()=>renderer.stats());
+  await page.evaluate(async()=>{
+    const bytes=await(await fetch("/fonts/InterVariable.woff2")).arrayBuffer();
+    const face=await new FontFace("LatePhaseFont",bytes,{weight:"100 900"}).load();
+    document.fonts.add(face);renderer.render({zoom:1});
+  });
+  const actual=PNG.sync.read(await page.screenshot({scale:"css"}));
+  const after=await page.evaluate(()=>renderer.stats());
+  assert(after.nodePictureBuilds>first.nodePictureBuilds);
+  assert.notEqual(Buffer.compare(before.data,actual.data),0,"late font must replace previously painted fallback glyphs");
+  await upload(page,design);const refreshed=await draw(page,{zoom:1});
+  assert.equal(Buffer.compare(actual.data,refreshed.data),0,"render-only invalidation agrees with explicit scene refresh");
+  assert(after.nodePictureCacheBytes<=after.nodePictureCacheBudgetBytes);
+  assert(after.rasterTextCacheBytes<=after.rasterTextCacheBudgetBytes);
+});
+
+for(const {dpr,zoom} of [{dpr:1,zoom:1},{dpr:2,zoom:1},{dpr:1,zoom:2}])
+test(`absolute fractional fill boxes and clip use Blink edges at ${dpr} DPR / ${zoom} zoom`,async t=>{
+  const page=await harness(t,{width:700,height:350,dpr,tileCacheEnabled:false,background:"#ffffff"});
+  const design={canvas:{width:700,height:350,background:"#ffffff"},resources:[],nodes:[
+    base("stop-square","rectangle",20.5,20.5,14.4,14.4),
+    base("ellipse","ellipse",60.75,20.25,14.4,10.4),
+    base("nested","frame",100.35,20.35,50,50,{fill:"transparent",layout:"none"}),
+    base("nested-fill","rectangle",100.5,20.5,14.4,14.4,{parentId:"nested"}),
+    base("clip","frame",170.5,20.5,14.4,14.4,{fill:"transparent",layout:"none",clipContent:true,cornerRadius:2.4}),
+    base("clip-ink","rectangle",160,10,40,40,{parentId:"clip"}),
+  ]};
+  const source=JSON.stringify(design);await upload(page,design);await page.evaluate(zoom=>renderer.render({zoom}),zoom);
+  const output=resolve(process.env.DESIGN_BOX_EVIDENCE??".tmp/render-fidelity-r003/box",`dpr${dpr}-zoom${zoom}`);await mkdir(output,{recursive:true});
+  const actual=PNG.sync.read(await page.screenshot({path:resolve(output,"gpu.png"),scale:"device"}));
+  const stats=await page.evaluate(()=>renderer.stats());
+  await page.evaluate(async({design,zoom})=>{
+    const {renderDesignFrontendPage,designFrontendCss}=await import("/frontend-export.mjs");
+    design={...design,format:"codeshell.design",version:3,name:"Box fixture",activePageId:"main",pages:[{id:"main",name:"Main",nodes:design.nodes}]};
+    document.querySelector("canvas").style.visibility="hidden";
+    const wrapper=document.createElement("div");wrapper.style.cssText=`position:absolute;left:0;top:0;width:700px;height:350px;transform-origin:0 0;transform:scale(${zoom})`;
+    wrapper.innerHTML=`<style>${designFrontendCss(design)}.cs-page{margin:0!important}</style>${renderDesignFrontendPage(design)}`;document.body.append(wrapper);
+  },{design,zoom});
+  const expected=PNG.sync.read(await page.screenshot({path:resolve(output,"html.png"),scale:"device"}));
+  const {shapeGeometryFailures,shapePixelQualification}=await import("./render-fidelity.metrics.mjs");
+  const rows=design.nodes.filter(n=>["stop-square","ellipse","nested-fill","clip"].includes(n.id)).map(n=>{
+    const scale=dpr*zoom,roi={x:(n.x-4)*scale,y:(n.y-4)*scale,width:(n.width+8)*scale,height:(n.height+8)*scale};
+    const delta=geometryDifference(inkGeometry(expected,{roi}),inkGeometry(actual,{roi})),failures=shapeGeometryFailures(delta);
+    return{id:n.id,delta,failures,pixel:shapePixelQualification(expected,actual,{roi,geometryPassed:failures.length===0})};
+  });
+  await writeFile(resolve(output,"metrics.json"),JSON.stringify({dpr,zoom,rows,stats},null,2));
+  assert.equal(JSON.stringify(design),source);
+  assert.deepEqual(rows.filter(row=>row.failures.length),[],"all filled boxes and clipping must pass strict geometry");
+  // Ellipse AA remains a reported strict visual residual in the full harness.
+  assert.deepEqual(rows.filter(row=>row.id!=="ellipse"&&!row.pixel.rawPass&&!row.pixel.qualified),[]);
+});
+
+test("presentation boxes preserve the detached master opacity contract in external instances",async t=>{
+  const page=await harness(t,{width:700,height:250,tileCacheEnabled:false,background:"#ffffff"});
+  const design={canvas:{width:700,height:250,background:"#ffffff"},resources:[],nodes:[
+    base("source-parent","frame",20,20,180,180,{fill:"transparent",opacity:.5,layout:"none"}),
+    base("master","component",30,30,80,60,{fill:"transparent",opacity:.6,parentId:"source-parent",layout:"none"}),
+    base("blue","rectangle",40,40,20,20,{fill:"#0000ff",parentId:"master"}),
+    base("outside","instance",350,30,80,60,{componentId:"master",fill:"transparent"}),
+  ]};
+  await upload(page,design);const pixels=await draw(page,{zoom:1});
+  near(pixel(pixels,45,45),[179,179,255],2);
+  near(pixel(pixels,365,45),[102,102,255],2);
+});
+
+test("rotated paint pivots update outer transforms and hits without invalidating unchanged local content", async t => {
+  const page = await harness(t, { width: 180, height: 120, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  const design = { canvas: { width: 180, height: 120, background: "#ffffff" }, resources: [], nodes: [
+    base("bar", "rectangle", 40.5, 40.3, 4.2, 1.19, { rotation: -40 }),
+  ] };
+  const original = JSON.stringify(design);
+  await upload(page, design); const before = await draw(page, { zoom: 1 });
+  const initial = await page.evaluate(() => renderer.stats());
+  const hits = await page.evaluate(async design => {
+    const { browserPaintBoxes } = await import("/canvas/browser-paint-box.mjs");
+    const { pointFromNodeSpace } = await import("/geometry.mjs");
+    const paint = browserPaintBoxes(design.nodes), node = paint.nodes.get("bar");
+    const world = local => pointFromNodeSpace([...paint.nodes.values()], node, local, paint.nodes, paint.rotationPivots);
+    return [renderer.hitTest(world({ x: node.x + .05, y: node.y + .05 })),
+      renderer.hitTest(world({ x: node.x - .05, y: node.y + .5 }))];
+  }, design);
+  assert.deepEqual(hits, ["bar", null]);
+  assert.equal(JSON.stringify(design), original);
+  design.nodes[0].width = 4.4; // Same local paint width, different LayoutUnit pivot.
+  await upload(page, design); const updated = await draw(page, { zoom: 1 });
+  const retained = await page.evaluate(() => renderer.stats());
+  assert.equal(retained.nodePictureBuilds, initial.nodePictureBuilds);
+  assert(retained.nodePictureHits > initial.nodePictureHits);
+  assert.notEqual(Buffer.compare(before.data, updated.data), 0, "pivot movement must update the outer picture");
+  const fresh = await harness(t, { width: 180, height: 120, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  await upload(fresh, design); const expected = await draw(fresh, { zoom: 1 });
+  assert.equal(Buffer.compare(updated.data, expected.data), 0, "retained and fresh pivot transforms agree exactly");
+  design.nodes[0].width = 4.6;
+  await upload(page, design); await draw(page, { zoom: 1 });
+  assert((await page.evaluate(() => renderer.stats())).nodePictureBuilds > retained.nodePictureBuilds,
+    "changing the rounded local paint size invalidates raw content");
+});
+
+// One sequence exercises real fractional phases; timing is reported, never gated.
+// Optional personal input is read only and is never required by the offline suite.
+test("fractional viewport gestures reuse cached text until one 150ms device-phase settle", async t => {
+  const output = resolve(process.env.DESIGN_PERF_EVIDENCE ?? ".tmp/render-fidelity-r004/perf/cache");
+  await mkdir(output, { recursive: true });
+  const small = phaseFixture();
+  small.nodes.push(base("perf-master", "component", 20.125, 110.25, 300, 70, { fill: "transparent", layout: "none" }),
+    { ...small.nodes[0], id: "perf-master-text", x: 30.375, y: 126.41, width: 280, parentId: "perf-master" },
+    base("perf-instance", "instance", 360.375, 190.75, 300, 70, { componentId: "perf-master", fill: "transparent" }));
+  const cases = [{ id: "fractional-instance", design: small }];
+  if (process.env.DESIGN_PERF_REAL_FIXTURE) {
+    const portable = JSON.parse(await readFile(process.env.DESIGN_PERF_REAL_FIXTURE, "utf8"));
+    assert.equal(portable.resources.length, 0, "this bounded performance input has no external resources");
+    const document = normalizeDesignDocument(portable.document);
+    for (const page of document.pages) cases.push({ id: `real-${page.id}`, design: { ...document, activePageId: page.id, nodes: page.nodes } });
+    const original = importFigmaJson(longFigmaSource()).document;
+    assert.equal(original.nodes.length, 1208);
+    cases.push({ id: "long-1208-original", design: original });
+    // The existing 1208-layer fixture contains no text. Preserve that control,
+    // then derive a same-count text/instance stress case to make raster counts useful.
+    const stress = structuredClone(original);
+    stress.nodes = stress.nodes.map((node, i) => i && i % 4 === 0 ? { ...node, type: "text", text: `Fractional text ${i}`, fontFamily: "Arial", fontSize: 13,
+      fontWeight: 400, fontStyle: "normal", lineHeight: 1.2, textAlign: "left", fill: "#0f172a" } : node);
+    stress.nodes[1] = { ...stress.nodes[1], type: "component", fill: "transparent", layout: "none" };
+    stress.nodes[2] = { ...stress.nodes[4], id: stress.nodes[2].id, x: stress.nodes[1].x + 3.375, y: stress.nodes[1].y + 2.41, parentId: stress.nodes[1].id };
+    stress.nodes[3] = { ...stress.nodes[3], type: "instance", componentId: stress.nodes[1].id, fill: "transparent" };
+    cases.push({ id: "long-1208-text-instance-stress", design: stress });
+  }
+  const page = await harness(t, { width: 1500, height: 1000, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  const rows = [];
+  for (const item of cases) {
+    await upload(page, item.design);
+    const source = JSON.stringify(item.design);
+    const row = await page.evaluate(async ({ id, design }) => {
+      const view = { zoom: 1, pan: { x: 44, y: 44 } };
+      renderer.render(view);
+      const pick = () => {
+        const s = renderer.stats();
+        return { observedAtMs: performance.now(), deviceTextSamplingBuilds: s.deviceTextSamplingBuilds, rasterTextCacheMisses: s.rasterTextCacheMisses,
+          textQualityBuilds: s.textQualityBuilds, nodePictureBuilds: s.nodePictureBuilds, deviceTextNodes: s.deviceTextNodes,
+          rasterTextCacheBytes: s.rasterTextCacheBytes, rasterTextCacheBudgetBytes: s.rasterTextCacheBudgetBytes, renderedFrames: s.renderedFrames,
+          asynchronousRenderError: s.asynchronousRenderError };
+      };
+      const initial = pick(), frames = [];
+      for (let frame = 0; frame < 80; frame++) {
+        await new Promise(requestAnimationFrame);
+        if (frame < 60) { view.pan.x -= .375; view.pan.y -= .1875; }
+        else {
+          const next = view.zoom * Math.exp(-.75 * .006), ratio = next / view.zoom;
+          view.pan.x = 400 - (400 - view.pan.x) * ratio; view.pan.y = 300 - (300 - view.pan.y) * ratio;
+          view.zoom = next;
+        }
+        const started = performance.now();
+        renderer.render({ ...view, interactive: true });
+        const renderMs = performance.now() - started;
+        // A chrome/selection repaint during the same gesture must retain deferral.
+        if (frame === 25) renderer.render(view);
+        frames.push({ frame, kind: frame < 60 ? "fractional-trackpad" : "ctrl-zoom", pan: { ...view.pan }, zoom: view.zoom, renderMs, ...pick() });
+      }
+      const beforeSettle = pick();
+      await new Promise(done => setTimeout(done, 210));
+      const settled = pick();
+      renderer.render(view);
+      const afterRedraw = pick();
+      const timings = frames.map(frame => frame.renderMs).sort((a, b) => a - b);
+      return { id, layerCount: design.nodes.length, textCount: design.nodes.filter(n => n.type === "text").length,
+        instanceCount: design.nodes.filter(n => n.type === "instance").length, dpr: 2, initial, frames, beforeSettle, settled, afterRedraw,
+        finalView: view, p50RenderMs: timings[Math.floor(timings.length * .5)], p95RenderMs: timings[Math.floor(timings.length * .95)],
+        timingScope: "synchronous renderer.render CPU time including text preparation; excludes GPU completion/presentation" };
+    }, item);
+    rows.push(row);
+    await writeFile(resolve(output, "frames.json"), JSON.stringify(rows, null, 2));
+    assert.equal(JSON.stringify(item.design), source);
+  }
+  t.diagnostic(JSON.stringify(rows.map(({ id, layerCount, textCount, instanceCount, initial, beforeSettle, settled, p50RenderMs, p95RenderMs }) =>
+    ({ id, layerCount, textCount, instanceCount, gestureBuilds: beforeSettle.deviceTextSamplingBuilds - initial.deviceTextSamplingBuilds,
+      gestureRasterMisses: beforeSettle.rasterTextCacheMisses - initial.rasterTextCacheMisses,
+      settleBuilds: settled.deviceTextSamplingBuilds - beforeSettle.deviceTextSamplingBuilds, p50RenderMs, p95RenderMs }))));
+  for (const row of rows) {
+    assert.equal(row.beforeSettle.deviceTextSamplingBuilds, row.initial.deviceTextSamplingBuilds, `${row.id}: gesture must not rebuild screen-phase pictures`);
+    assert.equal(row.beforeSettle.rasterTextCacheMisses, row.initial.rasterTextCacheMisses, `${row.id}: gesture must reuse glyph images`);
+    assert.equal(row.beforeSettle.textQualityBuilds, row.initial.textQualityBuilds, `${row.id}: instances must not upgrade masters per gesture frame`);
+    assert(row.settled.deviceTextSamplingBuilds - row.beforeSettle.deviceTextSamplingBuilds <= 1, `${row.id}: at most one settle rebuild`);
+    assert.equal(row.afterRedraw.deviceTextSamplingBuilds, row.settled.deviceTextSamplingBuilds);
+    assert.equal(row.afterRedraw.rasterTextCacheMisses, row.settled.rasterTextCacheMisses);
+    assert.equal(row.settled.asynchronousRenderError, null);
+    assert(row.frames.every(frame => frame.rasterTextCacheBytes <= frame.rasterTextCacheBudgetBytes));
+    if (row.id === "fractional-instance") assert(row.settled.deviceTextNodes >= 3, "translation-instance and ordinary text regain precise static sampling");
+  }
+  // Settled Retina output must be exactly the normal static rendering at the
+  // final view, rather than permanently retaining the motion-time resampling.
+  await upload(page, small);
+  await page.evaluate(() => { renderer.render({ zoom: 1, pan: { x: .375, y: .1875 } }); renderer.render({ zoom: 1, pan: { x: 3.625, y: 2.3125 }, interactive: true }); });
+  await page.waitForTimeout(210);
+  const settledPixels = await page.screenshot({ scale: "device", path: resolve(output, "settled-retina.png") });
+  const fresh = await harness(t, { width: 1500, height: 1000, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  await upload(fresh, small);
+  await fresh.evaluate(() => renderer.render({ zoom: 1, pan: { x: 3.625, y: 2.3125 } }));
+  const staticPixels = await fresh.screenshot({ scale: "device", path: resolve(output, "static-retina.png") });
+  assert.equal(Buffer.compare(settledPixels, staticPixels), 0, "settled device-phase text exactly matches a fresh Retina render");
+  await page.evaluate(() => { renderer.render({ zoom: 1.01, pan: { x: 4.125, y: 3.1875 }, interactive: true }); renderer.dispose(); });
+  await page.waitForTimeout(210);
+});
+
+test("gesture idle callbacks cancel on scene/size changes and report asynchronous raster failures", async t => {
+  const page = await harness(t, { width: 700, height: 400, dpr: 2, tileCacheEnabled: false });
+  const small = phaseFixture();
+  await upload(page, small);
+  const huge = phaseFixture();
+  huge.nodes[0].x = 0; huge.nodes[0].y = 0; huge.nodes[0].parentId = "huge-master";
+  huge.nodes.push(base("huge-master", "component", 0, 0, 700, 400, { fill: "transparent", layout: "none" }),
+    base("huge-instance", "instance", 0, 0, 70000, 40000, { fill: "transparent", componentId: "huge-master" }));
+  await page.evaluate(async huge => {
+    renderer.dispose();
+    const { createRenderer } = await import("/canvas/canvaskit-renderer.mjs");
+    window.idleErrors = [];
+    window.renderer = await createRenderer({ canvas: document.querySelector("canvas"), assetsBaseUrl: "/canvas/vendor/", tileCacheEnabled: false,
+      onError: error => idleErrors.push(error.message) });
+    renderer.resize(700, 400, 2);
+    await renderer.setScene(huge);
+    renderer.render({ interactive: true });
+  }, huge);
+  await page.waitForTimeout(210);
+  const failed = await page.evaluate(() => ({ errors: idleErrors, stats: renderer.stats() }));
+  assert.equal(failed.errors.length, 1);
+  assert.match(failed.errors[0], /bounded.*raster budget/);
+  assert.equal(failed.stats.asynchronousRenderError, failed.errors[0]);
+  assert(await page.evaluate(() => { try { renderer.render(); return false; } catch { return true; } }), "the failure cannot be read as a successful next frame");
+  await page.evaluate(async ({ huge, small }) => {
+    // A new scene clears the old failure and cancels the old camera callback.
+    await renderer.setScene(huge); renderer.render({ interactive: true });
+    await renderer.setScene(small); renderer.render();
+  }, { huge, small });
+  const sceneFrames = await page.evaluate(() => renderer.stats().renderedFrames);
+  await page.waitForTimeout(210);
+  assert.equal(await page.evaluate(() => renderer.stats().renderedFrames), sceneFrames);
+  await page.evaluate(() => { renderer.render({ zoom: 1.01, interactive: true }); renderer.resize(699, 399, 2); renderer.render(); });
+  const resizedFrames = await page.evaluate(() => renderer.stats().renderedFrames);
+  await page.waitForTimeout(210);
+  assert.equal(await page.evaluate(() => renderer.stats().renderedFrames), resizedFrames);
+  assert.equal(await page.evaluate(() => idleErrors.length), 1);
+  assert.equal(await page.evaluate(() => renderer.stats().asynchronousRenderError), null);
+});
+
+test("small rotated leaf sampling shares text budget and preserves clip opacity hit geometry and gesture settling", async t => {
+  const page = await harness(t, { width: 240, height: 180, tileCacheEnabled: false, background: "#ffffff" });
+  const design = { canvas: { width: 240, height: 180, background: "#ffffff" }, resources: [], nodes: [
+    base("clip", "frame", 50, 30, 70, 80, { fill: "transparent", clipContent: true, opacity: .5 }),
+    base("leaf", "rectangle", 49.3, 50.6, 4.2, 1, { fill: "#ff0000", rotation: 40, cornerRadius: .49, parentId: "clip", opacity: .5 }),
+    base("label", "text", 30, 120, 150, 24, { text: "Shared budget", fontFamily: "Arial", fontSize: 16, fontWeight: 400, lineHeight: 1.3, textAlign: "left" }),
+  ] };
+  await upload(page, design);
+  const initial = await page.evaluate(() => { renderer.render(); return renderer.stats(); });
+  assert.equal(initial.shapeRasterCandidates, 1);
+  assert.equal(initial.shapeRasterImages, 1);
+  assert(initial.rasterTextCacheBytes > 0);
+  assert.equal(initial.sharedRasterCacheBytes, initial.rasterTextCacheBytes + initial.shapeRasterPixels * 4);
+  assert.equal(initial.sharedRasterCacheBudgetBytes, 64 * 1024 * 1024);
+  assert(initial.sharedRasterReservedBytes <= initial.sharedRasterCacheBudgetBytes);
+  assert.equal(await page.evaluate(() => renderer.hitTest({ x: 51.2, y: 51.1 })), "leaf");
+  const image = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  const red = [];
+  for (let y = 40; y < 65; y++) for (let x = 40; x < 65; x++) {
+    const i = (y * image.width + x) * 4, coverage = (255 - image.data[i + 1]) / 255;
+    if (coverage > 0) { assert(x >= 50, "ancestor clip remains outside the baked leaf transform"); red.push(coverage); }
+  }
+  assert(red.length > 0);
+  assert(Math.max(...red) <= .26, "parent and leaf opacity are applied once outside shape AA");
+  const reused = await page.evaluate(() => { renderer.render({ pan: { x: 1, y: 0 } }); return renderer.stats(); });
+  assert.equal(reused.shapeRasterBuilds, initial.shapeRasterBuilds, "integer pan reuses the exact device phase");
+  const phased = await page.evaluate(() => { renderer.render({ pan: { x: .375, y: .25 } }); return renderer.stats(); });
+  assert.equal(phased.shapeRasterBuilds, initial.shapeRasterBuilds + 1);
+  const moving = await page.evaluate(() => { renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 }, interactive: true }); renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 } }); return renderer.stats(); });
+  assert.equal(moving.shapeRasterBuilds, phased.shapeRasterBuilds, "gesture and chrome repaint reuse the old image");
+  await page.waitForTimeout(210);
+  const settled = await page.evaluate(() => renderer.stats());
+  assert.equal(settled.shapeRasterBuilds, phased.shapeRasterBuilds + 1);
+  const settledPixels = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  await upload(page, design);
+  await page.evaluate(() => renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 } }));
+  const staticPixels = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  assert.equal(Buffer.compare(settledPixels.data, staticPixels.data), 0, "settled output equals a static render");
+  assert.deepEqual(await page.evaluate(() => window.design), design, "author node and hit geometry stay editable");
+  const fallbackDesign = { ...design, nodes: [base("budget", "rectangle", 0, 0, 64, 64, { rotation: 45, cornerRadius: 2 })] };
+  await upload(page, fallbackDesign);
+  const fallback = await page.evaluate(() => { renderer.render({ zoom: 500 }); return renderer.stats(); });
+  assert.equal(fallback.shapeRasterImages, 0);
+  assert(fallback.shapeRasterFallbacks.some(entry => entry.nodeId === "budget" && entry.reason === "shape-shared-raster-budget"));
+  assert.equal(fallback.asynchronousRenderError, null, "oversize optional raster falls back to P0");
+  await page.evaluate(() => renderer.dispose());
+  const disposed = await page.evaluate(() => renderer.stats());
+  assert.equal(disposed.disposed, true);
+  assert.equal(disposed.sharedRasterCacheBytes ?? 0, 0);
+});
+
+test("shared raster pressure gives text device plans priority over optional rotated shapes", async t => {
+  const page = await harness(t, { width: 240, height: 180, tileCacheEnabled: false });
+  const result = await page.evaluate(async () => {
+    const CK = await CanvasKitInit({ locateFile: file => '/canvas/vendor/' + file });
+    const { createCanvasKitText } = await import('/canvas/canvaskit-text.mjs');
+    const node = { id: 'text', type: 'text', x: 20, y: 20, width: 160, height: 30, text: 'Budget priority', fill: '#000000', fontFamily: 'Arial', fontSize: 16, fontWeight: 400, lineHeight: 1.3, textAlign: 'left' };
+    const design = { nodes: [node], resources: [] }, counters = { rasterTextNodes: 0, textLines: 0 };
+    const text = await createCanvasKitText({ CK, design, resources: new Map(), document, fallbackFontUrls: {}, unsupportedNode() {}, counters, makePaint() { throw Error('unexpected native paint'); } });
+    const recorder = new CK.PictureRecorder(), target = recorder.beginRecording(CK.XYWHRect(0, 0, 240, 180));
+    try {
+      text.beginScene(design); text.draw(target, node, counters, () => {});
+      const baseline = text.stats(), available = (baseline.sharedRasterCacheBudgetBytes - baseline.sharedRasterReservedBytes) / 4;
+      let releases = 0; text.setShapeRasterRelease(() => releases++);
+      const admitted = text.reserveShapeRaster('optional-shape', available);
+      const denied = text.reserveShapeRaster('one-more', 1);
+      text.setDeviceSampling(new Map([['text', { x: .25, y: .375 }]]), { scale: 2 });
+      const after = text.stats();
+      return { baseline, admitted, denied, releases, after };
+    } finally { const picture = recorder.finishRecordingAsPicture(); picture.delete(); recorder.delete(); text.dispose(); }
+  });
+  assert.equal(result.admitted, true);
+  assert.equal(result.denied, false, "shape and text have one 64 MiB reservation");
+  assert.equal(result.releases, 1, "text device admission releases lower-priority shapes");
+  assert.equal(result.after.deviceTextNodes, 1);
+  assert.deepEqual(result.after.deviceTextFallbacks, []);
+  assert(result.after.sharedRasterReservedBytes <= result.after.sharedRasterCacheBudgetBytes);
 });

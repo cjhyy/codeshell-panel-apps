@@ -1,5 +1,6 @@
 import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
 import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
+import { textSvgLineBox, textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineAt, textHtmlFiniteLineBoxNode, textHtmlFiniteContextIn } from "./text-line-box.mjs";
 import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
@@ -20,7 +21,7 @@ import {
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
-import { measuredTextInkBounds, validTextMetrics, currentTextMetrics, textDisplayLineMetrics } from "./text-metrics.mjs";
+import { measuredTextInkBounds, validTextMetrics, currentTextMetrics, textDisplayLineMetrics, textMetricsSignature } from "./text-metrics.mjs";
 import { designFontFaceCss, designFontFamilyCss, designResourceFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1183,8 +1184,10 @@ function emptyEffectOutsets() {
   return { left: 0, top: 0, right: 0, bottom: 0 };
 }
 
-function textPaintBounds(node) {
-  const receipt = measuredTextInkBounds(node);
+function textPaintBounds(node, context = {}) {
+  // Same HTML view as the export and the GPU: non-transported finite text is a CSS line box at view.y.
+  const view = textHtmlFiniteLineBoxNode(node, context), shift = node.y - view.y;
+  const receipt = measuredTextInkBounds(node, context);
   const boxes = receipt ? [receipt] : String(node.text).split("\n").map((line, index) => {
     // Same conservative character classes as the text audit. Unmeasured SVG
     // text draws natural lines, so its node width is not an implicit clip.
@@ -1201,7 +1204,9 @@ function textPaintBounds(node) {
     // Font bearings and decorations can protrude beyond an estimated advance.
     // Keep this bounded font-sized margin only on unmeasured text itself.
     const pad = node.fontSize;
-    return { x: x - pad, y: index * textLineHeightPixels(node) - pad,
+    const leading = textHasLineBoxOrigin(view) && !textRangeTypography(node, false).length
+      ? (textLineHeightPixels(node) - node.fontSize) / 2 : 0;
+    return { x: x - pad, y: index * textLineHeightPixels(node) + leading - pad - shift,
       width: width + pad * 2, height: node.fontSize + pad * 2 };
   });
   const left = Math.min(0, ...boxes.map(box => box.x));
@@ -1214,7 +1219,7 @@ function textPaintBounds(node) {
 function renderedSourceNodeBounds(document, nodes, node, nodeIndex) {
   if (document.canvas.mode !== "infinite" || node.type !== "text")
     return transformedNodeBoundsInTree(nodes, node, nodeIndex);
-  const local = textPaintBounds(node);
+  const local = textPaintBounds(node, textHtmlFiniteContextIn(nodes, node, document.canvas.mode));
   // Keep the real text-node pivot, rather than rotating around the larger ink box.
   const points = [
     { x: local.x, y: local.y }, { x: local.x + local.width, y: local.y },
@@ -1416,7 +1421,7 @@ export function renderedDesignNodeShadowFilterBounds(
       : emptyEffectOutsets();
   const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
   const content = document.canvas.mode === "infinite" && node.type === "text"
-    ? textPaintBounds(node) : node;
+    ? textPaintBounds(node, textHtmlFiniteContextIn(availableNodes, node, document.canvas.mode)) : node;
   const baseLeft = content.x - instanceOutsets.left - strokeOutset;
   const baseTop = content.y - instanceOutsets.top - strokeOutset;
   const baseRight = content.x + content.width + instanceOutsets.right + strokeOutset;
@@ -1565,11 +1570,22 @@ function exportNodeSvg(
     const fontResource = node.fontRef
       ? document.resources?.find((resource) => resource.id === node.fontRef)
       : null;
-    const fontFamily = escapeXml(
-      fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
-        node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-      ),
+    const fontFamilyCss = fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
+      node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
     );
+    const fontFamily = escapeXml(fontFamilyCss);
+    // The HTML view (as frontend-export and the GPU): finite text HTML does not transport at its hanging origin
+    // is a plain CSS line box at its element top. The document node keeps its coordinates and offset.
+    const lineNode = textHtmlFiniteLineBoxNode(node, textHtmlFiniteContextIn(document.nodes, node, document.canvas?.mode));
+    const lineBoxMetrics = (textHasLineBoxOrigin(lineNode) || node.textRanges === undefined) && !textRangeTypography(node, false).length
+      ? options.resolveTextLineBoxMetrics?.(lineNode, fontFamilyCss) : undefined;
+    const unmeasuredLineBox = textHasLineBoxOrigin(lineNode) && !textRangeTypography(node, false).length && !lineBoxMetrics;
+    const finiteMetrics = !textHasLineBoxOrigin(lineNode) && Number.isFinite(lineBoxMetrics?.hangingToAlphabetic);
+    const lineBoxMetadata = finiteMetrics
+      ? ` data-text-finite-baseline="${Number.isFinite(lineBoxMetrics.alphabeticBaseline) ? lineBoxMetrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, lineBoxMetrics)}" data-text-hanging-offset="${lineBoxMetrics.hangingToAlphabetic}" data-text-metrics-signature="${escapeXml(textMetricsSignature(node))}"`
+      : unmeasuredLineBox ? ' data-text-line-box="unmeasured"' : textHasLineBoxOrigin(lineNode) && lineBoxMetrics
+      ? ` data-text-line-box="alphabetic" data-text-baseline-offset="${Number.isFinite(lineBoxMetrics.alphabeticBaseline) ? lineBoxMetrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, lineBoxMetrics)}" data-text-metrics-signature="${escapeXml(textMetricsSignature(node))}"` : "";
+    if (unmeasuredLineBox) options.diagnostics?.push({ code: "TEXT_LINE_BOX_SVG_UNMEASURED", nodeId: node.id });
     const fontStyle = node.fontStyle ?? "normal";
     const letterSpacing = node.letterSpacing ?? 0;
     const textDecoration = node.textDecoration ?? "none";
@@ -1586,6 +1602,29 @@ function exportNodeSvg(
         error.code = "TEXT_RANGES_SVG_UNSUPPORTED_DECORATION";
         throw error;
       }
+      // Non-provenanced finite typography that HTML lays out as a CSS line box (lineNode !== node): the same
+      // mixed-font line box as the GPU (per-run floor((lh_g + A_g - D_g) / 2), max per line, at layout scale 1),
+      // lines hanging off line 0 by the receipt's measured baseline deltas. Without browser metrics the receipt
+      // geometry is kept and reported, never silently re-placed.
+      let mixedLineBox = null;
+      if (typography && lineNode !== node) {
+        const runFamily = style => style.fontFamily === (node.fontFamily ?? "Inter") ? fontFamilyCss : designFontFamilyCss(style.fontFamily);
+        const alphaFor = style => {
+          const runNode = { ...node, fontSize: style.fontSize, fontWeight: style.fontWeight, fontStyle: style.fontStyle ?? "normal", fontFamily: style.fontFamily };
+          // A supplied plain metrics value is the node font's: it only measures runs in exactly that font.
+          const exact = style.fontFamily === (node.fontFamily ?? "Inter") && style.fontSize === node.fontSize &&
+            style.fontWeight === node.fontWeight && (style.fontStyle ?? "normal") === (node.fontStyle ?? "normal");
+          const metrics = options.resolveTextLineBoxMetrics?.(runNode, runFamily(style), { runFont: !exact });
+          return Number.isFinite(metrics?.ascent) && Number.isFinite(metrics?.descent) ? textLineBoxAlphabeticOffset(runNode, metrics) : NaN;
+        };
+        const strut = alphaFor({ fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight, fontStyle: node.fontStyle ?? "normal" });
+        const lineAlphas = String(node.text).split("\n").map((_line, index) => Math.max(strut,
+          ...runs.filter((run) => run.lineIndex === index && run.kind === "source" && run.text !== "\n").map((run) => alphaFor(run.style))));
+        if (lineAlphas.every(Number.isFinite)) {
+          const offsets = textDisplayLineMetrics(node).offsets;
+          mixedLineBox = index => textLineBoxBaselineAt(lineNode, 0, lineAlphas[0], { baselineDelta: offsets[index] - offsets[0] });
+        } else options.diagnostics?.push({ code: "TEXT_LINE_BOX_SVG_UNMEASURED", nodeId: node.id });
+      }
       const lines = String(node.text).split("\n").map((_line, index) => {
         const spans = runs.filter((run) => run.lineIndex === index && run.kind === "source" && run.text !== "\n").map((run) => {
           const style = run.style;
@@ -1597,9 +1636,14 @@ function exportNodeSvg(
           const span = `<tspan style="${escapeXml(declarations.join(";"))}">${escapeXml(run.text)}</tspan>`;
           return run.href === undefined ? span : `<a href="${escapeXml(run.href)}" style="fill:inherit;text-decoration:none">${span}</a>`;
         }).join("");
-        return `    <text x="${round(textX)}" y="${round(node.y + textDisplayLineMetrics(node).offsets[index] + alphabeticBaseline)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="${typography ? "alphabetic" : "hanging"}" xml:space="preserve">${spans || " "}</text>`;
+        // Typography keeps its receipt geometry (measured line offsets from the transported origin): no second shift.
+        const lineBox = mixedLineBox ? { y: mixedLineBox(index), baseline: "alphabetic" } : typography
+          ? { y: node.y + textDisplayLineMetrics(node).offsets[index] + alphabeticBaseline, baseline: "alphabetic" }
+          : textHasLineBoxOrigin(lineNode) ? textSvgLineBox(lineNode, index, lineBoxMetrics)
+            : { y: node.y + textDisplayLineMetrics(node).offsets[index], baseline: "hanging" };
+        return `    <text x="${round(textX)}" y="${round(lineBox.y)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="${lineBox.baseline}" xml:space="preserve">${spans || " "}</text>`;
       }).join("\n");
-      return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+      return clipped(`  <g${metadata}${lineBoxMetadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
     }
     // Separate text elements are more portable than tspans: several native
     // SVG renderers ignore tspan x/y or dy and collapse every line together.
@@ -1607,10 +1651,10 @@ function exportNodeSvg(
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(textSvgLineBox(lineNode, index, lineBoxMetrics).y)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="${textSvgLineBox(lineNode, index, lineBoxMetrics).baseline}" xml:space="preserve">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
-    return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+    return clipped(`  <g${metadata}${lineBoxMetadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
   }
   if (node.type === "image") {
     const href = options.resourceDataUrls?.get?.(node.imageRef);
@@ -1784,12 +1828,41 @@ export function exportDesignSvg(document, options = {}) {
     renderNodes.map((node, index) => [node.id, designPaintSvg(node, `node-fill-${index}`)]),
   );
   const paintDefinitions = [...paintFills.values()].flatMap((paint) => paint.definitions);
+  // Export in the same loaded browser font context as the workbench. This
+  // cache lasts one export, so a later font load cannot reuse stale metrics.
+  // Offline callers may inject metrics or replay a current browser receipt.
+  const fontMetrics = new Map();
+  let fontContext;
+  const resolveTextLineBoxMetrics = (node, family, { runFont = false } = {}) => {
+    const supplied = options.textLineBoxMetrics?.get?.(node.id);
+    // A supplied function resolves per (run) font; a plain value is the node font's metrics and measures no other font.
+    if (typeof supplied === "function") return supplied(node, family);
+    if (supplied) return runFont ? undefined : supplied;
+    if (fontContext === undefined) fontContext = globalThis.document?.createElement?.("canvas")?.getContext?.("2d") ?? null;
+    if (fontContext) {
+      const font = `${node.fontStyle ?? "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
+      if (!fontMetrics.has(font)) {
+        fontContext.font = font; fontContext.textBaseline = "alphabetic";
+        const measured = fontContext.measureText("Hg");
+        if (Number.isFinite(measured.fontBoundingBoxAscent) && Number.isFinite(measured.fontBoundingBoxDescent)) {
+          fontContext.textBaseline = "hanging";
+          const hanging = fontContext.measureText("Hg");
+          fontMetrics.set(font, { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent,
+            hangingToAlphabetic: measured.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent });
+        }
+      }
+      if (fontMetrics.has(font)) return fontMetrics.get(font);
+    }
+    const receipt = currentTextMetrics(node);
+    return Number.isFinite(receipt?.alphabeticBaseline) ? { alphabeticBaseline: receipt.alphabeticBaseline } : undefined;
+  };
   const body = document.nodes
     .map((node) =>
       exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
         ...options,
         paintFills,
         shadowStacks,
+        resolveTextLineBoxMetrics,
       }),
     )
     .filter(Boolean)

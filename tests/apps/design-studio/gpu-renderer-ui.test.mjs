@@ -9,7 +9,6 @@ import { PNG } from "pngjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
-  exportDesignSvg,
 } from "../../../apps/design-studio/app/document.mjs";
 import { comparePixels } from "../../../scripts/design-studio-production-fidelity.mjs";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
@@ -235,6 +234,10 @@ test("actual GPU editor improves eligible system-font pixels against its unchang
       );
       await nextFrame();
     }
+    // This oracle measures static device-phase pixels after the wheel gesture,
+    // including the unchanged master control's identical idle lifecycle.
+    await new Promise(resolve => setTimeout(resolve, 160));
+    await nextFrame();
     const matrix = current();
     return {
       zoom: matrix.a / devicePixelRatio,
@@ -258,8 +261,19 @@ test("actual GPU editor improves eligible system-font pixels against its unchang
   });
   const reference = await page.context().newPage();
   await reference.setViewportSize({ width: 640, height: 240 });
+  // Use the workbench's loaded font context. Node-only unmeasured SVG uses a
+  // diagnostic fallback and cannot serve as this pixel reference.
+  const referenceExport = await page.evaluate(async (value) => {
+    await document.fonts.ready;
+    const { exportDesignSvg } = await import("/document.mjs");
+    const diagnostics = [];
+    return { svg: exportDesignSvg(value, { diagnostics }), diagnostics };
+  }, design);
+  assert.deepEqual(referenceExport.diagnostics, []);
+  assert.match(referenceExport.svg, /data-text-line-box="alphabetic"/u);
+  assert.doesNotMatch(referenceExport.svg, /data-text-line-box="unmeasured"/u);
   await reference.setContent(
-    `<style>html,body{margin:0;background:white}svg{display:block}</style>${exportDesignSvg(design)}`,
+    `<style>html,body{margin:0;background:white}svg{display:block}</style>${referenceExport.svg}`,
   );
   await reference.evaluate(() => document.fonts.ready);
   const expected = await reference.screenshot();

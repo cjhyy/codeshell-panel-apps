@@ -10,9 +10,10 @@ permissions:
 # Keep independent gates runnable even when another app fails. The previous
 # sequential video-media gate prevented UI and design regressions from running.
 jobs:
+  # Playwright 1.60 supports Ubuntu 24.04; ubuntu-latest can select an unsupported release.
   job-hunt-pdf:
     name: Job Hunt PDF rendering
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -78,7 +79,7 @@ jobs:
 
   validate:
     name: Package and offline checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -95,12 +96,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: design-studio-font-comparisons
-          path: artifacts/design-studio-ci
+          path: |
+            artifacts/design-studio-ci
+            .tmp/render-fidelity-r002/center-gpu
+            .tmp/render-fidelity-r003/transform
+            .tmp/render-fidelity-r003/font-weight
+            .tmp/render-fidelity-r002/spike
+          include-hidden-files: true
           if-no-files-found: ignore
 
   video-ui:
     name: Video Studio UI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -124,7 +131,7 @@ jobs:
 
   video-media:
     name: Video Studio media
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -148,7 +155,7 @@ jobs:
 
   design-studio:
     name: Design Studio fidelity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -164,7 +171,7 @@ jobs:
 
   design-font-edits:
     name: Design Studio font and recovery
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -212,7 +219,7 @@ jobs:
 
   quant-lab:
     name: Validate Quant Lab
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -226,7 +233,7 @@ jobs:
 
   video-download:
     name: Validate Video Download
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

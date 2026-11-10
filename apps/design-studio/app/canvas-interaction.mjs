@@ -26,23 +26,24 @@ function inside(node, point, ellipse = false) {
   return insideRoundedRect(node, point);
 }
 
-/** Hit the actual document geometry, in front-to-back order, with ancestor clips. */
+/** Hit document geometry (or supplied presentation clones), with ancestor clips. */
 export function hitTestCanvasNode(
   design,
   point,
   index = new Map(design.nodes.map((n) => [n.id, n])),
+  rotationPivots = null,
 ) {
   for (let i = design.nodes.length - 1; i >= 0; i--) {
     const node = design.nodes[i];
     if (!isDesignNodeVisible(design, node, index)) continue;
-    if (!inside(node, pointToNodeSpace(design.nodes, node, point, index), node.type === "ellipse"))
+    if (!inside(node, pointToNodeSpace(design.nodes, node, point, index, rotationPivots), node.type === "ellipse"))
       continue;
     if (
       ancestors(node, index).some(
         (parent) =>
           ["frame", "component"].includes(parent.type) &&
           parent.clipContent &&
-          !inside(parent, pointToNodeSpace(design.nodes, parent, point, index)),
+          !inside(parent, pointToNodeSpace(design.nodes, parent, point, index, rotationPivots)),
       )
     )
       continue;
@@ -301,4 +302,19 @@ export function drawCanvasInteraction(
       ctx.stroke();
     }
   return handles;
+}
+
+/**
+ * Inline text editor placement. HTML (and the canvas replay of it) lays a node's origin out in
+ * world CSS px, snapping it to LayoutUnits, before the camera transform. An axis-aligned editor gets
+ * the same: its node origin as layout left/top and only the camera as transform (transform-origin
+ * 0 0 at the laid-out box, so the screen mapping is unchanged). Rotated/skewed chains keep the
+ * single matrix.
+ */
+export function inlineTextEditorPlacement(matrix, pan, zoom) {
+  const [a, b, c, d, e, f] = matrix;
+  if (b !== 0 || c !== 0 || a !== zoom || d !== zoom || !(zoom > 0)) return { left: 0, top: 0, matrix };
+  const exact = value => Math.round(value * 1e9) / 1e9;
+  const left = exact((e - pan.x) / zoom), top = exact((f - pan.y) / zoom);
+  return { left, top, matrix: [zoom, 0, 0, zoom, pan.x + (zoom - 1) * left, pan.y + (zoom - 1) * top] };
 }

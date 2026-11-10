@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,21 +14,15 @@ import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-des
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
+import { DESIGN_STUDIO_PROBES, createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
+import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
+  describeOwnedCleanup, desktopFixtureSettings, EXTERNAL_AGENT_RUNTIME_BOUNDARY, writeFidelityPartialOnce,
+  designStudioProbeSwitches, insertProbeSwitches, parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const [hostArgument, ...arguments_] = process.argv.slice(2);
-let reportArgument, selectedApp;
-for (let index = 0; index < arguments_.length; index++) {
-  const value = arguments_[index];
-  if (value === "--app") {
-    assert.ok(!selectedApp && arguments_[index + 1], "--app requires one Panel id");
-    selectedApp = arguments_[++index];
-  } else {
-    assert.ok(!value.startsWith("--") && !reportArgument, `unexpected argument: ${value}`);
-    reportArgument = value;
-  }
-}
-assert.ok(hostArgument, "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>]");
+// --design-studio-fidelity is a technical opt-in only. It is not user approval to
+// open a Host window, and no environment variable can enable it.
+const { hostArgument, reportArgument, selectedApp, designStudioFidelity } = parsePanelDesktopArguments(process.argv.slice(2));
 const packageCases = ["apps/design-studio", "apps/job-hunt-hq", "apps/quant-lab", "apps/video-download", "panels/video-studio", "templates/starter"];
 const cases = [];
 for (const packagePath of packageCases) {
@@ -37,13 +31,22 @@ for (const packagePath of packageCases) {
 }
 assert.ok(cases.length, `unknown --app: ${selectedApp}`);
 const hostRoot = resolve(hostArgument);
+// Read-only: report every missing built output before any temporary HOME or launch.
+// Never builds, downloads or installs Host outputs or managed runtimes.
+const hostPreflight = await preflightPanelDesktopHost(hostRoot, { fidelity: Boolean(designStudioFidelity) });
+if (!hostPreflight.ok) {
+  console.error(hostPreflight.message);
+  process.exit(2);
+}
+for (const warning of hostPreflight.warnings) console.warn(`Host preflight warning: ${warning}`);
+// Harness-owned outputs: two O_EXCL|O_NOFOLLOW files in the root-owned system temp
+// directory, held open and written only through their handles (no user path).
+const fidelityOutputs = designStudioFidelity ? await claimFidelityOutputs() : null;
+if (fidelityOutputs) console.log(`Design Studio fidelity outputs: ${fidelityOutputs.reportPath} ${fidelityOutputs.bundlePath}`);
 const appDir = join(hostRoot, "packages/desktop");
 const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
-const files = ["packages/desktop/out/main/index.mjs", "packages/desktop/out/preload/index.cjs",
-  "packages/desktop/out/preload/panel-app.cjs", "packages/desktop/out/renderer/index.html",
-  "packages/desktop/out/managed-runtimes/node/bin/node",
-  "packages/core/dist/panel-apps/installer.js", "packages/server/dist/panels/runtime-services.js"];
+const files = HASHED_HOST_BUILD_FILES;
 const buildHashes = Object.fromEntries(await Promise.all(files.map(async path =>
   [path, sha256(await readFile(join(hostRoot, path)))])));
 const gitHead = cwd => {
@@ -56,6 +59,7 @@ const runnerSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
 const hostSourceManifestVersion = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")).version;
 const directory = await mkdtemp(join(tmpdir(), "panel-desktop-ipc-"));
 let app, ownedChildProcess, win, report, cleanupReceipt, failure, nativeFixture, nativeParentFixture, managedFixture, launchStarted = false, stage = "initialize";
+let fidelityReport = null;
 const results = [], rendererErrors = [], busyRejections = [], readRateRejections = [];
 try {
   // Scrub arbitrary inherited provider credentials before loading any Host module.
@@ -117,17 +121,53 @@ try {
   const captureSpawn = "const spawn = children.spawn;";
   assert.equal(bootstrap.split(captureSpawn).length, 2, "Host fixture spawn seam changed");
   bootstrap = bootstrap.replace(captureSpawn, nativeParentFixture.bootstrap + managedFixture.bootstrap + captureSpawn);
+  // Probe-only Chromium switches for the owned Electron (never the operator's app), before ready.
+  bootstrap = insertProbeSwitches(bootstrap, designStudioProbeSwitches(designStudioFidelity ?? {}));
   bootstrap = bootstrap.replace(mainImport, `for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
 app.on("session-created", session => {
   session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (_details, done) => done({ cancel: true }));
 });\n${mainImport}`);
   await writeFile(fixture.mainEntry, bootstrap);
   const projects = [join(isolated.home, "desktop-A"), join(isolated.home, "desktop-B")];
+  // Design Studio fidelity uses its own private project so the generic A/B
+  // storage, update and restore assertions are unchanged.
+  const fidelityProject = designStudioFidelity ? join(isolated.home, "desktop-fidelity") : null;
+  if (fidelityProject) projects.push(fidelityProject);
   for (const project of projects) await mkdir(project);
+  let fidelitySeed = null;
+  if (fidelityProject) {
+    stage = "design-studio fidelity: seed synthetic fixtures";
+    // Same source bytes that the reviewed install below copies from apps/design-studio.
+    const studioApp = join(repository, "apps/design-studio/app");
+    const fixtures = await buildDesignStudioFidelityFixtures({
+      codec: await import(pathToFileURL(join(studioApp, "document.mjs")).href),
+      textMetrics: await import(pathToFileURL(join(studioApp, "text-metrics.mjs")).href),
+      documentIndex: await import(pathToFileURL(join(studioApp, "document-index.mjs")).href),
+      resourceStore: await import(pathToFileURL(join(studioApp, "resource-store.mjs")).href),
+      readAppBytes: path => readFile(join(studioApp, path)) });
+    const seededStates = {};
+    // Every file (single documents, index manifests and page parts) fits one Host readText.
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      const path = join(fidelityProject, file.relativePath);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, file.bytes, { flag: "wx" });
+      const value = await stat(path);
+      seededStates[file.relativePath] = { sha256: file.sha256, mtimeMs: value.mtimeMs, size: value.size };
+    }
+    const sampleReceipt = designStudioFidelity.samplePath
+      ? await copyDesignStudioSample({ samplePath: designStudioFidelity.samplePath, projectDirectory: fidelityProject }) : null;
+    if (sampleReceipt) {
+      const value = await stat(join(fidelityProject, sampleReceipt.relativePath));
+      seededStates[sampleReceipt.relativePath] = { sha256: sampleReceipt.copySha256, mtimeMs: value.mtimeMs, size: value.size };
+    }
+    fidelitySeed = { fixtures, seededStates, sampleReceipt };
+  }
   await mkdir(join(isolated.codeShellHome, "desktop"), { recursive: true });
   await writeFile(join(isolated.codeShellHome, "desktop/recents.json"), JSON.stringify(
     projects.map(path => ({ path, name: path.split("/").at(-1), lastOpenedAt: Date.now(), pinned: true }))));
-  await writeFile(join(isolated.codeShellHome, "settings.json"), JSON.stringify({ autoUpdates: false }));
+  // Legacy gate: exactly { autoUpdates: false }. Fidelity additionally turns off the Host's
+  // own external-agent-runtime discovery (see EXTERNAL_AGENT_RUNTIME_BOUNDARY).
+  await writeFile(join(isolated.codeShellHome, "settings.json"), JSON.stringify(desktopFixtureSettings({ fidelity: Boolean(designStudioFidelity) })));
   stage = "launch production Electron";
   launchStarted = true;
   app = await launchCodeShellElectron({ appDir, ...isolated, env: fixture.env,
@@ -317,6 +357,34 @@ app.on("session-created", session => {
       assert.ok(colors.size > 32, "installed GPU panel must present nonblank pixels");
       gpuCanvas.capture = { sha256: sha256(Buffer.from(captured, "base64")),
         width: pixels.width, height: pixels.height, distinctColors: colors.size };
+      if (designStudioFidelity && fidelityProject) {
+        stage = "design-studio fidelity: real Host scenarios";
+        const unboundFidelity = await binding(fidelityProject, id);
+        await ipc("setPanelAppProjectBinding", fidelityProject, id, true, unboundFidelity.revision);
+        const fidelityGuest = await attach(fidelityProject, id, "fidelity");
+        // Shared, idempotent and bounded: the runner's timeout path and this finally.
+        const guestCleanup = createOwnedGuestCleanup(fidelityGuest);
+        // Unsettled guest/reference work or a failed/pending remove is handed to the existing
+        // owned Electron cleanup (captured ChildProcess only); any original failure is kept.
+        // The single partial (with the real owned-cleanup outcome) is written after it.
+        await withOwnedFidelityGuest(guestCleanup, async () => {
+          // Bounded readiness and webContents id; a hung guest goes to the shared cleanup.
+          const { guestWebContentsId } = await prepareFidelityGuest({ guest: fidelityGuest, guestCleanup,
+            readySource: 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"',
+            stateSource: DESIGN_STUDIO_PROBES.openState() });
+          const core = await hostModule("packages/core/dist/index.js");
+          const selected = (await core.listProjectPanelApps(fidelityProject, id)).find(value => value.id === id);
+          assert.ok(selected?.installPath, "installed Design Studio package path not found for the fidelity project");
+          fidelityReport = await runDesignStudioHostFidelity({ enabled: true, guest: fidelityGuest, guestCleanup,
+            guestWebContentsId, app,
+            projectDirectory: fidelityProject, packageDirectory: selected.installPath, fixtures: fidelitySeed.fixtures,
+            seededStates: fidelitySeed.seededStates, sampleReceipt: fidelitySeed.sampleReceipt,
+            artifactSink: fidelityOutputs, probe: designStudioFidelity.probe, log: message => console.log(message) });
+          fidelityReport.installedPackageDigest = selected.packageDigest;
+          console.log(`Design Studio fidelity summary: ${JSON.stringify(fidelityReport.summary)}`);
+        }, { requiresOwnedHostCleanup: () => Boolean(fidelityReport?.cleanup?.requiresOwnedHostCleanup) });
+        if (fidelityReport) Object.assign(fidelityReport, { guestCleanup: guestCleanup.state(), boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY } });
+      }
     }
     const interaction = {
       "design-studio": `(() => { const label = document.getElementById("zoom-value"); const before = label.textContent; document.getElementById("zoom-in").click(); return label.textContent !== before; })()`,
@@ -649,7 +717,7 @@ app.on("session-created", session => {
   assert.ok(guardReceipts.some(value => value.pid === process.pid && value.negativeProbes === 7));
   assert.ok(guardReceipts.some(value => value.pid === app.process().pid && value.negativeProbes === 7));
   const keychainReceipt = JSON.parse(await readFile(join(isolated.home, "electron-keychain-context.json"), "utf8"));
-  const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
+  const runtime = await app.evaluate(() => ({ electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node, platform: process.platform, arch: process.arch }));
   await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
   const nativeReceipts = await nativeFixture.receipts();
   const managedReceipts = await managedFixture.receipts();
@@ -701,7 +769,8 @@ app.on("session-created", session => {
   report = { schemaVersion: 1, panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
     buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections,
-    selectedApp: selectedApp ?? null, selectedCaseCount: cases.length,
+    selectedApp: selectedApp ?? null, selectedCaseCount: cases.length, hostPreflight,
+    ...(designStudioFidelity ? { designStudioFidelity: fidelityReport ?? { status: "NOT_RUN" } } : {}),
     nativeBoundary: nativeFixture.boundary, nativeNetworkSelfTest: nativeFixture.selfTest, nativeReceipts,
     nativeParentBoundary: nativeParentFixture.spec, nativeExitEvidence,
     managedNodeBoundary: managedFixture.spec, managedReceipts, managedExecutionEvidence, results,
@@ -715,9 +784,32 @@ app.on("session-created", session => {
     managedReceipts: await managedFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
-  cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
+  // Owned Electron/HOME cleanup first; a fidelity partial then records its real outcome.
+  let ownedCleanupError;
+  try { cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure }); }
+  catch (error) { ownedCleanupError = error; }
+  if (fidelityOutputs && (failure || ownedCleanupError)) {
+    const partial = buildFidelityFailurePartial({ stage, failure: failure?.error, fidelityReport, artifacts: fidelityOutputs.artifacts(),
+      boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY },
+      cleanup: describeOwnedCleanup({ receipt: cleanupReceipt, error: ownedCleanupError, primaryFailure: failure?.error }) });
+    const written = await writeFidelityPartialOnce(fidelityOutputs, partial);
+    console.error(`Design Studio fidelity partial report: ${JSON.stringify({ path: fidelityOutputs.reportPath, ...written })}`);
+    await fidelityOutputs.close();
+  }
+  if (ownedCleanupError) throw ownedCleanupError;
 }
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
-if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+if (fidelityOutputs) {
+  report.designStudioFidelityOutputs = { reportPath: fidelityOutputs.reportPath, bundlePath: fidelityOutputs.bundlePath,
+    identity: fidelityOutputs.identity, rootChain: fidelityOutputs.rootChain, artifacts: fidelityOutputs.artifacts() };
+  await fidelityOutputs.writeReport(`${JSON.stringify(report, null, 2)}\n`);
+  await fidelityOutputs.close();
+} else if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 console.log(`PASS: ${results.length}/${cases.length} selected real installed Panel Desktop IPC scenarios${selectedApp ? ` (${selectedApp} only)` : " (all six packages)"}; owned Electron exit and HOME cleanup verified`);
+if (designStudioFidelity) {
+  // Not goal completion: FAIL exits 1; any UNVERIFIED/EVIDENCE_ONLY/not-run exits 3.
+  const overall = fidelityReport?.summary?.overall ?? "NOT_RUN";
+  console.log(`Design Studio real-Host fidelity: ${overall} (goalComplete=false); see ${fidelityOutputs.reportPath}`);
+  if (overall !== "PASS") process.exitCode = overall === "FAIL" ? 1 : 3;
+}

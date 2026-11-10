@@ -53,13 +53,15 @@ async function rendererProbe(page, { file, family, text = fixtureText, start = b
     const renderer = await createCanvasKitText({ CK, design: { nodes: [node], resources: [...resources.values()].map(resource => resource.descriptor) }, resources, document, fallbackFontUrls: new Map(), counters,
       unsupportedNode: (_node, code) => warnings.push(code), makePaint: () => { const paint = new CK.Paint(); paint.setColor(CK.Color(0, 0, 0, 1)); return paint; } });
     try {
-      const shapes = [], images = [];
+      const shapes = [], images = [], rasterDraws = [];
       const draw = value => {
         const target = surface.getCanvas(); target.clear(CK.WHITE);
         renderer.draw({ drawParagraph(paragraph, x, y) { shapes.push({ width: paragraph.getLongestLine(), height: paragraph.getHeight(),
           baseline: paragraph.getAlphabeticBaseline(), drawX: x, drawY: y, drawnBaseline: y + paragraph.getAlphabeticBaseline(),
           boldBounds: Array.from(paragraph.getGlyphInfoAt(start).graphemeLayoutBounds) });
-          target.drawParagraph(paragraph, x, y); } }, value);
+          target.drawParagraph(paragraph, x, y); },
+          // Range-render batch: eligible ranges draw the browser same-family raster of the same supplied bytes.
+          drawImageRectOptions(...args) { rasterDraws.push(1); target.drawImageRectOptions(...args); } }, value);
         surface.flush(); const image = surface.makeImageSnapshot();
         try { images.push(Array.from(image.encodeToBytes())); } finally { image.delete(); }
       };
@@ -67,7 +69,7 @@ async function rendererProbe(page, { file, family, text = fixtureText, start = b
         draw(node);
         const regular = structuredClone(node); for (const range of regular.textRanges.ranges) range.fontWeight = 400;
         draw(regular);
-        return { accepted: true, shapes, images, backend, counters, warnings, stats: renderer.stats() };
+        return { accepted: true, shapes, images, rasterDraws: rasterDraws.length, backend, counters, warnings, stats: renderer.stats() };
       } catch (error) { return { accepted: false, code: error.code, message: error.message, backend, counters, warnings, stats: renderer.stats() }; }
     } finally { renderer.dispose(); surface.delete(); }
   }, { file, family, text, start, end, baseWeight, useFontRef, paintRange, extraRanges, rangeOverrides, additionalFonts });
@@ -88,11 +90,13 @@ test('external verified variable bytes support a 700 run without claiming builti
   const { page } = await context(t, true);
   const result = await rendererProbe(page, { file: 'Roboto-Variable.ttf', family: 'Oracle External Variable' });
   const images = await recordRenderer(t, 'public-base400-range700', result);
-  assert.equal(result.accepted, true, 'generic supplied variable wght capability must admit the requested native run');
-  assert.equal(result.counters.rasterTextNodes, 0);
-  assert.equal(result.counters.nativeTextNodes, 2);
-  assert.notEqual(result.shapes[0].width, result.shapes[1].width, '700 run must shape differently from its 400 control');
-  assert.equal(pixelDelta(images[0], images[1]).equal, false, 'the real WebGL canvas must contain distinct variable glyphs');
+  assert.equal(result.accepted, true, 'generic supplied variable wght capability must admit the requested run');
+  // Range-render batch: the weight range uses the range raster of the same supplied variable bytes (HTML parity).
+  assert.equal(result.counters.rangeRasterNodes, 2);
+  assert.equal(result.counters.nativeTextNodes, 0);
+  assert.ok(result.rasterDraws > 0);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(pixelDelta(images[0], images[1]).equal, false, 'the real WebGL canvas must contain distinct variable 700 glyphs');
 });
 
 test('external variable base 700 without fontRef remains native with an editable paint range', async t => {
@@ -100,16 +104,22 @@ test('external variable base 700 without fontRef remains native with an editable
   const result = await rendererProbe(page, { file: 'Roboto-Variable.ttf', family: 'Oracle External Variable', baseWeight: 700, useFontRef: false, paintRange: true });
   await recordRenderer(t, 'public-base700-no-ref', result);
   assert.equal(result.accepted, true, 'family-based variable resolution must admit base 700 without a fabricated fontRef');
-  assert.equal(result.counters.rasterTextNodes, 0);
-  assert.equal(result.counters.nativeTextNodes, 2);
+  // The paint range now uses the range raster of the family-resolved supplied face (no fontRef fabricated).
+  assert.equal(result.counters.rangeRasterNodes, 2);
+  assert.equal(result.counters.nativeTextNodes, 0);
+  assert.deepEqual(result.warnings, []);
 });
 
 test('a static 400 face does not acquire an invented variable 700 capability', async t => {
   const { page } = await context(t, true);
   const result = await rendererProbe(page, { file: 'fa-regular-400.woff2', family: 'Oracle Static Icons', text: '\uf004\uf004', start: 1, end: 2 });
   await recordRenderer(t, 'public-static-rejection', result);
-  assert.equal(result.accepted, false);
-  assert.equal(result.code, 'TEXT_RANGES_UNSUPPORTED');
+  // Still refused (no invented 700), now per node: reported, not drawn, never thrown into the scene.
+  // The probe draws the 700 node, then its all-400 control (same node id): only the control renders.
+  assert.equal(result.accepted, true);
+  assert.deepEqual(result.warnings, ['text-ranges-unsupported'], 'only the 700 request is refused');
+  assert.equal(result.counters.rangeRasterNodes, 1, 'only the 400 control renders');
+  assert.equal(result.rasterDraws, 1);
 });
 
 /** Read fixture metadata independently of the implementation under test. */

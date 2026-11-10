@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   launchCanvasBrowser,
   canvasMime,
   gpuActive,
+  frames,
   metadata,
   viewport,
   readNode,
@@ -104,10 +105,10 @@ function documentFixture() {
   });
 }
 
-async function fixture(t, document, { instrument = false } = {}) {
+async function fixture(t, document, { instrument = false, dpr = 1, perf = false } = {}) {
   const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1500, height: 960 } });
+  const page = await browser.newPage({ viewport: { width: 1500, height: 960 }, deviceScaleFactor: dpr });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/*", async (route) => {
@@ -116,6 +117,8 @@ async function fixture(t, document, { instrument = false } = {}) {
     if (url.origin !== "https://render.test" || !file.startsWith(root + sep)) return route.abort();
     try {
       let body = await readFile(file);
+      if (perf && url.pathname === "/canvas/canvaskit-renderer.mjs")
+        body = body.toString().replace("return { setScene, resize, render, hitTest, dispose, stats };", "window.__perfStats = stats; return { setScene, resize, render, hitTest, dispose, stats };");
       if (instrument && url.pathname === "/app.js")
         body = `${body.toString()}\nconst originalRenderSceneForTest = renderScene;
 renderScene = function (...args) {
@@ -266,7 +269,7 @@ test("a render-local index preserves ancestor rotation, clipping, opacity and lo
 });
 
 test("a detached cross-page component uses its own index and excludes the source's outside ancestors", async (t) => {
-  const { page, errors } = await fixture(t, documentFixture());
+  const { page, errors } = await fixture(t, documentFixture(), { dpr: 2 });
   const ancestor = await readNode(page, "source-ancestor");
   assert.equal(ancestor.visible, false);
   assert.equal(ancestor.locked, true);
@@ -276,6 +279,53 @@ test("a detached cross-page component uses its own index and excludes the source
   await clickWorld(page, renderedCenter);
   assert.deepEqual((await metadata(page)).selection, ["instance"]);
   assert.equal(await page.locator("#prop-x").isDisabled(), false);
+  await page.evaluate(() => {
+    window.addEventListener("wheel", (event) => {
+      window.__instanceWheel = { deltaX: event.deltaX, isTrusted: event.isTrusted };
+    }, { capture: true });
+    const strokeRect = CanvasRenderingContext2D.prototype.strokeRect;
+    CanvasRenderingContext2D.prototype.strokeRect = function (x, y, width, height) {
+      if (this.canvas.id === "stage" && this.strokeStyle === "#4f7cff") {
+        const m = this.getTransform();
+        window.__instanceOverlay = {
+          x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f,
+          width: m.a * width, height: m.d * height,
+        };
+      }
+      return strokeRect.call(this, x, y, width, height);
+    };
+  });
+  const before = await viewport(page);
+  const pointer = await canvasPoint(page, renderedCenter);
+  await page.mouse.move(pointer.x, pointer.y);
+  // Chromium scales the CDP wheel input by DPR; assert the actual trusted DOM event.
+  await page.mouse.wheel(3.25 * 2, 0);
+  await page.waitForFunction((x) => Math.abs(
+    document.querySelector("#stage").getContext("2d").getTransform().e / devicePixelRatio - x + 3.25,
+  ) < 0.01, before.pan.x);
+  await frames(page);
+  await clickWorld(page, renderedCenter);
+  await frames(page);
+  nearColor(await worldPixel(page, renderedCenter), [136, 136, 136]);
+  assert.deepEqual((await metadata(page)).selection, ["instance"]);
+  const after = await viewport(page);
+  const proof = await page.evaluate(() => ({ wheel: window.__instanceWheel, overlay: window.__instanceOverlay }));
+  assert.deepEqual(proof.wheel, { deltaX: 3.25, isTrusted: true });
+  assert.ok(Math.abs(after.pan.x - before.pan.x + 3.25) < 0.01);
+  const expected = {
+    x: (500 * after.zoom + after.pan.x) * 2,
+    y: (100 * after.zoom + after.pan.y) * 2,
+    width: 200 * after.zoom * 2, height: 100 * after.zoom * 2,
+  };
+  assert.ok(proof.overlay, "selected instance must draw an overlay");
+  const maximumDeviceDelta = Math.max(...Object.keys(expected).map((key) => Math.abs(expected[key] - proof.overlay[key])));
+  assert.ok(maximumDeviceDelta <= 0.5, JSON.stringify({ ...proof, expected, maximumDeviceDelta }));
+  if (process.env.DESIGN_INSTANCE_EVIDENCE) {
+    const folder = resolve(process.env.DESIGN_INSTANCE_EVIDENCE);
+    await mkdir(folder, { recursive: true });
+    await page.screenshot({ path: resolve(folder, "dpr2-fractional-instance-gui.png") });
+    await writeFile(resolve(folder, "report.json"), JSON.stringify({ before, after, ...proof, expected, maximumDeviceDelta }, null, 2));
+  }
   assert.deepEqual(errors, []);
 });
 
@@ -305,4 +355,53 @@ test("a 1208-layer real browser render builds one shared full index rather than 
   assert.equal(after.stateRevision, before.stateRevision);
   assert.deepEqual(errors, []);
   t.diagnostic(`render samples: ${JSON.stringify(samples)}`);
+});
+
+test("trusted fractional trackpad and ctrl-wheel gestures defer text sampling through chrome redraws", async t => {
+  const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Gesture text", canvas: { width: 1000, height: 600, background: "#ffffff" },
+    tokens: { colors: [] }, resources: [], activePageId: "p", pages: [{ id: "p", name: "Main", children: [
+      node("plain", "text", 30.375, 41.41, 330, 32, { text: "Fractional wheel text", fontFamily: "Arial", fontSize: 24, fontWeight: 400, fontStyle: "normal", lineHeight: 1.2, textAlign: "left", letterSpacing: 0, textDecoration: "none" }),
+      node("master", "component", 30.125, 130.25, 330, 80, { fill: "transparent", children: [
+        node("master-text", "text", 40.375, 145.41, 310, 32, { text: "Instance wheel text", fontFamily: "Arial", fontSize: 24, fontWeight: 400, fontStyle: "normal", lineHeight: 1.2, textAlign: "left", letterSpacing: 0, textDecoration: "none" }),
+      ] }), node("instance", "instance", 420.375, 230.75, 330, 80, { componentId: "master" }),
+    ] }] });
+  const { page, errors } = await fixture(t, document, { dpr: 2, perf: true });
+  await page.waitForTimeout(210);
+  const read = () => page.evaluate(() => { const s = window.__perfStats(); return { observedAtMs: performance.now(), deviceTextSamplingBuilds: s.deviceTextSamplingBuilds, rasterTextCacheMisses: s.rasterTextCacheMisses,
+    textQualityBuilds: s.textQualityBuilds, deviceTextNodes: s.deviceTextNodes, rasterTextCacheBytes: s.rasterTextCacheBytes, rasterTextCacheBudgetBytes: s.rasterTextCacheBudgetBytes,
+    asynchronousRenderError: s.asynchronousRenderError }; });
+  const before = await read(), initialView = await viewport(page), rows = [];
+  const bounds = await page.locator("#stage").boundingBox();
+  await page.mouse.move(bounds.x + 400, bounds.y + 300);
+  await page.evaluate(() => { window.__perfWheelEvents = []; document.querySelector("#stage").addEventListener("wheel", event => window.__perfWheelEvents.push({ isTrusted: event.isTrusted, deltaX: event.deltaX, deltaY: event.deltaY, ctrlKey: event.ctrlKey })); });
+  for (let frame = 0; frame < 80; frame++) {
+    if (frame === 60) await page.keyboard.down("Control");
+    // Chromium CDP wheel deltas are divided by this context's DPR2 before DOM.
+    await page.mouse.wheel(frame < 60 ? .375 * 2 : 0, (frame < 60 ? .1875 : .75) * 2);
+    if (frame === 25) await page.locator("#toggle-grid").evaluate(button => button.click());
+    await frames(page);
+    rows.push({ frame, kind: frame < 60 ? "fractional-trackpad" : "ctrl-zoom", ...await read() });
+  }
+  await page.keyboard.up("Control");
+  const beforeSettle = await read();
+  await page.waitForTimeout(210);
+  const settled = await read(), finalView = await viewport(page), events = await page.evaluate(() => window.__perfWheelEvents);
+  const folder = resolve(process.env.DESIGN_PERF_EVIDENCE ?? ".tmp/render-fidelity-r004/perf/ui");
+  await mkdir(folder, { recursive: true });
+  await writeFile(resolve(folder, "trusted-ui.json"), JSON.stringify({ before, rows, beforeSettle, settled, initialView, finalView, events }, null, 2));
+  await page.screenshot({ path: resolve(folder, "trusted-fractional-ui.png") });
+  assert.equal(events.length, 80);
+  assert(events.every(event => event.isTrusted));
+  assert(events.slice(0, 60).every(event => event.deltaX === .375 && event.deltaY === .1875 && !event.ctrlKey));
+  assert(events.slice(60).every(event => event.ctrlKey));
+  assert.notEqual(initialView.pan.x, finalView.pan.x);
+  assert.notEqual(initialView.zoom, finalView.zoom);
+  assert.equal(beforeSettle.deviceTextSamplingBuilds, before.deviceTextSamplingBuilds);
+  assert.equal(beforeSettle.rasterTextCacheMisses, before.rasterTextCacheMisses);
+  assert.equal(beforeSettle.textQualityBuilds, before.textQualityBuilds);
+  assert.equal(settled.deviceTextSamplingBuilds, beforeSettle.deviceTextSamplingBuilds + 1);
+  assert(settled.deviceTextNodes >= 3);
+  assert.equal(settled.asynchronousRenderError, null);
+  assert(rows.every(row => row.rasterTextCacheBytes <= row.rasterTextCacheBudgetBytes));
+  assert.deepEqual(errors, []);
 });

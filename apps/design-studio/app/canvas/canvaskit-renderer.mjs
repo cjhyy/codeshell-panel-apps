@@ -5,7 +5,10 @@ import { designPageBounds, effectiveDesignNodeOpacity, isDesignNodeVisible } fro
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
+import { hitTestCanvasNode } from "../canvas-interaction.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
+import { createCanvasKitShapeRaster, canvasKitShapeRasterEligible } from "./canvaskit-shape-raster.mjs";
+import { browserPaintBoxes, blinkLayoutScale } from "./browser-paint-box.mjs";
 import { decodeCanvasKitImage, MAX_SVG_IMAGE_PIXELS } from "./image-decode.mjs";
 
 export const CANVASKIT_VERSION = "0.42.0";
@@ -151,13 +154,13 @@ function ancestors(node, index) {
   return result;
 }
 
-function rotateChain(canvas, chain, inverse = false) {
+function rotateChain(canvas, chain, inverse = false, rotationPivots = null) {
   for (const node of inverse ? [...chain].reverse() : chain) {
     if (node.rotation)
       canvas.rotate(
         (inverse ? -1 : 1) * node.rotation,
-        node.x + node.width / 2,
-        node.y + node.height / 2,
+        rotationPivots?.get(node.id)?.x ?? node.x + node.width / 2,
+        rotationPivots?.get(node.id)?.y ?? node.y + node.height / 2,
       );
   }
 }
@@ -166,14 +169,14 @@ function roundedRect(CK, node) {
   return [...rect(CK, node), ...effectiveCornerRadii(node).flatMap((radius) => [radius, radius])];
 }
 
-function clipAncestors(CK, canvas, chain) {
+function clipAncestors(CK, canvas, chain, rotationPivots) {
   const prefix = [];
   for (const node of chain) {
     prefix.push(node);
     if (!["frame", "component"].includes(node.type) || !node.clipContent) continue;
-    rotateChain(canvas, prefix);
+    rotateChain(canvas, prefix, false, rotationPivots);
     canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
-    rotateChain(canvas, prefix, true);
+    rotateChain(canvas, prefix, true, rotationPivots);
   }
 }
 
@@ -242,6 +245,7 @@ export async function createRenderer({
   background = "#ececea",
   tileCacheEnabled = true,
   deviceTextSampling = true,
+  onError,
 }) {
   if (!canvas?.ownerDocument) throw new Error("CanvasKit renderer requires a browser canvas");
   const CK = await loadCanvasKit(assetsBaseUrl, canvas.ownerDocument);
@@ -266,6 +270,7 @@ export async function createRenderer({
   let surface = null,
     picture = null,
     sceneState = null,
+    shapeRaster = null,
     disposed = false;
   let dpr = 1,
     cssWidth = canvas.width || 1,
@@ -284,11 +289,13 @@ export async function createRenderer({
     currentDesign = null,
     recordCurrentScene = null;
   let sceneNodes = [],
+    scenePaintBoxes = null,
+    sceneLayout = null,
+    sceneResources = new Map(),
     sceneIndex = new Map(),
     sceneChildren = new Map(),
     hasInstances = false,
-    deviceTextCandidates = [],
-    deviceCandidateOrigins = new Map();
+    deviceTextCandidates = [], shapeRasterCandidates = [];
   let sceneRevision = 0,
     resourceBuilds = 0,
     nodePictureBuilds = 0,
@@ -296,6 +303,11 @@ export async function createRenderer({
     nodePictureBytes = 0,
     qualityBuilds = 0,
     deviceSamplingBuilds = 0;
+  let gestureTimer = null, gestureView = null, asynchronousRenderError = null;
+  const cancelGestureSampling = () => {
+    clearTimeout(gestureTimer);
+    gestureTimer = null; gestureView = null;
+  };
   const tileCache = new Map();
   let tileBytes = 0,
     tileBuilds = 0,
@@ -323,8 +335,12 @@ export async function createRenderer({
     picture = null;
     for (const value of owned.reverse()) value.delete?.();
     owned = [];
+    shapeRaster?.dispose(); shapeRaster = null;
     sceneState?.dispose();
     sceneState = null;
+    scenePaintBoxes = null;
+    sceneLayout = null;
+    sceneResources = new Map();
     sceneImages = new Map();
     sceneImageErrors = new Map(); sceneSvgPixels = new Map();
     resourceKey = null;
@@ -340,6 +356,7 @@ export async function createRenderer({
       h = Math.ceil(height * pixelRatio);
     if (w > 8192 || h > 8192 || w * h > MAX_PIXELS)
       throw new Error("CanvasKit viewport exceeds the bounded pixel budget");
+    cancelGestureSampling();
     // CSS size can change while the physical backing size stays identical,
     // including when a new renderer reuses an already-sized HiDPI canvas.
     canvas.style.width = `${width}px`;
@@ -364,6 +381,8 @@ export async function createRenderer({
 
   async function setScene(design, { resources = new Map() } = {}) {
     assertLive();
+    cancelGestureSampling();
+    asynchronousRenderError = null;
     const started = now(),
       current = ++generation;
     if (!Array.isArray(design?.nodes) || !design.canvas)
@@ -417,6 +436,7 @@ export async function createRenderer({
       if (!reuseResources) text.dispose();
       return;
     }
+    const nextShapeRaster = reuseResources ? shapeRaster : createCanvasKitShapeRaster({ CK, document: canvas.ownerDocument, text });
     let nextPicture;
     try {
       if (!reuseResources)
@@ -438,19 +458,64 @@ export async function createRenderer({
         return;
       }
       counters.decodedImages = images.size;
-      text.beginScene?.(design);
       const pageNodes = design.pages?.length
         ? design.pages.flatMap((page) =>
             page.id === design.activePageId ? design.nodes : (page.nodes ?? []),
           )
         : design.nodes;
       const index = new Map(pageNodes.map((node) => [node.id, node]));
+      // HTML's layout grid (emulated vs real DSF), probed once per DPR.
+      const layout = blinkLayoutScale(canvas.ownerDocument);
+      const paintBoxes = browserPaintBoxes(pageNodes, { layoutScale: layout.scale });
       const children = new Map();
       for (const node of pageNodes) {
         if (!children.has(node.parentId)) children.set(node.parentId, []);
         children.get(node.parentId).push(node);
       }
-      const activeIds = new Set(pageNodes.map((node) => node.id));
+      // Translation-only instances need their own world phase; never sample an
+      // instance from the master's bitmap phase. Scaled/rotated/nested uses keep
+      // the existing master, scoped to that component's text rather than scene.
+      const instanceTexts = new Map(), instanceFallbackIds = new Set(), instanceTextFallbacks = [];
+      let instanceTextFallbackCount = 0;
+      const referencedComponents = new Set(pageNodes.filter(node => node.type === "instance").map(node => node.componentId));
+      const descendantsOf = (id, seen = new Set()) => {
+        if (seen.has(id)) return []; seen.add(id);
+        return (children.get(id) ?? []).flatMap(child => [child, ...descendantsOf(child.id, seen),
+          ...(child.type === "instance" ? descendantsOf(child.componentId, seen) : [])]);
+      };
+      for (const instance of design.nodes.filter(node => node.type === "instance")) {
+        const component = index.get(instance.componentId);
+        if (component?.type !== "component") continue;
+        const descendants = descendantsOf(component.id);
+        const safe = instance.width === component.width && instance.height === component.height &&
+          ![instance, component, ...ancestors(instance, index), ...descendants].some(node => node.rotation ||
+            node !== instance && node.type === "instance") &&
+          !ancestors(instance, index).some(node => referencedComponents.has(node.id));
+        for (const child of descendants.filter(node => node.type === "text")) {
+          if (!safe || instanceTexts.size >= 10000) {
+            instanceFallbackIds.add(child.id); instanceTextFallbackCount++;
+            if (instanceTextFallbacks.length < 256) instanceTextFallbacks.push({ nodeId: child.id, instanceId: instance.id,
+              reason: safe ? "instance-text-variant-budget" : "transformed-instance-text-master" });
+            continue;
+          }
+          const translated = { ...child, id: `\0instance:${JSON.stringify([instance.id, child.id])}`,
+            x: child.x + instance.x - component.x, y: child.y + instance.y - component.y };
+          delete translated.parentId;
+          instanceTexts.set(JSON.stringify([instance.id, child.id]), translated);
+        }
+      }
+      const samplingNodes = [...design.nodes, ...instanceTexts.values()];
+      const samplingIndex = new Map(samplingNodes.map(node => [node.id, node]));
+      if (text.beginScene?.({ ...design, nodes: samplingNodes }, { layoutScale: layout.scale })) clearNodePictures(nextNodePictures);
+      const shapeCandidates = deviceTextSampling ? design.nodes.filter(node => {
+        return canvasKitShapeRasterEligible(node, { hasChildren: Boolean(children.get(node.id)?.length) }) &&
+          isDesignNodeVisible(design, node, index);
+      }).map(node => ({ node: paintBoxes.nodes.get(node.id) ?? node,
+        pivot: paintBoxes.rotationPivots.get(node.id) ?? { x: node.x + node.width / 2, y: node.y + node.height / 2 },
+        chain: ancestors(node, index).map(parent => ({ node: paintBoxes.nodes.get(parent.id) ?? parent,
+          pivot: paintBoxes.rotationPivots.get(parent.id) ?? { x: parent.x + parent.width / 2, y: parent.y + parent.height / 2 } })) })) : [];
+      nextShapeRaster.beginScene(shapeCandidates);
+      const activeIds = new Set([...pageNodes, ...instanceTexts.values()].map((node) => node.id));
       for (const [id, entry] of nextNodePictures)
         if (!activeIds.has(id)) {
           entry.picture.delete();
@@ -565,16 +630,21 @@ export async function createRenderer({
               stroke.delete();
             }
           }
-          function drawCachedContent(node) {
+          function drawCachedContent(node, sampledNode = node) {
             // Raw commands use node-local coordinates. Moving a frame or its
             // descendants changes the outer transform, not glyph shaping/paints.
-            const local = { ...node, x: 0, y: 0, rotation: 0, opacity: 1 };
+            const local = { ...node, id: sampledNode.id, x: 0, y: 0, rotation: 0, opacity: 1 };
             delete local.parentId;
             delete local.shadow;
             delete local.name;
             delete local.locked;
-            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2, text.rasterSamplingForNode?.(node)]);
-            let entry = nextNodePictures.get(node.id);
+            // Finite text snaps its paint origin too (hanging transport or, when HTML does not transport it,
+            // the line box): every text picture is keyed by its world origin phase.
+            const originPhase = node.type === "text"
+              ? [sampledNode.y - Math.floor(sampledNode.y), sampledNode.y < 0,
+                  node.textAlign === "center" ? Math.trunc(sampledNode.x * 64) / 64 - sampledNode.x : null] : null;
+            const signature = JSON.stringify([local, originPhase, text.rasterScaleForNode?.(sampledNode) ?? 2, text.rasterSamplingForNode?.(sampledNode)]);
+            let entry = nextNodePictures.get(sampledNode.id);
             if (entry?.signature === signature) {
               nodePictureHits++;
               for (const key of rawCounterKeys) counters[key] += entry.delta[key];
@@ -621,7 +691,7 @@ export async function createRenderer({
                 ),
                 issues: unsupported.slice(issueStart),
               };
-              nextNodePictures.set(node.id, entry);
+              nextNodePictures.set(sampledNode.id, entry);
               nodePictureBuilds++;
             }
             target.save();
@@ -629,20 +699,25 @@ export async function createRenderer({
             target.drawPicture(entry.picture);
             target.restore();
           }
-          function drawNode(node, nodeIndex = index, stack = new Set()) {
+          function drawNode(node, nodeIndex = index, stack = new Set(), instanceId = "") {
             if (!isDesignNodeVisible({ nodes: pageNodes }, node, nodeIndex)) return;
             counters.drawVisits++;
-            const chain = ancestors(node, nodeIndex);
+            const chain = ancestors(node, nodeIndex).map(parent => paintBoxes.nodes.get(parent.id) ?? parent);
+            const box = paintBoxes.nodes.get(node.id);
+            // Keep an instance's detached master semantics (notably parentId).
+            if (box && ["x", "y", "width", "height"].some(key => box[key] !== node[key]))
+              node = { ...node, x: box.x, y: box.y, width: box.width, height: box.height };
             target.save();
             try {
-              clipAncestors(CK, target, chain);
+              clipAncestors(CK, target, chain, paintBoxes.rotationPivots);
               if (
                 chain.some(
                   (parent) => ["frame", "component"].includes(parent.type) && parent.clipContent,
                 )
               )
                 counters.clippedNodes++;
-              rotateChain(target, [...chain, node]);
+              const sampledShape = !instanceId && nextShapeRaster.isDeviceSamplingForNode(node.id);
+              if (!sampledShape) rotateChain(target, [...chain, node], false, paintBoxes.rotationPivots);
               if ([...chain, node].some((item) => item.rotation)) counters.rotatedNodes++;
               if(visibleShadowLayers(node).length){counters.shadowNodes++;if(visibleShadowLayers(node).some(layer=>layer.blur>0))unsupportedNode(node,"css-shadow-raster-kernel","CSS 几何阴影层保持可编辑；模糊内核的严格像素一致性尚未验证");}
               const opacity = effectiveDesignNodeOpacity({ nodes: pageNodes }, node, nodeIndex);
@@ -698,12 +773,13 @@ export async function createRenderer({
                   target.translate(node.x, node.y);
                   target.scale(node.width / component.width, node.height / component.height);
                   target.translate(-component.x, -component.y);
-                  drawNode(detached, sourceIndex, nextStack);
+                  drawNode(detached, sourceIndex, nextStack, node.id);
                   for (const child of pageNodes)
-                    if (descendants.has(child.id)) drawNode(child, sourceIndex, nextStack);
+                    if (descendants.has(child.id)) drawNode(child, sourceIndex, nextStack, node.id);
                   return;
                 }
-                drawCachedContent(node);
+                if (!sampledShape || !nextShapeRaster.draw(target, node))
+                  drawCachedContent(node, instanceTexts.get(JSON.stringify([instanceId, node.id])) ?? node);
               } finally {
                 if (layered) target.restore();
               }
@@ -734,20 +810,24 @@ export async function createRenderer({
       sceneImageErrors = imageErrors; sceneSvgPixels = svgPixels;
       resourceKey = nextResourceKey;
       sceneState = text;
+      shapeRaster = nextShapeRaster;
+      shapeRasterCandidates = shapeCandidates;
       nodePictures = nextNodePictures;
       currentDesign = design;
       sceneNodes = pageNodes;
+      scenePaintBoxes = paintBoxes;
+      sceneLayout = layout;
+      sceneResources = resources;
       sceneIndex = index;
       sceneChildren = children;
       hasInstances = design.nodes.some((node) => node.type === "instance");
-      deviceTextCandidates = deviceTextSampling && !hasInstances
-        ? design.nodes.filter((node) => node.type === "text" &&
+      deviceTextCandidates = deviceTextSampling
+        ? samplingNodes.filter((node) => node.type === "text" && !instanceFallbackIds.has(node.id) &&
             isDesignNodeVisible(design, node, index) &&
             ![...ancestors(node, index), node].some((item) => item.rotation))
-          .map((node) => ({ id: node.id, bounds: text.contentBounds(node),
-            pad: 0, origin: { x: node.x - Math.floor(node.x), y: node.y - Math.floor(node.y) } }))
+          .map((node) => ({ id: node.id, legacyOrigin: Number.isFinite(node.layoutBaselineOffset), bounds: text.contentBounds(node),
+            pad: 0, origin: { x: node.x, y: node.y } }))
         : [];
-      deviceCandidateOrigins = new Map(deviceTextCandidates.map((candidate) => [candidate.id, candidate.origin]));
       nodePictureBytes = nextNodeBytes;
       sceneRevision++;
       clearTiles();
@@ -757,6 +837,9 @@ export async function createRenderer({
         sceneStats = {
           ...counters,
           ...text.stats(),
+          instanceTextFallbackCount, instanceTextFallbacks,
+          browserPaintBoxStats: paintBoxes.stats,
+          browserLayout: { ...layout },
           svgDecodedImages: svgPixels.size,
           svgDecodedPixels: [...svgPixels.values()].reduce((sum, value) => sum + value, 0),
           unsupported: [...unsupported],
@@ -767,6 +850,11 @@ export async function createRenderer({
       };
       updateStats();
       recordCurrentScene = (quality = true) => {
+        if (text.fontsChanged?.() && text.beginScene?.({ ...design, nodes: samplingNodes }, { layoutScale: layout.scale })) {
+          clearNodePictures(nextNodePictures); nextNodeBytes = 0;
+          for (const candidate of deviceTextCandidates)
+            candidate.bounds = text.contentBounds(samplingIndex.get(candidate.id));
+        }
         const next = record();
         picture.delete();
         picture = next;
@@ -780,6 +868,7 @@ export async function createRenderer({
     } catch (error) {
       nextPicture?.delete();
       if (!reuseResources) {
+        nextShapeRaster.dispose();
         nextOwned.forEach((value) => value.delete());
         text.dispose();
         clearNodePictures(nextNodePictures);
@@ -870,20 +959,52 @@ export async function createRenderer({
     return true;
   }
 
-  function render({ pan = { x: 0, y: 0 }, zoom = 1 } = {}) {
+  function render({ pan = { x: 0, y: 0 }, zoom = 1, interactive = false } = {}) {
     assertLive();
+    if (asynchronousRenderError) throw asynchronousRenderError;
     if (!gl || gl.isContextLost())
       throw new Error("CanvasKit WebGL context lost; this frame was not rendered");
     if (![pan.x, pan.y, zoom].every(Number.isFinite) || zoom <= 0)
       throw new Error("Invalid viewport transform");
+    // Reuse the retained picture during a camera gesture. A selection/chrome
+    // repaint also keeps deferral; the last camera receives one precise device
+    // phase after 150ms idle. No second cache or raster budget is introduced.
+    const deferSampling = interactive || gestureTimer !== null;
+    if (deferSampling && (interactive || !gestureView || zoom !== gestureView.zoom ||
+        pan.x !== gestureView.pan.x || pan.y !== gestureView.pan.y)) {
+      clearTimeout(gestureTimer);
+      gestureView = { pan: { ...pan }, zoom };
+      gestureTimer = setTimeout(() => {
+        const view = gestureView;
+        gestureTimer = null; gestureView = null;
+        if (disposed || !picture) return;
+        try { Promise.resolve(render(view)).catch(fail); }
+        catch (error) { fail(error); }
+        function fail(error) {
+          asynchronousRenderError = error;
+          // The controller retires a failed surface. Standalone callers also
+          // see the error in stats and on their next explicit render.
+          try { onError?.(error); } catch { /* Keep the original render error. */ }
+        }
+      }, 150);
+    }
+    // A DPR change can move the document between layout grids; the scene's
+    // boxes and line boxes then follow the new profile before this frame.
+    if (currentDesign && sceneLayout && blinkLayoutScale(canvas.ownerDocument).scale !== sceneLayout.scale)
+      return setScene(currentDesign, { resources: sceneResources }).then(() => render({ pan, zoom, interactive }));
+    if (sceneState?.fontsChanged?.()) recordCurrentScene?.();
     // Match Skia's float32 matrix composition, including tiny residues left by
     // public wheel controls even when the effective device transform is exact.
     const physicalScale = Math.fround(Math.fround(zoom) * Math.fround(dpr));
-    const deviceEligible = deviceTextSampling && !hasInstances && physicalScale === 1 &&
-      Number.isInteger(Math.fround(Math.fround(pan.x) * Math.fround(dpr))) &&
-      Number.isInteger(Math.fround(Math.fround(pan.y) * Math.fround(dpr)));
+    const deviceEligible = deviceTextSampling && Number.isFinite(physicalScale) && physicalScale > 0;
+    const devicePan = { x: Math.fround(Math.fround(pan.x) * Math.fround(dpr)), y: Math.fround(Math.fround(pan.y) * Math.fround(dpr)) };
+    const phase = value => Math.round(((value % 1 + 1) % 1) * 1e6) / 1e6 / physicalScale;
+    const screenOrigins = new Map(deviceTextCandidates.map(candidate => [candidate.id, {
+      x: phase(candidate.origin.x * physicalScale + devicePan.x),
+      y: phase(candidate.origin.y * physicalScale + devicePan.y),
+    }]));
     const qualityNeeded = zoom * dpr > 2 || hasInstances;
-    if (picture && currentDesign && sceneState.setRasterScale &&
+    if (!deferSampling && picture && currentDesign && sceneState.setRasterScale &&
         (qualityNeeded || deviceEligible || sceneState.hasDeviceSampling?.())) {
       const nodes = currentDesign.nodes,
         index = sceneIndex;
@@ -896,10 +1017,9 @@ export async function createRenderer({
       const visibleNodeIds = new Set(),
         nodeScales = new Map(),
         deviceOrigins = new Map();
-      // Native pixel coverage is meaningful only at physical 1x with an integer
-      // device translation. All other transforms retain the high-resolution
-      // master. A shared component picture can also be used by scaled/rotated
-      // instances, so scenes containing instances conservatively use masters.
+      // Sample at the actual screen phase without changing the user camera.
+      // Each text keeps one replaceable bounded device variant. Shared component
+      // masters used by transformed instances remain a per-node fallback.
       const overlaps = (bounds, pad = 0) =>
         bounds &&
         bounds.x - pad < viewport.x + viewport.width &&
@@ -907,9 +1027,15 @@ export async function createRenderer({
         bounds.y - pad < viewport.y + viewport.height &&
         bounds.y + bounds.height + pad > viewport.y;
       if (deviceEligible) for (const candidate of deviceTextCandidates)
-        if (overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, candidate.origin);
+        // Finite raster text also needs the actual device phase below 1x;
+        // native deviceOnly plans retain their <=1x fallback in setDeviceSampling.
+        if ((!candidate.legacyOrigin || physicalScale !== 1 || Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) && overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, screenOrigins.get(candidate.id));
       if (qualityNeeded) for (const node of nodes) {
         if (node.type !== "text" || !isDesignNodeVisible(currentDesign, node, index)) continue;
+        // Eligible integer-scale variants are optional and use the exact
+        // physical scale. Do not first force a larger power-of-two master:
+        // that allocation could throw before the bounded fallback is tried.
+        if (deviceOrigins.has(node.id)) continue;
         const bounds = transformedNodeBoundsInTree(sceneNodes, node, index),
           pad = node.fontSize * 2;
         if (overlaps(bounds, pad)) {
@@ -954,9 +1080,19 @@ export async function createRenderer({
       const qualityChanged = qualityNeeded &&
         sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales });
       const samplingChanged = sceneState.setDeviceSampling?.(deviceOrigins, {
-        retainOffscreen: deviceEligible, eligibleOrigins: deviceCandidateOrigins,
+        retainOffscreen: deviceEligible, eligibleOrigins: screenOrigins,
+        scale: deviceEligible ? physicalScale : 1,
       });
       if (qualityChanged || samplingChanged) recordCurrentScene(Boolean(qualityChanged));
+    }
+    if (!deferSampling && picture && shapeRaster) {
+      const viewport = { x: -pan.x / zoom, y: -pan.y / zoom, width: cssWidth / zoom, height: cssHeight / zoom };
+      const visible = deviceEligible ? shapeRasterCandidates.filter(candidate => {
+        const bounds = transformedNodeBoundsInTree(sceneNodes, candidate.node, sceneIndex);
+        return bounds.x - 2 < viewport.x + viewport.width && bounds.x + bounds.width + 2 > viewport.x &&
+          bounds.y - 2 < viewport.y + viewport.height && bounds.y + bounds.height + 2 > viewport.y;
+      }) : [];
+      if (shapeRaster.setDeviceSampling(visible, { scale: physicalScale, pan: devicePan })) recordCurrentScene(false);
     }
     const started = now(),
       target = surface.getCanvas();
@@ -971,6 +1107,8 @@ export async function createRenderer({
     if (picture) {
       if (
         tileCacheEnabled &&
+        // A world-grid tile would resample a screen-phase glyph a second time.
+        (!(sceneState.hasDeviceSampling?.() || shapeRaster.hasDeviceSampling()) || Number.isInteger(physicalScale) && Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) &&
         zoom * dpr <= CANVASKIT_TILE_CACHE.maxPhysicalScale &&
         drawTiles(target, pan, zoom)
       )
@@ -990,6 +1128,10 @@ export async function createRenderer({
       backend: "WebGL2",
       gpuRenderer,
       ...sceneStats,
+      // Optional device allocations may all fall back without changing the
+      // display list. Their live budget diagnostics still belong in this frame.
+      ...sceneState?.stats?.(),
+      ...shapeRaster?.stats?.(),
       pictureBuilds: builds,
       sceneRevision,
       resourceBuilds,
@@ -997,6 +1139,7 @@ export async function createRenderer({
       nodePictureHits,
       textQualityBuilds: qualityBuilds,
       deviceTextSamplingBuilds: deviceSamplingBuilds,
+      asynchronousRenderError: asynchronousRenderError?.message ?? null,
       nodePictureCacheBytes: nodePictureBytes,
       nodePictureCacheBudgetBytes: MAX_NODE_PICTURE_BYTES,
       renderMode: lastMode,
@@ -1021,6 +1164,7 @@ export async function createRenderer({
   function dispose() {
     if (disposed) return;
     disposed = true;
+    cancelGestureSampling();
     generation++;
     releaseScene();
     surface?.delete();
@@ -1029,5 +1173,11 @@ export async function createRenderer({
     context.delete();
     CK.deleteContext(contextHandle);
   }
-  return { setScene, resize, render, dispose, stats };
+  function hitTest(point) {
+    if (disposed || !currentDesign || !scenePaintBoxes) return null;
+    const nodes = currentDesign.nodes.map(node => scenePaintBoxes.nodes.get(node.id) ?? node);
+    const index = new Map([...sceneIndex].map(([id, node]) => [id, scenePaintBoxes.nodes.get(id) ?? node]));
+    return hitTestCanvasNode({ ...currentDesign, nodes }, point, index, scenePaintBoxes.rotationPivots)?.id ?? null;
+  }
+  return { setScene, resize, render, hitTest, dispose, stats };
 }

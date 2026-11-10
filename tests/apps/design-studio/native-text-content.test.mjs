@@ -52,16 +52,41 @@ test("native ellipsis keeps the full authored text and uses native one-line trun
 });
 
 test("pixel unit provenance preserves explicit newline edits and authored source despite stale typography", () => {
-  const node = wrapped(); Object.assign(node, { lineHeight: 20, lineHeightUnit: "pixels", text: "Alpha \nBeta", textSource: "Alpha Beta" });
-  node.textMetrics.signature = textMetricsSignature(node); node.textMetrics.sourceSignature = textSourceMetricsSignature(node);
-  assert.equal(JSON.parse(node.textMetrics.signature).length, 9);
-  assert.equal(nativeTextContent(node), "Alpha Beta");
-  node.fontSize = 24; assert.equal(nativeTextContent(node), "Alpha Beta", "Stale typography retains content provenance");
-  node.text = "Alpha\n Beta"; assert.equal(nativeTextContent(node), "Alpha\n Beta", "New authored line break must not resurrect stale source");
-  node.text = "Alpha \nBeta"; node.textSource = "Edited source\nwith explicit LF";
-  assert.equal(nativeTextContent(node), node.textSource);
-  for (const signature of [JSON.stringify(["Edited display", "Arial", "", 16, 400, "normal", 0, 20, "relative"]), JSON.stringify(["Edited display", "Arial", "", 16, 400, "normal", 0, 20, "pixels", "extra"])]) {
-    const invalid = { ...node, text: "Edited display", textSource: "Stale source", textMetrics: { ...node.textMetrics, signature } };
-    assert.equal(nativeTextContent(invalid), "Edited display", "Malformed9/10 metadata cannot certify source content");
+  for (const layoutBaselineOffset of [undefined, 0, 3.25]) {
+    const node = wrapped(); Object.assign(node, { lineHeight: 20, lineHeightUnit: "pixels", text: "Alpha \nBeta", textSource: "Alpha Beta" });
+    if (layoutBaselineOffset !== undefined) node.layoutBaselineOffset = layoutBaselineOffset;
+    node.textMetrics.signature = textMetricsSignature(node); node.textMetrics.sourceSignature = textSourceMetricsSignature(node);
+    assert.equal(JSON.parse(node.textMetrics.signature).length, layoutBaselineOffset === undefined ? 10 : 9);
+    assert.equal(nativeTextContent(node), "Alpha Beta");
+    node.fontSize = 24; assert.equal(nativeTextContent(node), "Alpha Beta", "Stale typography retains content provenance");
+    node.text = "Alpha\n Beta"; assert.equal(nativeTextContent(node), "Alpha\n Beta", "New authored line break must not resurrect stale source");
+    node.text = "Alpha \nBeta"; node.textSource = "Edited source\nwith explicit LF";
+    assert.equal(nativeTextContent(node), node.textSource);
+    for (const signature of [JSON.stringify(["Edited display", "Arial", "", 16, 400, "normal", 0, 20, "relative"]), JSON.stringify(["Edited display", "Arial", "", 16, 400, "normal", 0, 20, "pixels", "extra"])]) {
+      const invalid = { ...node, text: "Edited display", textSource: "Stale source", textMetrics: { ...node.textMetrics, signature } };
+      assert.equal(nativeTextContent(invalid), "Edited display", "Malformed9/10 metadata cannot certify source content");
+    }
+  }
+});
+
+test("ratio provenance accepts legacy and line-box origins but rejects unknown origin extensions", () => {
+  for (const layoutBaselineOffset of [undefined, 0, -3.25]) {
+    const node = wrapped();
+    if (layoutBaselineOffset !== undefined) node.layoutBaselineOffset = layoutBaselineOffset;
+    node.textMetrics.signature = textMetricsSignature(node);
+    node.textMetrics.sourceSignature = textSourceMetricsSignature(node);
+    assert.equal(JSON.parse(node.textMetrics.signature).length, layoutBaselineOffset === undefined ? 9 : 8);
+    node.fontSize = 24;
+    node.text = `${source}\n`;
+    assert.equal(nativeTextContent(node), node.text, "Authored newline survives a stale typography receipt");
+    node.text = display;
+    node.textSource = "Updated source\nretains explicit lines";
+    assert.equal(nativeTextContent(node), node.textSource);
+  }
+  for (const tail of [{ origin: "future" }, { origin: "line-box-v1", extra: true }, ["line-box-v1"]]) {
+    const node = wrapped();
+    node.text = "Current display"; node.textSource = "Stale source";
+    node.textMetrics.signature = JSON.stringify([node.text, "Arial", "", 20, 400, "normal", 0, 1.2, tail]);
+    assert.equal(nativeTextContent(node), node.text, "Unknown metadata cannot certify stale source");
   }
 });

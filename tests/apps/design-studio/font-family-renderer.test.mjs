@@ -53,8 +53,14 @@ test('software CanvasKit missing-glyph resource aliases retain the exact remaini
         }
         let changedPixels=0;for(let i=0;i<outputs[0].pixels.length;i+=4)if([0,1,2,3].some(c=>outputs[0].pixels[i+c]!==outputs[1].pixels[i+c]))changedPixels++;
         const measured=document.createElement('canvas').getContext('2d'),measure=family=>{measured.font='900 28px '+family;return measured.measureText(node.text).width;};
-        let rangeRefusal;try{renderer.draw({drawImageRect(){throw Error('must refuse before raster drawing');}},{...node,textRanges:{version:1,sourceSignature:textRangeSourceSignature(node.text),ranges:[{start:0,end:2,fill:'#991122'}]}});}catch(error){rangeRefusal=error.code;}
-        rows.push({family,css,mismatch,changedPixels,widthExpected:measure(mismatch?designNamedFontFamilyCss(family):css),widthWithoutFallback:measure(designNamedFontFamilyCss(family)),warnings,rangeRefusal,counters:{...counters},stats:renderer.stats(),stateUnchanged:JSON.stringify(design)===raw,bytesUnchanged:resources.get('font').bytes===bytes,contexts:[...new Set(contexts)],...(retain?{pngs:outputs.map(o=>o.png)}:{})});
+        // Range-render batch: a ranged node whose supplied face lacks glyphs now uses the range raster with the
+        // same remaining CSS fallback stack (no refusal, no native drawing) instead of throwing.
+        let rangeRefusal=null,rangeInk=0;const rangeWarnings=warnings.length,ranged={...node,textRanges:{version:1,sourceSignature:textRangeSourceSignature(node.text),ranges:[{start:0,end:2,fill:'#991122'}]}};
+        {const surface=CK.MakeSurface(700,170);try{surface.getCanvas().clear(CK.WHITE);renderer.draw(surface.getCanvas(),ranged);surface.flush();const image=surface.makeImageSnapshot();
+          try{const px=image.readPixels(0,0,{width:700,height:170,colorType:CK.ColorType.RGBA_8888,alphaType:CK.AlphaType.Unpremul,colorSpace:CK.ColorSpace.SRGB});for(let i=0;i<px.length;i+=4)rangeInk+=765-px[i]-px[i+1]-px[i+2];}finally{image.delete();}}
+          catch(error){rangeRefusal=error.code??error.message;}finally{surface.delete();}}
+        rangeRefusal=rangeRefusal??(warnings.slice(rangeWarnings).includes('text-ranges-unsupported')?'per-node-refusal':null);
+        rows.push({family,css,mismatch,changedPixels,widthExpected:measure(mismatch?designNamedFontFamilyCss(family):css),widthWithoutFallback:measure(designNamedFontFamilyCss(family)),warnings,rangeRefusal,rangeInk,counters:{...counters},stats:renderer.stats(),stateUnchanged:JSON.stringify(design)===raw,bytesUnchanged:resources.get('font').bytes===bytes,contexts:[...new Set(contexts)],...(retain?{pngs:outputs.map(o=>o.png)}:{})});
       }finally{renderer.dispose();document.fonts.delete(face);}
     }
     HTMLCanvasElement.prototype.getContext=getContext;
@@ -64,7 +70,8 @@ test('software CanvasKit missing-glyph resource aliases retain the exact remaini
   for(let i=0;i<rows.length;i++){
     const row=rows[i];assert.equal(row.changedPixels,0,JSON.stringify({...row,pngs:undefined}));
     assert(row.warnings.includes('native-missing-glyph'));assert(row.warnings.includes('native-font-unavailable'));
-    assert.equal(row.rangeRefusal,'TEXT_RANGES_UNSUPPORTED');assert.equal(row.counters.nativeTextNodes,0);
+    assert.equal(row.rangeRefusal,null,'the ranged missing-glyph node renders through the range raster');assert(row.rangeInk>0);
+    assert.equal(row.counters.rangeRasterNodes,1);assert.equal(row.counters.nativeTextNodes,0);
     assert(row.stateUnchanged&&row.bytesUnchanged);assert(!row.contexts.some(kind=>/webgl|bitmaprenderer/iu.test(kind)));
     if(!row.mismatch)assert.notEqual(row.widthExpected,row.widthWithoutFallback,'fixture must actually distinguish fallback selection');
     if(evidence){await mkdir(evidence,{recursive:true});for(let n=0;n<row.pngs.length;n++)await writeFile(join(evidence,`${i}-${n?'control':'bound'}.png`),Buffer.from(row.pngs[n]));delete row.pngs;}

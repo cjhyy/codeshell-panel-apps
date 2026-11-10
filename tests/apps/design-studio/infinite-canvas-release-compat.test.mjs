@@ -13,14 +13,25 @@ const document = child => normalizeDesignDocument({ format: "codeshell.design", 
   tokens: { colors: [] }, activePageId: "page-1",
   pages: [{ id: "page-1", name: "World", children: [child] }] });
 
-test("infinite natural text bounds preserve mainline pixel line height rather than multiplying it by font size", () => {
+test("infinite hanging text bounds preserve mainline pixel line height rather than multiplying it by font size", () => {
   const value = document(node({ type: "text", fill: "#000000", text: "First\nSecond", height: 20,
     fontFamily: "Roboto", fontSize: 20, fontWeight: 400,
-    lineHeight: 100, lineHeightUnit: "pixels", textAlign: "left" }));
+    lineHeight: 100, lineHeightUnit: "pixels", textAlign: "left", layoutBaselineOffset: 0 }));
   assert.deepEqual(designPageBounds(value), { x: -520, y: 280, width: 120, height: 160 });
   const svg = exportDesignSvg(value);
   assert.match(svg, /y="400"[^>]+>Second<\/text>/u);
   assert.match(svg, /viewBox="-520 280 120 160"/u);
+});
+
+test("infinite line-box text bounds include pixel leading without multiplying line height by font size", () => {
+  const value = document(node({ type: "text", fill: "#000000", text: "First\nSecond", height: 20,
+    fontFamily: "Roboto", fontSize: 20, fontWeight: 400,
+    lineHeight: 100, lineHeightUnit: "pixels", textAlign: "left" }));
+  assert.deepEqual(designPageBounds(value), { x: -520, y: 300, width: 120, height: 180 });
+  const svg = exportDesignSvg(value);
+  assert.match(svg, /data-text-line-box="unmeasured"/u);
+  assert.match(svg, /y="450"[^>]+>Second<\/text>/u);
+  assert.match(svg, /viewBox="-520 300 120 180"/u);
 });
 
 test("infinite content bounds include transparent mainline surfaces painted only by independent outside strokes", () => {

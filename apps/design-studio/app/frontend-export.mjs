@@ -12,7 +12,8 @@ import {
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
 import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
-import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
+import { textLineBoxAlphabeticOffset, textHtmlFiniteHangingTransport } from "./text-line-box.mjs";
+import { hasDesignStroke, designStrokeSides, designStrokeOutset, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss, designRuntimeFontFamilyCss } from "./font-css.mjs";
 
@@ -93,9 +94,9 @@ function alignment(value) {
   return value || "flex-start";
 }
 
-function positionDeclarations(node, parent, parentUsesLayout, canvas) {
+function positionDeclarations(node, parent, parentUsesLayout, canvas, paintOffset = 0) {
   const flowOwned = parentUsesLayout && node.layoutPositioning !== "absolute";
-  if (flowOwned) return [["position", "relative"]];
+  if (flowOwned) return [["position", "relative"], ...(paintOffset ? [["top", cssNumber(paintOffset)]] : [])];
 
   const parentX = Number(parent?.x) || 0;
   const parentY = Number(parent?.y) || 0;
@@ -103,7 +104,7 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
   const localLeft = (Number(node.x) || 0) - parentX-border[3];
   const baseline = node.type === "text" && ["html", "native"].includes(node.layoutBaselineSource)
     ? Number(node.layoutBaselineOffset) || 0 : 0;
-  const localTop = (Number(node.y) || 0) - baseline - parentY-border[0];
+  const localTop = (Number(node.y) || 0) - baseline - parentY-border[0] + paintOffset;
   const parentWidth=Number(parent?.width??canvas?.width)-border[1]-border[3];
   const parentHeight=Number(parent?.height??canvas?.height)-border[0]-border[2];
   const declarations = [["position", "absolute"]];
@@ -353,7 +354,20 @@ function layoutDeclarations(node) {
   ];
 }
 
-function paintDeclarations(node) {
+function usesCenteredOutline(node, context) {
+  const sides = designStrokeSides(node), side = sides[0];
+  // Blink rounds outline-offset to whole CSS pixels. Only even widths retain
+  // the centered contour. An outline paints above descendants, unlike shadows,
+  // so restrict the single ring to leaves and leave child paint order intact.
+  return ["frame", "rectangle", "component"].includes(node.type) &&
+    !["inside", "outside"].includes(node.strokeAlign) && !node.children?.length &&
+    !(context?.idPrefix === "" && context.prototypeLinks?.has(node.id)) &&
+    !node.cornerRadii && Number(node.cornerRadius) >= side.width / 2 &&
+    side.width > 0 && side.width <= 100 && Number.isInteger(side.width / 2) &&
+    sides.every(s => s.width === side.width && s.color === side.color && s.opacity === side.opacity && s.opacity > 0);
+}
+
+function paintDeclarations(node, context) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
   const declarations = [
     ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
@@ -371,11 +385,31 @@ function paintDeclarations(node) {
     if(sides.some(s=>s.width!==side.width || s.color!==side.color || s.opacity!==side.opacity))
       throw new Error(`${node.name}: 非内侧的独立侧边暂不能导出为等价 CSS；请保留 SVG/v3 或使用内侧边框`);
     const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
-    const outside=node.strokeAlign === "outside"?side.width:side.width/2;
-    declarations.push(["outline",`${cssRoundedNumber(outside)} solid ${rgba}`]);
-    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssRoundedNumber(side.width/2)} ${rgba}`);
+    if (node.strokeAlign === "outside") {
+      declarations.push(["outline", `${cssRoundedNumber(side.width)} solid ${rgba}`]);
+    } else if (usesCenteredOutline(node, context)) {
+      declarations.push(["outline", `${cssRoundedNumber(side.width)} solid ${rgba}`],
+        ["outline-offset", cssRoundedNumber(-side.width / 2)]);
+    } else {
+      // Chromium quantizes fractional outline widths (3px centered became
+      // 1px outside + 1.5px inside). Shadows retain both exact half widths.
+      const halfWidth = cssRoundedNumber(side.width / 2);
+      shadows.push(`0 0 0 ${halfWidth} ${rgba}`, `inset 0 0 0 ${halfWidth} ${rgba}`);
+    }
   } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
-    declarations.push(["border", `${cssRoundedNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
+    if (node.type === "text") {
+      declarations.push(["-webkit-text-stroke", `${cssRoundedNumber(node.strokeWidth)} ${cssColor(node.stroke)}`]);
+    } else if (usesCenteredOutline(node, context)) {
+      declarations.push(["outline", `${cssRoundedNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`],
+        ["outline-offset", cssRoundedNumber(-node.strokeWidth / 2)]);
+    } else {
+      // Legacy strokes are centered on the authored outline. A CSS border
+      // would move absolute children and consume flex/grid space. The two
+      // half-width shadows paint on either side without changing layout.
+      const halfWidth = cssRoundedNumber(node.strokeWidth / 2);
+      shadows.push(`0 0 0 ${halfWidth} ${cssColor(node.stroke)}`,
+        `inset 0 0 0 ${halfWidth} ${cssColor(node.stroke)}`);
+    }
   }
   if (node.cornerRadii) {
     declarations.push(["border-radius", node.cornerRadii.map(cssRoundedNumber).join(" ")]);
@@ -385,7 +419,11 @@ function paintDeclarations(node) {
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
   if (node.shadowStack) shadows.push(shadowStackCss(node));
   if (node.shadow) {
-    const shadow = `${cssRoundedNumber(node.shadow.x)} ${cssRoundedNumber(node.shadow.y)} ${cssRoundedNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
+    // SVG/Skia drop shadows include the visible stroke in their alpha mask.
+    // CSS shadows start at the border box, so centered/outside paint needs
+    // the same outward extent. Glyph shadows have no CSS spread parameter.
+    const spread = node.type === "text" ? "" : ` ${cssRoundedNumber(designStrokeOutset(node))}`;
+    const shadow = `${cssRoundedNumber(node.shadow.x)} ${cssRoundedNumber(node.shadow.y)} ${cssRoundedNumber(node.shadow.blur)}${spread} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
     if (node.type === "text") declarations.push(["text-shadow", shadow]);
     else shadows.push(shadow);
   }
@@ -399,6 +437,34 @@ function transformDeclarations(node) {
   if (node.constraintVertical === "center") transforms.push("translateY(-50%)");
   if (Number(node.rotation)) transforms.push(`rotate(${Number(node.rotation)}deg)`);
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
+}
+
+function finiteTextPaintOffset(node, parent, parentUsesLayout, fontFamilyOverride, context) {
+  // Provenanced HTML/native coordinates already describe a CSS line box.
+  // Unprovenanced finite offsets retain the historical GPU/SVG hanging origin.
+  // Browser-only font metrics transport that paint into CSS without rewriting
+  // the saved coordinates. Node exports remain an unmeasured diagnostic.
+  // Static eligibility is shared with the GPU renderer (textHtmlFiniteHangingTransport); `node`
+  // already carries the start constraints nodeStyle pins on an infinite-workspace root.
+  if (!textHtmlFiniteHangingTransport(node, { parent: parentUsesLayout ? parent : null }) ||
+      !globalThis.document?.createElement) return 0;
+  const measure = context.textPaintMeasure ??= globalThis.document.createElement("canvas").getContext("2d");
+  if (!measure) return 0;
+  const family = fontFamilyOverride === undefined ? designFontFamilyCss(node.fontFamily) : designRuntimeFontFamilyCss(fontFamilyOverride);
+  measure.font = `${node.fontStyle ?? "normal"} ${node.fontWeight ?? 400} ${node.fontSize ?? 16}px ${family}`;
+  if (!globalThis.document.fonts?.check(measure.font, "Hg")) return 0;
+  measure.textBaseline = "hanging";
+  const hanging = measure.measureText("Hg");
+  measure.textBaseline = "alphabetic";
+  const alphabetic = measure.measureText("Hg");
+  const metrics = {ascent:alphabetic.fontBoundingBoxAscent,descent:alphabetic.fontBoundingBoxDescent};
+  const hangingToAlphabetic = alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
+  if (![metrics.ascent, metrics.descent, hangingToAlphabetic].every(Number.isFinite)) return 0;
+  const flowOwned = parentUsesLayout && node.layoutPositioning !== "absolute";
+  // d = (node.y + hangingToAlphabetic) - alphabeticOffset - Tcss;
+  // absolute Tcss=node.y; a flow-owned CSS box starts at node.y-offset.
+  return hangingToAlphabetic - textLineBoxAlphabeticOffset(node, metrics) +
+    (flowOwned ? node.layoutBaselineOffset : 0);
 }
 
 function nodeStyle(sourceNode, parent, context) {
@@ -426,15 +492,18 @@ function nodeStyle(sourceNode, parent, context) {
       : sourceNode;
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
+  const paintOffset = finiteTextPaintOffset(node, parent, parentUsesLayout, fontFamilyOverride, context);
   const declarations = [
-    ...positionDeclarations(node, parent, parentUsesLayout, canvas),
+    ...positionDeclarations(node, parent, parentUsesLayout, canvas, paintOffset),
     ...sizingDeclarations(node, parent, parentOf),
     ...layoutDeclarations(node),
-    ...paintDeclarations(node),
+    ...paintDeclarations(node, context),
     ...transformDeclarations(node),
     ["box-sizing", "border-box"],
     ["opacity", String(Number.isFinite(Number(node.opacity)) ? Number(node.opacity) : 1)],
-    ["overflow", node.clipContent || node.textOverflow === "ellipsis" ? "hidden" : "visible"],
+    // An <img> with overflow:visible lets Chromium paint object-fit:cover content outside the node box;
+    // fill/contain never overflow and keep their existing (rounded) clip pixels.
+    ["overflow", node.clipContent || node.textOverflow === "ellipsis" || (node.type === "image" && (node.objectFit ?? "cover") === "cover") ? "hidden" : "visible"],
     ["display", node.visible === false ? "none" : undefined],
   ];
   if (node.type === "text") {
@@ -565,6 +634,13 @@ function renderNodeMarkup(node, parent, context) {
     `data-codeshell-name="${escapeHtml(node.name)}"`,
     `style="${escapeHtml(nodeStyle(node, parent, context))}"`,
   ];
+  // This finite hint only disambiguates a generated stroke from ordinary CSS.
+  // Capture also verifies its complete computed paint before using it.
+  if (["frame", "rectangle", "component"].includes(node.type) &&
+      !["inside", "outside"].includes(node.strokeAlign) &&
+      designStrokeSides(node).every(side => side.width > 0 && side.opacity > 0)) {
+    attributes.push(`data-codeshell-stroke="${hasDesignStroke(node) ? "center" : "legacy"}-${usesCenteredOutline(node, context) ? "outline" : "shadow"}-v1"`);
+  }
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
   const hotspot = link
