@@ -58,9 +58,18 @@ clean checkout may be switched in place; never switch another task's checkout.
 
 ## Release and ownership
 
-- Each Panel is independently versioned. Bump and release the affected Panels
-  when a release is requested; a docs-only change does not require a new app
+- Each Panel is independently versioned. Every user-facing release or advertised
+  update must raise the affected Panel's `.codeshell-panel/panel.json` version
+  to a SemVer greater than its currently distributed version. The Host compares
+  manifest versions to show available updates: merging code or changing package
+  contents under the same version does not create an update notification. Do not
+  reuse a published version for different release contents.
+- For source-built Panels, update the source manifest and rebuild the installable
+  output; verify that both manifests and the release package carry the same new
   version. Use the merged commit that passed the applicable release checks.
+  Ordinary development merges and docs-only changes do not require a version
+  bump. Report source integration, release/publication, and local installation
+  separately; a completed merge alone does not mean users received the update.
 - Build release packages from a clean checkout of that commit, run the documented
   checks and package preflight, and verify published assets against the built
   artifacts. New concurrent work is a later change, not an addition to an already
